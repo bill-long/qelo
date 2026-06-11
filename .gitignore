@@ -1,3 +1,7 @@
 node_modules
 dist
 .claude/settings.local.json
+
+# Project uses pnpm; guard against accidental npm/yarn lockfiles
+package-lock.json
+yarn.lock
