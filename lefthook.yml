@@ -12,6 +12,15 @@ pre-commit:
     - name: typecheck
       # tsc has no meaningful per-file mode, so check the whole project.
       run: npm run typecheck
+    - name: rustfmt
+      glob: "src-tauri/**/*.rs"
+      root: "src-tauri/"
+      run: cargo fmt --check
+    - name: clippy
+      glob: "src-tauri/**/*.rs"
+      root: "src-tauri/"
+      # clippy is whole-crate, not per-file; -D warnings makes lint failures block.
+      run: cargo clippy --all-targets -- -D warnings
 
 pre-push:
   jobs:

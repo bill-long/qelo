@@ -13,6 +13,9 @@ export default tseslint.config(
   {
     files: ["src/**/*.{ts,tsx}"],
     extends: [js.configs.recommended, solid],
+    plugins: {
+      "@typescript-eslint": tseslint.plugin,
+    },
     languageOptions: {
       parser: tseslint.parser,
       parserOptions: {
@@ -23,6 +26,11 @@ export default tseslint.config(
       // Biome already covers these; turn them off to avoid double-reporting.
       "no-unused-vars": "off",
       "no-undef": "off",
+      // Type-aware async safety. The JMAP client is async throughout and an
+      // unawaited promise here silently drops a server round-trip. Biome can't
+      // see types, so these live in ESLint where `project` is wired up.
+      "@typescript-eslint/no-floating-promises": "error",
+      "@typescript-eslint/no-misused-promises": "error",
     },
   },
 );
