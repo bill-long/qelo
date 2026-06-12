@@ -148,6 +148,7 @@ describe("methodResult", () => {
   });
 
   it("falls back to type 'unknown' when the error args carry no type", () => {
+    expect.assertions(1); // fail loudly if methodResult ever stops throwing here
     const noType: MethodResponse[] = [["error", {}, "x"]];
     try {
       methodResult(noType, "x");

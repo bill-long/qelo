@@ -209,14 +209,16 @@ export async function loadMore(): Promise<void> {
   try {
     // appendPage returns false when the anchor (our last row) has left the result server-side
     // before sync pruned it. anchorNotFound proves that row is no longer in the query (RFC
-    // 8620 §5.5), so drop it and re-anchor on the previous row — a race-free, in-place
+    // 8620 §5.5), so always drop it and re-anchor on the previous row — a race-free, in-place
     // reconcile that doesn't touch the queryChanges cursor (which the push-driven syncMail
-    // serializer owns). Bounded so a fast-churning folder can't spin.
-    for (let attempt = 0; ; attempt += 1) {
+    // serializer owns). We drop the proven-absent anchor *before* hitting the bound, so we
+    // never leave a known-dead id as the tail for the next loadMore to re-confirm. Bounded to
+    // MAX_ANCHOR_RETRIES drops per call so a fast-churning folder can't spin.
+    for (let dropped = 0; ; dropped += 1) {
       if (await appendPage(mailboxId)) break; // appended, reached end, or superseded
-      if (threadList.mailboxId !== mailboxId) break;
-      if (attempt >= MAX_ANCHOR_RETRIES || threadList.ids.length === 0) break;
+      if (threadList.mailboxId !== mailboxId || threadList.ids.length === 0) break;
       setThreadList("ids", (ids) => ids.slice(0, -1));
+      if (dropped + 1 >= MAX_ANCHOR_RETRIES) break;
     }
     if (threadList.mailboxId === mailboxId) setThreadList({ loading: false });
   } catch (err) {
