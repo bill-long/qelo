@@ -7,12 +7,16 @@
 // This is a dev utility, not app code — it talks to the server over JMAP using
 // HTTP Basic auth (which Stalwart accepts) and creates messages with Email/set.
 
-// The dev server uses a self-signed certificate. Trust it for localhost only.
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
-
 const BASE = (process.env.QELO_JMAP_BASE ?? "https://localhost").replace(/\/$/, "");
 const EMAIL = process.env.QELO_SEED_EMAIL ?? "test@example.test";
 const PASS = process.env.QELO_SEED_PASS ?? "test-password";
+
+// The dev server uses a self-signed certificate. Trust it for the local loopback host
+// only — NODE_TLS_REJECT_UNAUTHORIZED is process-wide, so never weaken verification when
+// QELO_JMAP_BASE points at a remote server.
+if (/^https:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(BASE)) {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+}
 
 const MAIL_CAP = "urn:ietf:params:jmap:mail";
 const CORE_CAP = "urn:ietf:params:jmap:core";
