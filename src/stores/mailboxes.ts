@@ -57,8 +57,6 @@ export async function syncMailboxes(): Promise<void> {
     await loadMailboxes();
     return;
   }
-  // Only advance the cursor once the drain fully succeeded.
-  mailboxState = result.newState;
 
   const destroyed = new Set(result.destroyed);
   // Refetch created + updated, minus any id also destroyed in the same burst (destroyed wins).
@@ -67,21 +65,20 @@ export async function syncMailboxes(): Promise<void> {
     if (!destroyed.has(id)) changed.add(id);
   }
 
+  // Apply the delta first, then advance the cursor. If the Mailbox/get throws, the error
+  // propagates to runSync (re-auth on JmapAuthError, log otherwise) with mailboxState left
+  // at the old value, so the next sync re-drains and reapplies rather than stranding the
+  // changes past an already-advanced cursor (no further push may report them).
   if (changed.size > 0) {
-    try {
-      const got = await client.request([mailboxGet(client.accountId, "mb", { ids: [...changed] })]);
-      const list = (methodResult(got, "mb").list ?? []) as Mailbox[];
-      // Upsert only the changed rows (don't advance mailboxState from this /get: it can be
-      // newer than what we drained, which would skip the changes in between).
-      setMailboxes(
-        produce((store) => {
-          for (const m of list) store[m.id] = m;
-        }),
-      );
-    } catch (err) {
-      if (handleAuthFailure(err)) return;
-      // Keep the existing rows; a later push or folder switch will refresh them.
-    }
+    const got = await client.request([mailboxGet(client.accountId, "mb", { ids: [...changed] })]);
+    const list = (methodResult(got, "mb").list ?? []) as Mailbox[];
+    // Upsert only the changed rows (don't advance mailboxState from this /get: it can be
+    // newer than what we drained, which would skip the changes in between).
+    setMailboxes(
+      produce((store) => {
+        for (const m of list) store[m.id] = m;
+      }),
+    );
   }
   if (destroyed.size > 0) {
     setMailboxes(
@@ -90,6 +87,7 @@ export async function syncMailboxes(): Promise<void> {
       }),
     );
   }
+  mailboxState = result.newState;
 }
 
 export interface MailboxNode {

@@ -44,8 +44,15 @@ export async function drainChanges(
     for (const id of (r.created ?? []) as string[]) created.push(id);
     for (const id of (r.updated ?? []) as string[]) updated.push(id);
     for (const id of (r.destroyed ?? []) as string[]) destroyed.push(id);
-    state = (r.newState ?? state) as string;
+    const next = (r.newState ?? state) as string;
     more = r.hasMoreChanges === true;
+    // A conformant server advances the cursor whenever more changes remain. If it claims
+    // hasMoreChanges but returns the same state, looping would just replay the same window
+    // up to the guard cap every sync — fail fast so the caller can recover (full reload).
+    if (more && next === state) {
+      throw new Error(`${call[0]} reported hasMoreChanges without advancing newState`);
+    }
+    state = next;
   }
   return { created, updated, destroyed, newState: state };
 }

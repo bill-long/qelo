@@ -116,9 +116,11 @@ export function subscribeToChanges(
       // The stream dropped or failed to open. The browser would retry on its own, but
       // silently and at a fixed interval — take over so we can apply backoff and surface
       // "reconnecting". Close this source (stops the native retry) and schedule our own.
-      if (closed) return;
+      // Ignore a late error from a superseded stream (only the active source reconnects),
+      // so a stale event can't spuriously kick off an extra reconnect.
+      if (closed || source !== es) return;
       es.close();
-      if (source === es) source = null;
+      source = null;
       scheduleReconnect();
     });
   };

@@ -71,7 +71,9 @@ export function startSync(): void {
   const current = session();
   if (!current) return;
   const accountId = jmap().accountId;
-  setPushStatus("connecting");
+  // subscribeToChanges emits "connecting" synchronously when it actually opens a stream
+  // (and stays silent — pushStatus null — when EventSource is unavailable), so don't
+  // pre-set a status here that could strand the UI on "Connecting…".
   unsubscribe = subscribeToChanges(current, ["Mailbox", "Email", "Thread"], {
     onChange: (account, changed) => {
       if (account !== accountId) return;

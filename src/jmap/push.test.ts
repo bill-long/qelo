@@ -174,6 +174,22 @@ describe("subscribeToChanges", () => {
     expect(FakeEventSource.instances).toHaveLength(3);
   });
 
+  it("ignores an error from a superseded stream", () => {
+    subscribeToChanges(SESSION, ["Email"], { onChange: () => {} });
+    const es1 = FakeEventSource.last;
+    es1.emit("open");
+    es1.emit("error"); // drop → schedule reconnect
+    vi.advanceTimersByTime(1000); // reconnect → es2 becomes the active source
+    const es2 = FakeEventSource.last;
+    expect(FakeEventSource.instances).toHaveLength(2);
+
+    // A late error from the now-superseded es1 must not close es2 or schedule another reconnect.
+    es1.emit("error");
+    vi.advanceTimersByTime(60000);
+    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(es2.closed).toBe(false);
+  });
+
   it("stops reconnecting and closes the stream on unsubscribe", () => {
     const statuses: PushStatus[] = [];
     const stop = subscribeToChanges(SESSION, ["Email"], {
