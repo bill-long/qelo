@@ -137,6 +137,49 @@ body,
   text-align: center;
 }
 
+/* ---- Sync / push-channel status ------------------------------------------ */
+
+/* Pinned to the bottom of the folder rail; only rendered while the live channel is
+   connecting or reconnecting (quiet once live). */
+.sync-status {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: auto 0 0;
+  padding: 0.55rem 1.1rem 0.75rem;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+}
+
+.sync-status-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink-soft);
+}
+
+.sync-status.is-reconnecting {
+  color: var(--accent);
+}
+
+.sync-status.is-reconnecting .sync-status-dot {
+  background: var(--accent);
+  animation: sync-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes sync-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sync-status.is-reconnecting .sync-status-dot {
+    animation: none;
+  }
+}
+
 /* ---- Conversation list --------------------------------------------------- */
 
 .thread-list {

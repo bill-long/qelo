@@ -1,10 +1,15 @@
-import { createStore, reconcile } from "solid-js/store";
-import { mailboxGet, methodResult } from "@/jmap/methods";
+import { createStore, produce, reconcile } from "solid-js/store";
+import { drainChanges } from "@/jmap/changes";
+import { mailboxChanges, mailboxGet, methodResult } from "@/jmap/methods";
 import type { Mailbox, MailboxRole } from "@/jmap/types";
-import { jmap } from "./account";
+import { handleAuthFailure, jmap } from "./account";
 import { selectedMailboxId, setSelectedMailboxId } from "./ui";
 
 export const [mailboxes, setMailboxes] = createStore<Record<string, Mailbox>>({});
+
+// Mailbox state token (from /get and /changes responses), used as the `sinceState` for
+// Mailbox/changes. Plain module state — it's a sync cursor, not reactive UI state.
+let mailboxState = "";
 
 /** Fetch all mailboxes for the account and replace the store. */
 export async function loadMailboxes(): Promise<void> {
@@ -12,6 +17,7 @@ export async function loadMailboxes(): Promise<void> {
   const responses = await client.request([mailboxGet(client.accountId, "mb")]);
   const result = methodResult(responses, "mb");
   const list = (result.list ?? []) as Mailbox[];
+  if (typeof result.state === "string") mailboxState = result.state;
   const byId: Record<string, Mailbox> = {};
   for (const m of list) byId[m.id] = m;
   // reconcile keeps referential stability for unchanged rows, so only mailboxes whose
@@ -22,6 +28,67 @@ export async function loadMailboxes(): Promise<void> {
   if (!selectedMailboxId()) {
     const inbox = list.find((m) => m.role === "inbox");
     if (inbox) setSelectedMailboxId(inbox.id);
+  }
+}
+
+/**
+ * Apply server-pushed mailbox changes incrementally: drain Mailbox/changes for the
+ * created/updated/destroyed ids, refetch just the changed ones, and upsert/remove them —
+ * rather than reloading the whole folder list on every Mailbox state change. Falls back
+ * to a full {@link loadMailboxes} when there's no baseline cursor or the server can't
+ * calculate changes (e.g. cannotCalculateChanges after a long gap).
+ */
+export async function syncMailboxes(): Promise<void> {
+  if (!mailboxState) {
+    // No baseline cursor yet — a full load both populates the store and captures it.
+    await loadMailboxes();
+    return;
+  }
+  const client = jmap();
+  let result: Awaited<ReturnType<typeof drainChanges>>;
+  try {
+    result = await drainChanges(client, mailboxState, (sinceState) =>
+      mailboxChanges(client.accountId, sinceState, "mc"),
+    );
+  } catch (err) {
+    if (handleAuthFailure(err)) return;
+    // cannotCalculateChanges (or a transient failure) → rebuild the whole list, which
+    // also resets the cursor to a usable baseline.
+    await loadMailboxes();
+    return;
+  }
+  // Only advance the cursor once the drain fully succeeded.
+  mailboxState = result.newState;
+
+  const destroyed = new Set(result.destroyed);
+  // Refetch created + updated, minus any id also destroyed in the same burst (destroyed wins).
+  const changed = new Set<string>();
+  for (const id of [...result.created, ...result.updated]) {
+    if (!destroyed.has(id)) changed.add(id);
+  }
+
+  if (changed.size > 0) {
+    try {
+      const got = await client.request([mailboxGet(client.accountId, "mb", { ids: [...changed] })]);
+      const list = (methodResult(got, "mb").list ?? []) as Mailbox[];
+      // Upsert only the changed rows (don't advance mailboxState from this /get: it can be
+      // newer than what we drained, which would skip the changes in between).
+      setMailboxes(
+        produce((store) => {
+          for (const m of list) store[m.id] = m;
+        }),
+      );
+    } catch (err) {
+      if (handleAuthFailure(err)) return;
+      // Keep the existing rows; a later push or folder switch will refresh them.
+    }
+  }
+  if (destroyed.size > 0) {
+    setMailboxes(
+      produce((store) => {
+        for (const id of destroyed) delete store[id];
+      }),
+    );
   }
 }
 
