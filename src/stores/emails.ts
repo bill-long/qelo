@@ -305,10 +305,20 @@ export async function syncEmails(): Promise<void> {
     cacheEmails((methodResult(got, "g").list ?? []) as Email[]);
   }
   if (destroyed.length > 0) {
+    const gone = new Set(destroyed);
     setEmails(
       produce((store) => {
         for (const id of destroyed) delete store[id];
       }),
     );
+    // Also drop destroyed ids from the visible lists so rows don't linger behind the
+    // <Show> guard until the next queryChanges pass — and so loadMore's position
+    // (threadList.ids.length) stays accurate.
+    if (threadList.ids.some((id) => gone.has(id))) {
+      setThreadList("ids", (ids) => ids.filter((id) => !gone.has(id)));
+    }
+    if (thread.emailIds.some((id) => gone.has(id))) {
+      setThread("emailIds", (ids) => ids.filter((id) => !gone.has(id)));
+    }
   }
 }
