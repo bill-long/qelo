@@ -149,6 +149,9 @@ export async function loadMore(): Promise<void> {
       produce((s) => {
         const have = new Set(s.ids);
         for (const id of page.ids) if (!have.has(id)) s.ids.push(id);
+        // Track the latest page's query state so incremental sync (Email/queryChanges)
+        // computes deltas from the current query, not the stale initial-load token.
+        s.queryState = page.queryState;
         s.reachedEnd = page.reachedEnd;
         s.loading = false;
       }),
