@@ -1,3 +1,13 @@
 node_modules
 dist
 .claude/settings.local.json
+
+# Local env (dev credentials) — never commit
+.env.local
+.env.*.local
+
+# Project uses pnpm; guard against accidental npm/yarn lockfiles
+package-lock.json
+yarn.lock
+# Stray Cygwin/MSYS crash dumps
+*.stackdump

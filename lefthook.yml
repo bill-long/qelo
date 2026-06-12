@@ -1,17 +1,17 @@
-# Git hooks, managed by lefthook. Run `npx lefthook install` after cloning.
+# Git hooks, managed by lefthook. Run `pnpm lefthook install` after cloning.
 pre-commit:
   parallel: false
   jobs:
     - name: biome
       glob: "*.{ts,tsx,js,jsx,json,jsonc,css}"
-      run: npx biome check --write --no-errors-on-unmatched {staged_files}
+      run: pnpm biome check --write --no-errors-on-unmatched {staged_files}
       stage_fixed: true
     - name: eslint
       glob: "src/**/*.{ts,tsx}"
-      run: npx eslint {staged_files}
+      run: pnpm eslint {staged_files}
     - name: typecheck
       # tsc has no meaningful per-file mode, so check the whole project.
-      run: npm run typecheck
+      run: pnpm typecheck
     - name: rustfmt
       glob: "src-tauri/**/*.rs"
       root: "src-tauri/"
@@ -25,4 +25,4 @@ pre-commit:
 pre-push:
   jobs:
     - name: test
-      run: npm test
+      run: pnpm test

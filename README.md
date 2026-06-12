@@ -32,20 +32,35 @@ src-tauri/        # Rust backend (keychain, native integration)
 
 ## Development
 
-Prerequisites: Node 20+, Rust toolchain, platform-specific Tauri dependencies (see [Tauri prerequisites](https://tauri.app/start/prerequisites/)).
+Prerequisites: Node 20+, [pnpm](https://pnpm.io/) (via `corepack enable`), Rust toolchain, platform-specific Tauri dependencies (see [Tauri prerequisites](https://tauri.app/start/prerequisites/)).
 
 ```sh
-npm install
-npm run tauri dev    # desktop app with hot reload
-npm run dev          # web only (PWA target)
-npm run build        # web build
+corepack enable      # one-time: activates the pinned pnpm version
+pnpm install
+pnpm tauri dev       # desktop app with hot reload
+pnpm dev             # web only (PWA target)
+pnpm build           # web build
 ```
 
 Type-check:
 
 ```sh
-npx tsc --noEmit
+pnpm typecheck
 ```
+
+### Dev server (JMAP)
+
+Qelo talks to a real JMAP server. For local development we run [Stalwart](https://stalw.art/)
+in Docker (per the no-mocking rule in `CLAUDE.md`):
+
+```sh
+pnpm dev:server      # start Stalwart in Docker
+pnpm dev:seed        # inject sample threaded mail into the test account
+pnpm dev:server:down # stop it
+```
+
+First-run setup (creating the test domain/account) and configuration details are in
+[`dev/stalwart/README.md`](./dev/stalwart/README.md).
 
 ## License
 

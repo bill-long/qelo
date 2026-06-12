@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "A JMAP email client built with Tauri and SolidJS.",
   "type": "module",
+  "packageManager": "pnpm@10.10.0",
   "scripts": {
     "prepare": "lefthook install",
     "start": "vite",
@@ -10,8 +11,11 @@
     "build": "vite build",
     "serve": "vite preview",
     "tauri": "tauri",
+    "dev:server": "docker compose -f dev/stalwart/docker-compose.yml up -d",
+    "dev:server:down": "docker compose -f dev/stalwart/docker-compose.yml down",
+    "dev:seed": "node dev/stalwart/seed.mjs",
     "typecheck": "tsc --noEmit",
-    "lint": "npm run lint:biome && npm run lint:solid",
+    "lint": "pnpm lint:biome && pnpm lint:solid",
     "lint:biome": "biome check .",
     "lint:solid": "eslint .",
     "lint:fix": "biome check --write . && eslint . --fix",
@@ -23,6 +27,7 @@
   "dependencies": {
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
+    "dompurify": "^3.4.9",
     "solid-js": "^1.9.3"
   },
   "devDependencies": {
@@ -40,5 +45,11 @@
     "vite": "^6.0.3",
     "vite-plugin-solid": "^2.11.0",
     "vitest": "^4.1.8"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "lefthook"
+    ]
   }
 }

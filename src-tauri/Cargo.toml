@@ -23,4 +23,23 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# OAuth 2.0 (Authorization Code + PKCE) against the JMAP provider.
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "form", "rustls"] }
+tiny_http = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+urlencoding = "2"
+open = "5"
+tokio = { version = "1", features = ["rt"] }
+
+# OS keychain for token storage — platform-native backends.
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service"] }
 
