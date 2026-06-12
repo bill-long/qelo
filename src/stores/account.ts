@@ -3,6 +3,7 @@ import { createSignal } from "solid-js";
 import { type AuthHeaderProvider, basicAuth, bearerAuth } from "@/jmap/auth";
 import { JmapClient } from "@/jmap/client";
 import type { Session } from "@/jmap/types";
+import { stopSync } from "./sync";
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
 
@@ -41,10 +42,19 @@ export async function signIn(): Promise<void> {
   desktopSessionUrl = import.meta.env.DEV ? new URL(url, window.location.origin).pathname : url;
 }
 
-/** Clear stored OAuth tokens (desktop only). */
+/**
+ * Sign out (desktop): clear the stored OAuth tokens and tear down the live connection —
+ * stop push sync, drop the client/session, and return to a disconnected state — so no
+ * further authenticated requests go out.
+ */
 export async function signOut(): Promise<void> {
   await invoke("logout", { providerId: PROVIDER_ID });
+  stopSync();
+  client = null;
   desktopSessionUrl = null;
+  setSession(null);
+  setConnectionError(null);
+  setConnectionStatus("disconnected");
 }
 
 export const [session, setSession] = createSignal<Session | null>(null);
