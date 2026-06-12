@@ -166,10 +166,13 @@ async function reloadThreadList(mailboxId: string): Promise<void> {
  */
 async function appendPage(mailboxId: string): Promise<boolean> {
   const anchor = threadList.ids[threadList.ids.length - 1];
-  if (anchor === undefined) return true; // empty list — openMailbox owns the first page
   let page: Awaited<ReturnType<typeof fetchPage>>;
   try {
-    page = await fetchPage(mailboxId, { anchor });
+    // No row to anchor on means the window was pruned empty by sync (e.g. a mass server-side
+    // delete) while reachedEnd may still be false. Fetch the first page so reachedEnd and
+    // queryState refresh and paging can resume — otherwise loadMore could never re-anchor and
+    // would be a permanent no-op until the mailbox is reopened.
+    page = await fetchPage(mailboxId, anchor === undefined ? { position: 0 } : { anchor });
   } catch (err) {
     // The anchor row was removed from the query result (deleted/moved server-side) before
     // sync pruned it from our window. Signal the caller to reconcile rather than fail.
