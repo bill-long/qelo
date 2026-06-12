@@ -159,12 +159,13 @@ async function reloadThreadList(mailboxId: string): Promise<void> {
 }
 
 /**
- * Fetch and append one page anchored on the last id we currently hold. Returns `false`
- * if the anchor has vanished from the live result (`anchorNotFound`) so the caller can
- * reconcile and retry; returns `true` on success or if the load was superseded. Does
- * not touch `loading`/`loadMoreError` — loadMore owns that lifecycle.
+ * Fetch and append one page anchored on the last id we currently hold. On `anchorNotFound`
+ * (the anchor left the live result) it returns `{ deadAnchor }` naming the id the server
+ * rejected, so the caller can drop exactly that row and re-anchor; otherwise returns `null`
+ * (appended, reached end, recovered via a first-page fetch, or superseded). Does not touch
+ * `loading`/`loadMoreError` — loadMore owns that lifecycle.
  */
-async function appendPage(mailboxId: string): Promise<boolean> {
+async function appendPage(mailboxId: string): Promise<{ deadAnchor: string } | null> {
   const anchor = threadList.ids[threadList.ids.length - 1];
   let page: Awaited<ReturnType<typeof fetchPage>>;
   try {
@@ -175,11 +176,14 @@ async function appendPage(mailboxId: string): Promise<boolean> {
     page = await fetchPage(mailboxId, anchor === undefined ? { position: 0 } : { anchor });
   } catch (err) {
     // The anchor row was removed from the query result (deleted/moved server-side) before
-    // sync pruned it from our window. Signal the caller to reconcile rather than fail.
-    if (err instanceof JmapMethodError && err.type === "anchorNotFound") return false;
+    // sync pruned it from our window. Name the rejected id so the caller drops the right row.
+    // (A position-0 fetch can't anchorNotFound, so `anchor` is defined whenever we get here.)
+    if (err instanceof JmapMethodError && err.type === "anchorNotFound") {
+      return anchor === undefined ? null : { deadAnchor: anchor };
+    }
     throw err;
   }
-  if (threadList.mailboxId !== mailboxId) return true;
+  if (threadList.mailboxId !== mailboxId) return null;
   setThreadList(
     produce((s) => {
       // Anchoring at offset 1 makes the boundary exact: the page starts strictly after the
@@ -196,7 +200,7 @@ async function appendPage(mailboxId: string): Promise<boolean> {
       s.reachedEnd = page.reachedEnd;
     }),
   );
-  return true;
+  return null;
 }
 
 // How many vanished anchors loadMore will drop+re-anchor through in one call before
@@ -210,16 +214,19 @@ export async function loadMore(): Promise<void> {
   if (!mailboxId || threadList.loading || threadList.error || threadList.reachedEnd) return;
   setThreadList({ loading: true, loadMoreError: null });
   try {
-    // appendPage returns false when the anchor (our last row) has left the result server-side
-    // before sync pruned it. anchorNotFound proves that row is no longer in the query (RFC
-    // 8620 §5.5), so always drop it and re-anchor on the previous row — a race-free, in-place
-    // reconcile that doesn't touch the queryChanges cursor (which the push-driven syncMail
-    // serializer owns). We drop the proven-absent anchor *before* hitting the bound, so we
-    // never leave a known-dead id as the tail for the next loadMore to re-confirm. Bounded to
+    // appendPage reports a deadAnchor when our last row has left the result server-side before
+    // sync pruned it. anchorNotFound proves that exact id is gone from the query (RFC 8620
+    // §5.5), so drop it and re-anchor on the previous row — a race-free, in-place reconcile
+    // that doesn't touch the queryChanges cursor (which the push-driven syncMail serializer
+    // owns). Only drop when the tail is still that id: a concurrent syncThreadList may have
+    // replaced/reordered the tail while our request was in flight, and the new tail is a valid
+    // anchor we must not delete — stop and let the next scroll retry it. Bounded to
     // MAX_ANCHOR_RETRIES drops per call so a fast-churning folder can't spin.
     for (let dropped = 0; ; dropped += 1) {
-      if (await appendPage(mailboxId)) break; // appended, reached end, or superseded
-      if (threadList.mailboxId !== mailboxId || threadList.ids.length === 0) break;
+      const miss = await appendPage(mailboxId);
+      if (!miss) break; // appended, reached end, recovered, or superseded
+      if (threadList.mailboxId !== mailboxId) break;
+      if (threadList.ids[threadList.ids.length - 1] !== miss.deadAnchor) break;
       setThreadList("ids", (ids) => ids.slice(0, -1));
       if (dropped + 1 >= MAX_ANCHOR_RETRIES) break;
     }
