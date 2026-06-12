@@ -31,3 +31,30 @@ export function formatDate(iso: string, now: Date = new Date()): string {
   if (d.getFullYear() === now.getFullYear()) return `${month} ${d.getDate()}`;
   return `${month} ${d.getDate()}, ${d.getFullYear()}`;
 }
+
+/** Full timestamp for a message header, e.g. "Jun 15, 2026, 14:32". */
+export function formatDateTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const month = MONTHS[d.getMonth()] ?? "";
+  return `${month} ${d.getDate()}, ${d.getFullYear()}, ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+/** Join recipient addresses into a display string ("Ada, bob@x.test"). */
+export function recipientList(addresses: EmailAddress[] | null): string {
+  if (!addresses || addresses.length === 0) return "";
+  return addresses.map((a) => a.name?.trim() || a.email).join(", ");
+}
+
+/** Human-readable byte size, e.g. "3.4 KB". */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+}

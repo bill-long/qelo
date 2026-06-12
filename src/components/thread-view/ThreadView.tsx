@@ -1,3 +1,114 @@
+import { createEffect, For, Match, Show, Switch } from "solid-js";
+import { selectBody } from "@/lib/body";
+import { formatBytes, formatDateTime, recipientList, senderName } from "@/lib/format";
+import { emailSrcdoc, sanitizeHtml } from "@/lib/sanitize";
+import { prefersDark } from "@/lib/theme";
+import { emails, loadThread, thread } from "@/stores/emails";
+import { selectedThreadId } from "@/stores/ui";
+
 export function ThreadView() {
-  return <section class="thread-view">{/* TODO */}</section>;
+  function load() {
+    const id = selectedThreadId();
+    if (id) void loadThread(id);
+  }
+
+  createEffect(load);
+
+  return (
+    <div class="thread-view">
+      <Show
+        when={selectedThreadId()}
+        fallback={<p class="thread-view-note">No conversation selected</p>}
+      >
+        <Show
+          when={!thread.error}
+          fallback={
+            <div class="thread-view-note">
+              <p class="thread-view-error">{thread.error}</p>
+              <button type="button" onClick={load}>
+                Retry
+              </button>
+            </div>
+          }
+        >
+          <Show
+            when={thread.emailIds.length > 0}
+            fallback={<p class="thread-view-note">{thread.loading ? "Loading…" : "Empty"}</p>}
+          >
+            <For each={thread.emailIds}>{(id) => <Message id={id} />}</For>
+          </Show>
+        </Show>
+      </Show>
+    </div>
+  );
+}
+
+function Message(props: { id: string }) {
+  return (
+    <Show when={emails[props.id]}>
+      {(mail) => {
+        const body = () => selectBody(mail());
+        const attachments = () => mail().attachments ?? [];
+        return (
+          <article class="message">
+            <header class="message-head">
+              <span class="message-from">{senderName(mail().from)}</span>
+              <span class="message-date">{formatDateTime(mail().receivedAt)}</span>
+              <Show when={recipientList(mail().to)}>
+                {(to) => <span class="message-to">to {to()}</span>}
+              </Show>
+              <h2 class="message-subject">{mail().subject || "(no subject)"}</h2>
+            </header>
+
+            <Switch>
+              <Match when={body().kind === "html"}>
+                <HtmlBody html={body().value} />
+              </Match>
+              <Match when={body().kind === "text"}>
+                <pre class="message-text">{body().value}</pre>
+              </Match>
+              <Match when={body().kind === "none"}>
+                <p class="message-empty">(no content)</p>
+              </Match>
+            </Switch>
+
+            <Show when={attachments().length > 0}>
+              <ul class="message-attachments">
+                <For each={attachments()}>
+                  {(part) => (
+                    <li>
+                      <span class="attachment-name">{part.name ?? "attachment"}</span>
+                      <span class="attachment-size">{formatBytes(part.size)}</span>
+                    </li>
+                  )}
+                </For>
+              </ul>
+            </Show>
+          </article>
+        );
+      }}
+    </Show>
+  );
+}
+
+function HtmlBody(props: { html: string }) {
+  let frame: HTMLIFrameElement | undefined;
+
+  // The iframe is same-origin (so we can size it to its content) but runs no scripts
+  // (no allow-scripts) and blocks remote loads via the CSP in emailSrcdoc.
+  function fitToContent() {
+    const doc = frame?.contentDocument;
+    if (frame && doc) frame.style.height = `${doc.documentElement.scrollHeight}px`;
+  }
+
+  return (
+    <iframe
+      ref={frame}
+      class="message-html"
+      title="Message content"
+      sandbox="allow-same-origin"
+      srcdoc={emailSrcdoc(sanitizeHtml(props.html), prefersDark() ? "dark" : "light")}
+      onLoad={fitToContent}
+    />
+  );
 }

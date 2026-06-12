@@ -1,5 +1,13 @@
 import { createStore, produce } from "solid-js/store";
-import { emailGet, emailQuery, idsFromQuery, LIST_PROPERTIES, methodResult } from "@/jmap/methods";
+import {
+  DETAIL_PROPERTIES,
+  emailGet,
+  emailQuery,
+  idsFromQuery,
+  LIST_PROPERTIES,
+  methodResult,
+  threadGet,
+} from "@/jmap/methods";
 import type { Email } from "@/jmap/types";
 import { jmap } from "./account";
 import { setSelectedEmailId, setSelectedThreadId } from "./ui";
@@ -124,5 +132,52 @@ export async function loadMore(): Promise<void> {
       loading: false,
       loadMoreError: err instanceof Error ? err.message : String(err),
     });
+  }
+}
+
+// --- Reading pane: the currently open conversation -------------------------
+
+export interface ThreadState {
+  threadId: string | null;
+  /** Email ids in the thread, oldest-first (as Thread/get returns them). */
+  emailIds: string[];
+  loading: boolean;
+  error: string | null;
+}
+
+export const [thread, setThread] = createStore<ThreadState>({
+  threadId: null,
+  emailIds: [],
+  loading: false,
+  error: null,
+});
+
+/**
+ * Load a full conversation: Thread/get for its email ids, then Email/get for those
+ * ids with full headers + body (one round trip via a #ids back-reference).
+ */
+export async function loadThread(threadId: string): Promise<void> {
+  setThread({ threadId, emailIds: [], loading: true, error: null });
+  try {
+    const client = jmap();
+    const responses = await client.request([
+      threadGet(client.accountId, "t", { ids: [threadId] }),
+      emailGet(client.accountId, "e", {
+        idsRef: { resultOf: "t", name: "Thread/get", path: "/list/*/emailIds" },
+        properties: DETAIL_PROPERTIES,
+        // Fetch both so selectBody's text fallback works for messages with no HTML part.
+        fetchHTMLBodyValues: true,
+        fetchTextBodyValues: true,
+      }),
+    ]);
+    const threadResult = methodResult(responses, "t");
+    const getResult = methodResult(responses, "e");
+    cacheEmails((getResult.list ?? []) as Email[]);
+    if (thread.threadId !== threadId) return; // superseded by a newer selection
+    const list = (threadResult.list ?? []) as Array<{ id: string; emailIds: string[] }>;
+    setThread({ emailIds: list[0]?.emailIds ?? [], loading: false });
+  } catch (err) {
+    if (thread.threadId !== threadId) return;
+    setThread({ loading: false, error: err instanceof Error ? err.message : String(err) });
   }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatDate, senderName } from "./format";
+import { formatBytes, formatDate, formatDateTime, recipientList, senderName } from "./format";
 
 describe("senderName", () => {
   it("prefers the display name", () => {
@@ -40,5 +40,42 @@ describe("formatDate", () => {
 
   it("returns an empty string for invalid input", () => {
     expect(formatDate("not-a-date", now)).toBe("");
+  });
+});
+
+describe("formatDateTime", () => {
+  it("renders a full date and time", () => {
+    expect(formatDateTime(new Date(2026, 5, 15, 14, 32, 0).toISOString())).toBe(
+      "Jun 15, 2026, 14:32",
+    );
+  });
+
+  it("returns an empty string for invalid input", () => {
+    expect(formatDateTime("nope")).toBe("");
+  });
+});
+
+describe("recipientList", () => {
+  it("joins names, falling back to emails", () => {
+    expect(
+      recipientList([
+        { name: "Ada", email: "a@x.test" },
+        { name: null, email: "b@x.test" },
+      ]),
+    ).toBe("Ada, b@x.test");
+  });
+
+  it("is empty for no recipients", () => {
+    expect(recipientList(null)).toBe("");
+    expect(recipientList([])).toBe("");
+  });
+});
+
+describe("formatBytes", () => {
+  it("formats across units", () => {
+    expect(formatBytes(512)).toBe("512 B");
+    expect(formatBytes(2048)).toBe("2.0 KB");
+    expect(formatBytes(1_500_000)).toBe("1.4 MB");
+    expect(formatBytes(50 * 1024)).toBe("50 KB");
   });
 });
