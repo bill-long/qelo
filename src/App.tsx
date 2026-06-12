@@ -1,12 +1,14 @@
 import "./App.css";
-import { type JSX, Match, onMount, Switch } from "solid-js";
+import { type JSX, Match, onMount, Show, Switch } from "solid-js";
 import { Shell } from "@/components/layout/Shell";
 import {
   connect,
   connectionError,
   connectionStatus,
+  isDesktop,
   setConnectionError,
   setConnectionStatus,
+  signIn,
 } from "@/stores/account";
 import { loadMailboxes } from "@/stores/mailboxes";
 import { startSync } from "@/stores/sync";
@@ -25,9 +27,16 @@ function App() {
         <Centered>
           <p>Couldn't reach the mail server.</p>
           <pre class="connect-error">{connectionError()}</pre>
-          <button type="button" onClick={() => void start()}>
-            Retry
-          </button>
+          <div class="connect-actions">
+            <Show when={isDesktop}>
+              <button type="button" onClick={() => void signInThenStart()}>
+                Sign in
+              </button>
+            </Show>
+            <button type="button" onClick={() => void start()}>
+              Retry
+            </button>
+          </div>
         </Centered>
       </Match>
     </Switch>
@@ -47,6 +56,18 @@ async function start() {
     setConnectionError(err instanceof Error ? err.message : String(err));
     setConnectionStatus("error");
   }
+}
+
+/** Desktop: run the OAuth sign-in, then connect. */
+async function signInThenStart() {
+  try {
+    await signIn();
+  } catch (err) {
+    setConnectionError(err instanceof Error ? err.message : String(err));
+    setConnectionStatus("error");
+    return;
+  }
+  await start();
 }
 
 function Centered(props: { children: JSX.Element }) {

@@ -1,9 +1,39 @@
+import { invoke } from "@tauri-apps/api/core";
 import { createSignal } from "solid-js";
-import { basicAuth } from "@/jmap/auth";
+import { type AuthHeaderProvider, basicAuth, bearerAuth } from "@/jmap/auth";
 import { JmapClient } from "@/jmap/client";
 import type { Session } from "@/jmap/types";
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
+
+// Running inside the Tauri desktop shell (vs. the browser/PWA dev build)? Only the
+// desktop shell has the Rust backend that performs the OAuth flow.
+export const isDesktop = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+const PROVIDER_ID = import.meta.env.VITE_JMAP_PROVIDER ?? "stalwart-dev";
+
+/**
+ * On desktop, authenticate with OAuth bearer tokens minted by the Rust backend; in the
+ * browser dev build (no backend), fall back to the Basic-auth shim.
+ */
+function authProvider(): AuthHeaderProvider {
+  if (isDesktop) {
+    return bearerAuth(() => invoke<string>("get_access_token", { providerId: PROVIDER_ID }));
+  }
+  const email = import.meta.env.VITE_JMAP_EMAIL ?? "test@example.test";
+  const password = import.meta.env.VITE_JMAP_PASSWORD ?? "";
+  return basicAuth(email, password);
+}
+
+/** Run the interactive OAuth sign-in (desktop only). Resolves once tokens are stored. */
+export async function signIn(): Promise<void> {
+  await invoke("oauth_login", { providerId: PROVIDER_ID });
+}
+
+/** Clear stored OAuth tokens (desktop only). */
+export async function signOut(): Promise<void> {
+  await invoke("logout", { providerId: PROVIDER_ID });
+}
 
 export const [session, setSession] = createSignal<Session | null>(null);
 export const [connectionStatus, setConnectionStatus] =
@@ -21,8 +51,9 @@ export function jmap(): JmapClient {
 }
 
 /**
- * Establish the JMAP session. Uses the Basic-auth dev shim for now (replaced by the
- * OAuth bearer provider in Phase 1); credentials come from VITE_JMAP_* env vars.
+ * Establish the JMAP session using OAuth on desktop or the Basic-auth shim in the
+ * browser dev build (see authProvider). On desktop this throws if not yet signed in;
+ * callers should offer signIn() in that case.
  */
 export async function connect(): Promise<void> {
   if (connectionStatus() === "connecting") return;
@@ -30,9 +61,7 @@ export async function connect(): Promise<void> {
   setConnectionError(null);
   try {
     const sessionUrl = import.meta.env.VITE_JMAP_SESSION_URL ?? "/.well-known/jmap";
-    const email = import.meta.env.VITE_JMAP_EMAIL ?? "test@example.test";
-    const password = import.meta.env.VITE_JMAP_PASSWORD ?? "";
-    client = new JmapClient(sessionUrl, basicAuth(email, password));
+    client = new JmapClient(sessionUrl, authProvider());
     const s = await client.connect();
     if (import.meta.env.DEV) {
       // Stalwart returns absolute URLs (https://localhost/...). Rewrite them to

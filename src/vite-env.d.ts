@@ -7,6 +7,8 @@ interface ImportMetaEnv {
   readonly VITE_JMAP_EMAIL?: string;
   /** Dev Basic-auth account password. Keep in .env.local (gitignored). */
   readonly VITE_JMAP_PASSWORD?: string;
+  /** OAuth provider id for the desktop build (see src-tauri auth providers). */
+  readonly VITE_JMAP_PROVIDER?: string;
 }
 
 interface ImportMeta {

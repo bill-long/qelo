@@ -318,6 +318,20 @@ body,
   font-size: 0.85rem;
 }
 
+.connect-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.connect-actions button {
+  cursor: pointer;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid #c8c8c8;
+  border-radius: 6px;
+  background: #fff;
+  font: inherit;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     color: #e8e8e8;
