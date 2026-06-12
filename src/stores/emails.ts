@@ -1,4 +1,5 @@
 import { createStore, produce } from "solid-js/store";
+import { drainChanges } from "@/jmap/changes";
 import {
   DETAIL_PROPERTIES,
   emailChanges,
@@ -284,41 +285,23 @@ export async function syncThreadList(): Promise<void> {
 export async function syncEmails(): Promise<void> {
   if (!emailState) return;
   const client = jmap();
-  const changed = new Set<string>();
-  const destroyed: string[] = [];
+  let result: Awaited<ReturnType<typeof drainChanges>>;
   try {
-    // Drain all pending changes: Email/changes is windowed (hasMoreChanges), so one
-    // call can return only part of a large burst. The guard caps pathological loops.
-    let more = true;
-    for (let guard = 0; more && guard < 100; guard += 1) {
-      const responses = await client.request([emailChanges(client.accountId, emailState, "ec")]);
-      const ec = methodResult(responses, "ec");
-      for (const id of (ec.created ?? []) as string[]) changed.add(id);
-      for (const id of (ec.updated ?? []) as string[]) changed.add(id);
-      for (const id of (ec.destroyed ?? []) as string[]) destroyed.push(id);
-      emailState = (ec.newState ?? emailState) as string;
-      more = ec.hasMoreChanges === true;
-    }
+    // Email/changes is windowed (hasMoreChanges); drainChanges follows it to the latest
+    // state. The cursor only advances on full success, so a mid-drain failure re-drains
+    // from the same token next time rather than skipping the changes it never applied.
+    result = await drainChanges(client, emailState, (sinceState) =>
+      emailChanges(client.accountId, sinceState, "ec"),
+    );
   } catch (err) {
     if (handleAuthFailure(err)) return;
     return; // a later change or folder switch will resync
   }
+  const changed = new Set<string>([...result.created, ...result.updated]);
+  const destroyed = result.destroyed;
 
-  // Only refresh emails we're actually displaying; new ones arrive via the list sync.
-  const toFetch = [...changed].filter((id) => emails[id]);
-  if (toFetch.length > 0) {
-    try {
-      const got = await client.request([
-        emailGet(client.accountId, "g", { ids: toFetch, properties: LIST_PROPERTIES }),
-      ]);
-      cacheEmails((methodResult(got, "g").list ?? []) as Email[]);
-    } catch (err) {
-      // A failed token refresh (JmapAuthError) → re-auth. Otherwise keep the existing
-      // cached rows (a later change refreshes them) rather than rejecting the whole sync,
-      // which would skip the prune below.
-      if (handleAuthFailure(err)) return;
-    }
-  }
+  // Prune destroyed ids first — it's idempotent, so it's safe to redo if the refetch below
+  // fails and the next sync re-drains the same burst.
   if (destroyed.length > 0) {
     const gone = new Set(destroyed);
     setEmails(
@@ -336,4 +319,17 @@ export async function syncEmails(): Promise<void> {
       setThread("emailIds", (ids) => ids.filter((id) => !gone.has(id)));
     }
   }
+
+  // Only refresh emails we're actually displaying; new ones arrive via the list sync.
+  // Advance the cursor only after the refetch applies: if the Email/get throws, the error
+  // propagates to runSync (re-auth on JmapAuthError, log otherwise) with emailState left
+  // put, so the next sync re-drains and retries rather than skipping the updated ids.
+  const toFetch = [...changed].filter((id) => emails[id]);
+  if (toFetch.length > 0) {
+    const got = await client.request([
+      emailGet(client.accountId, "g", { ids: toFetch, properties: LIST_PROPERTIES }),
+    ]);
+    cacheEmails((methodResult(got, "g").list ?? []) as Email[]);
+  }
+  emailState = result.newState;
 }

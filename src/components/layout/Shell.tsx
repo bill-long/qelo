@@ -1,3 +1,4 @@
+import { SyncStatus } from "@/components/layout/SyncStatus";
 import { MailboxList } from "@/components/mailbox/MailboxList";
 import { ThreadList } from "@/components/thread-list/ThreadList";
 import { ThreadView } from "@/components/thread-view/ThreadView";
@@ -11,6 +12,7 @@ export function Shell() {
       <aside class="shell-folders">
         <div class="brand">Qelo</div>
         <MailboxList />
+        <SyncStatus />
       </aside>
       <section class="shell-threads">
         <ThreadList />
