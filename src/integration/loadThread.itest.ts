@@ -14,16 +14,19 @@ import {
 // loadThread batches Thread/get → Email/get (DETAIL_PROPERTIES) via a #ids back-reference
 // in one round trip, and the reading pane relies on the returned order being oldest-first.
 describe("loadThread (Thread/get → Email/get detail)", () => {
-  let mailboxId: Id;
+  // Cleared first so a setup failure can't leave a stale id that teardown would try (and
+  // fail) to destroy, masking the real error.
+  let mailboxId: Id = "";
 
   beforeAll(connectTestClient);
   afterAll(disconnectTestClient);
   beforeEach(async () => {
     resetStores();
+    mailboxId = "";
     mailboxId = await createMailbox(`itest-thread-${Date.now()}`);
   });
   afterEach(async () => {
-    await destroyMailbox(mailboxId);
+    if (mailboxId) await destroyMailbox(mailboxId);
   });
 
   it("loads every message in the thread, oldest-first, in one batched request", async () => {

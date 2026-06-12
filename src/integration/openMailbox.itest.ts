@@ -17,16 +17,19 @@ import {
 // openMailbox must issue ONE batched request (Email/query → Email/get via #ids back-ref) and
 // collapse threads to one row per conversation — the core Phase 4 round trip.
 describe("openMailbox (batched query→get, collapseThreads)", () => {
-  let mailboxId: Id;
+  // Empty until a beforeEach assigns it; cleared first so a setup failure can't leave a
+  // stale id that the teardown would then try (and fail) to destroy, masking the real error.
+  let mailboxId: Id = "";
 
   beforeAll(connectTestClient);
   afterAll(disconnectTestClient);
   beforeEach(async () => {
     resetStores();
+    mailboxId = "";
     mailboxId = await createMailbox(`itest-open-${Date.now()}`);
   });
   afterEach(async () => {
-    await destroyMailbox(mailboxId);
+    if (mailboxId) await destroyMailbox(mailboxId);
   });
 
   it("collapses a multi-message thread to a single conversation row", async () => {

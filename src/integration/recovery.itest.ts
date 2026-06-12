@@ -23,11 +23,16 @@ import {
 // The anchor-windowing recovery paths from PR #4 — deliberately not unit-tested (that would
 // need a mocked client) and only verifiable against a real server's anchorNotFound behaviour.
 describe("loadMore recovery paths", () => {
-  let mailboxId: string;
+  // Cleared in beforeEach so a setup/seed failure can't leave a stale id that teardown would
+  // try (and fail) to destroy, masking the real error.
+  let mailboxId: Id = "";
 
   beforeAll(connectTestClient);
   afterAll(disconnectTestClient);
-  beforeEach(resetStores);
+  beforeEach(() => {
+    resetStores();
+    mailboxId = "";
+  });
 
   // Seed `count` standalone conversations and return their settled newest-first order.
   async function seed(count: number): Promise<Id[]> {
@@ -40,7 +45,7 @@ describe("loadMore recovery paths", () => {
     return settleConversations(mailboxId, count);
   }
   afterEach(async () => {
-    await destroyMailbox(mailboxId);
+    if (mailboxId) await destroyMailbox(mailboxId);
   });
 
   it("drops a vanished anchor and re-anchors on the previous row (anchorNotFound)", async () => {

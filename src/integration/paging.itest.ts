@@ -15,7 +15,9 @@ import {
 // a concrete id rather than an unstable absolute position. With a shrunk page size the small
 // seeded dataset spans several pages.
 describe("loadMore (anchor paging)", () => {
-  let mailboxId: string;
+  // Cleared first so a setup failure can't leave a stale id that teardown would try (and
+  // fail) to destroy, masking the real error.
+  let mailboxId: Id = "";
   // Canonical newest-first order of the 5 seeded conversations, as the server's sort reports
   // once indexing settles — the order openMailbox/loadMore page through.
   let order: Id[];
@@ -24,6 +26,7 @@ describe("loadMore (anchor paging)", () => {
   afterAll(disconnectTestClient);
   beforeEach(async () => {
     resetStores();
+    mailboxId = "";
     mailboxId = await createMailbox(`itest-page-${Date.now()}`);
     await createMessages(
       mailboxId,
@@ -33,7 +36,7 @@ describe("loadMore (anchor paging)", () => {
     setPageSize(2);
   });
   afterEach(async () => {
-    await destroyMailbox(mailboxId);
+    if (mailboxId) await destroyMailbox(mailboxId);
   });
 
   it("walks every page in order, then terminates on the short final page", async () => {
