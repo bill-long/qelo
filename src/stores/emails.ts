@@ -193,7 +193,11 @@ async function appendPage(mailboxId: string): Promise<{ deadAnchor: string } | n
       // changes that thread's representative id. This dedup is just cheap insurance: a
       // duplicate id would crash the id-keyed <For>, so we'd rather drop than risk it.
       const have = new Set(s.ids);
-      for (const id of page.ids) if (!have.has(id)) s.ids.push(id);
+      for (const id of page.ids) {
+        if (have.has(id)) continue;
+        have.add(id); // also guard against a duplicate within page.ids itself
+        s.ids.push(id);
+      }
       // Track the latest page's query state so incremental sync (Email/queryChanges)
       // computes deltas from the current query, not the stale initial-load token.
       s.queryState = page.queryState;
