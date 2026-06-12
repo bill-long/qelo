@@ -3,11 +3,14 @@ import { defineConfig, loadEnv, type ProxyOptions } from "vite";
 import solid from "vite-plugin-solid";
 
 const host = process.env.TAURI_DEV_HOST;
-const jmapTarget = process.env.VITE_JMAP_TARGET ?? "https://localhost";
 
 // https://vite.dev/config/
 export default defineConfig(async ({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
+
+  // Read through loadEnv (not process.env directly) so the proxy target honors values
+  // set in `.env*` files — reading process.env at module load would miss those.
+  const jmapTarget = env.VITE_JMAP_TARGET ?? "https://localhost";
 
   const proxyBase = (): ProxyOptions => ({ target: jmapTarget, changeOrigin: true, secure: false });
 
