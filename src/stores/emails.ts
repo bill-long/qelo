@@ -46,7 +46,16 @@ export const [threadList, setThreadList] = createStore<ThreadListState>({
   loadMoreError: null,
 });
 
-const PAGE_SIZE = 50;
+// Window size for a page of collapsed conversations. A `let` (not `const`) only so the
+// integration suite can shrink it via `setPageSize()` to exercise multi-page paging and the
+// anchor/recovery paths against the small seeded dataset without seeding 50+ conversations.
+// App code never changes it.
+let pageSize = 50;
+
+/** Test seam — see `pageSize`. Reset to the default (50) between tests. */
+export function setPageSize(n: number): void {
+  pageSize = n;
+}
 
 // Email state token (from /get and /changes responses), used as the `sinceState` for
 // Email/changes. Plain module state — it's a sync cursor, not reactive UI state.
@@ -87,7 +96,7 @@ type PageWindow = { position: number } | { anchor: string };
  */
 async function fetchPage(mailboxId: string, pageWindow: PageWindow) {
   const client = jmap();
-  const queryOpts: EmailQueryOptions = { mailboxId, collapseThreads: true, limit: PAGE_SIZE };
+  const queryOpts: EmailQueryOptions = { mailboxId, collapseThreads: true, limit: pageSize };
   if ("anchor" in pageWindow) {
     queryOpts.anchor = pageWindow.anchor;
     queryOpts.anchorOffset = 1;
@@ -108,7 +117,7 @@ async function fetchPage(mailboxId: string, pageWindow: PageWindow) {
     queryState: (query.queryState ?? "") as string,
     // Terminate on a short page rather than on `total`: Stalwart reports `total` as the
     // raw email count, not the collapsed-thread count, so it never equals ids.length.
-    reachedEnd: ids.length < PAGE_SIZE,
+    reachedEnd: ids.length < pageSize,
   };
 }
 

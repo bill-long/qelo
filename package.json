@@ -21,7 +21,8 @@
     "lint:fix": "biome check --write . && eslint . --fix",
     "format": "biome format --write .",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "license": "Apache-2.0",
   "dependencies": {
