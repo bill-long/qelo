@@ -5,12 +5,18 @@ import DOMPurify from "dompurify";
 // reading pane to a remote page — which would otherwise replace the message and load
 // remote content outside our CSP. (Opening links in the system browser is a later
 // feature.) Overriding any author-supplied target also defeats target="_self".
-DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+function forceExternalLinkTargets(node: Element): void {
   if (node.nodeName === "A") {
     node.setAttribute("target", "_blank");
     node.setAttribute("rel", "noopener noreferrer");
   }
-});
+}
+DOMPurify.addHook("afterSanitizeAttributes", forceExternalLinkTargets);
+
+// DOMPurify hooks are global and cumulative. Under Vite HMR this module can be
+// re-evaluated, so drop the hook when the old instance is replaced to avoid stacking
+// duplicates. No-op in production, where import.meta.hot is undefined.
+import.meta.hot?.dispose(() => DOMPurify.removeHook("afterSanitizeAttributes"));
 
 /**
  * Sanitize untrusted email HTML: strips <script>, event-handler attributes, and
