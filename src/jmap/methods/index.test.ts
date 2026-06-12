@@ -6,6 +6,7 @@ import {
   emailQuery,
   emailQueryChanges,
   idsFromQuery,
+  JmapMethodError,
   LIST_PROPERTIES,
   mailboxGet,
   methodResult,
@@ -47,6 +48,17 @@ describe("emailQuery", () => {
   it("passes through windowing options", () => {
     const [, args] = emailQuery("acc", "q", { position: 50, limit: 25, calculateTotal: true });
     expect(args).toMatchObject({ position: 50, limit: 25, calculateTotal: true });
+  });
+
+  it("passes through anchor-based windowing and omits position", () => {
+    const [, args] = emailQuery("acc", "q", { anchor: "e9", anchorOffset: 1, limit: 50 });
+    expect(args).toMatchObject({ anchor: "e9", anchorOffset: 1, limit: 50 });
+    expect(args).not.toHaveProperty("position");
+  });
+
+  it("emits anchorOffset 0 (does not drop a falsy offset)", () => {
+    const [, args] = emailQuery("acc", "q", { anchor: "e9", anchorOffset: 0 });
+    expect(args).toMatchObject({ anchor: "e9", anchorOffset: 0 });
   });
 });
 
@@ -122,8 +134,26 @@ describe("methodResult", () => {
     expect(methodResult(responses, "q")).toEqual({ ids: ["e1"] });
   });
 
-  it("throws on an error response", () => {
-    expect(() => methodResult(responses, "bad")).toThrow(/invalidArguments/);
+  it("throws a JmapMethodError carrying the error type on an error response", () => {
+    let caught: unknown;
+    try {
+      methodResult(responses, "bad");
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(JmapMethodError);
+    expect((caught as JmapMethodError).type).toBe("invalidArguments");
+    expect((caught as JmapMethodError).callId).toBe("bad");
+    expect((caught as JmapMethodError).message).toMatch(/invalidArguments/);
+  });
+
+  it("falls back to type 'unknown' when the error args carry no type", () => {
+    const noType: MethodResponse[] = [["error", {}, "x"]];
+    try {
+      methodResult(noType, "x");
+    } catch (err) {
+      expect((err as JmapMethodError).type).toBe("unknown");
+    }
   });
 
   it("throws when the call id is absent", () => {

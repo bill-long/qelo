@@ -2,11 +2,13 @@ import { createStore, produce } from "solid-js/store";
 import { drainChanges } from "@/jmap/changes";
 import {
   DETAIL_PROPERTIES,
+  type EmailQueryOptions,
   emailChanges,
   emailGet,
   emailQuery,
   emailQueryChanges,
   idsFromQuery,
+  JmapMethodError,
   LIST_PROPERTIES,
   methodResult,
   threadGet,
@@ -65,18 +67,35 @@ function rememberEmailState(getResult: Record<string, unknown>): void {
 }
 
 /**
+ * How to position the window: from an absolute `position` (used for the first page,
+ * where there's nothing to anchor to) or relative to an `anchor` id we already hold.
+ * Anchoring is what keeps pagination stable under concurrent change — see fetchPage.
+ */
+type PageWindow = { position: number } | { anchor: string };
+
+/**
  * One round trip: query the collapsed conversations for a window, then fetch the list
  * properties of exactly those ids via a #ids back-reference.
+ *
+ * For subsequent pages we anchor on the last id we already hold (`anchorOffset: 1`, i.e.
+ * "the row after the anchor") rather than re-deriving an absolute `position`. Absolute
+ * positions are unstable: if the result set shifts between page fetches (new mail, a
+ * message read/deleted server-side), the next position lands on the wrong row — skipping
+ * or repeating conversations across the page boundary. The anchor pins the boundary to a
+ * concrete id, so the next page always continues exactly where the last one ended,
+ * regardless of insertions or removals above it.
  */
-async function fetchPage(mailboxId: string, position: number) {
+async function fetchPage(mailboxId: string, pageWindow: PageWindow) {
   const client = jmap();
+  const queryOpts: EmailQueryOptions = { mailboxId, collapseThreads: true, limit: PAGE_SIZE };
+  if ("anchor" in pageWindow) {
+    queryOpts.anchor = pageWindow.anchor;
+    queryOpts.anchorOffset = 1;
+  } else {
+    queryOpts.position = pageWindow.position;
+  }
   const responses = await client.request([
-    emailQuery(client.accountId, "q", {
-      mailboxId,
-      collapseThreads: true,
-      position,
-      limit: PAGE_SIZE,
-    }),
+    emailQuery(client.accountId, "q", queryOpts),
     emailGet(client.accountId, "g", { idsRef: idsFromQuery("q"), properties: LIST_PROPERTIES }),
   ]);
   const query = methodResult(responses, "q");
@@ -108,7 +127,7 @@ export async function openMailbox(mailboxId: string): Promise<void> {
     loadMoreError: null,
   });
   try {
-    const page = await fetchPage(mailboxId, 0);
+    const page = await fetchPage(mailboxId, { position: 0 });
     // A newer selection may have superseded this load mid-flight; if so, discard it.
     if (threadList.mailboxId !== mailboxId) return;
     setThreadList({
@@ -131,7 +150,7 @@ export async function openMailbox(mailboxId: string): Promise<void> {
  */
 async function reloadThreadList(mailboxId: string): Promise<void> {
   try {
-    const page = await fetchPage(mailboxId, 0);
+    const page = await fetchPage(mailboxId, { position: 0 });
     if (threadList.mailboxId !== mailboxId) return;
     setThreadList({ ids: page.ids, queryState: page.queryState, reachedEnd: page.reachedEnd });
   } catch {
@@ -139,25 +158,67 @@ async function reloadThreadList(mailboxId: string): Promise<void> {
   }
 }
 
+/**
+ * Fetch and append one page anchored on the last id we currently hold. Returns `false`
+ * if the anchor has vanished from the live result (`anchorNotFound`) so the caller can
+ * reconcile and retry; returns `true` on success or if the load was superseded. Does
+ * not touch `loading`/`loadMoreError` — loadMore owns that lifecycle.
+ */
+async function appendPage(mailboxId: string): Promise<boolean> {
+  const anchor = threadList.ids[threadList.ids.length - 1];
+  if (anchor === undefined) return true; // empty list — openMailbox owns the first page
+  let page: Awaited<ReturnType<typeof fetchPage>>;
+  try {
+    page = await fetchPage(mailboxId, { anchor });
+  } catch (err) {
+    // The anchor row was removed from the query result (deleted/moved server-side) before
+    // sync pruned it from our window. Signal the caller to reconcile rather than fail.
+    if (err instanceof JmapMethodError && err.type === "anchorNotFound") return false;
+    throw err;
+  }
+  if (threadList.mailboxId !== mailboxId) return true;
+  setThreadList(
+    produce((s) => {
+      // Anchoring at offset 1 makes the boundary exact: the page starts strictly after the
+      // last id we hold, so position-overlap (the old failure mode) can't happen. With a
+      // single receivedAt-desc collapseThreads sort a same-id duplicate effectively can't
+      // arise either — anything that moves a held representative below the anchor also
+      // changes that thread's representative id. This dedup is just cheap insurance: a
+      // duplicate id would crash the id-keyed <For>, so we'd rather drop than risk it.
+      const have = new Set(s.ids);
+      for (const id of page.ids) if (!have.has(id)) s.ids.push(id);
+      // Track the latest page's query state so incremental sync (Email/queryChanges)
+      // computes deltas from the current query, not the stale initial-load token.
+      s.queryState = page.queryState;
+      s.reachedEnd = page.reachedEnd;
+    }),
+  );
+  return true;
+}
+
+// How many vanished anchors loadMore will drop+re-anchor through in one call before
+// giving up. Bounds the work when a folder is mutating faster than we can page (each miss
+// costs a round trip); the user can simply scroll again to resume.
+const MAX_ANCHOR_RETRIES = 3;
+
 /** Append the next page for the current mailbox (infinite scroll). */
 export async function loadMore(): Promise<void> {
   const mailboxId = threadList.mailboxId;
   if (!mailboxId || threadList.loading || threadList.error || threadList.reachedEnd) return;
   setThreadList({ loading: true, loadMoreError: null });
   try {
-    const page = await fetchPage(mailboxId, threadList.ids.length);
-    if (threadList.mailboxId !== mailboxId) return;
-    setThreadList(
-      produce((s) => {
-        const have = new Set(s.ids);
-        for (const id of page.ids) if (!have.has(id)) s.ids.push(id);
-        // Track the latest page's query state so incremental sync (Email/queryChanges)
-        // computes deltas from the current query, not the stale initial-load token.
-        s.queryState = page.queryState;
-        s.reachedEnd = page.reachedEnd;
-        s.loading = false;
-      }),
-    );
+    // appendPage returns false when the anchor (our last row) has left the result server-side
+    // before sync pruned it. anchorNotFound proves that row is no longer in the query (RFC
+    // 8620 §5.5), so drop it and re-anchor on the previous row — a race-free, in-place
+    // reconcile that doesn't touch the queryChanges cursor (which the push-driven syncMail
+    // serializer owns). Bounded so a fast-churning folder can't spin.
+    for (let attempt = 0; ; attempt += 1) {
+      if (await appendPage(mailboxId)) break; // appended, reached end, or superseded
+      if (threadList.mailboxId !== mailboxId) break;
+      if (attempt >= MAX_ANCHOR_RETRIES || threadList.ids.length === 0) break;
+      setThreadList("ids", (ids) => ids.slice(0, -1));
+    }
+    if (threadList.mailboxId === mailboxId) setThreadList({ loading: false });
   } catch (err) {
     if (handleAuthFailure(err)) return;
     if (threadList.mailboxId !== mailboxId) return;

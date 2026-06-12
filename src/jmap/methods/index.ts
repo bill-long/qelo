@@ -195,8 +195,26 @@ export function threadGet(accountId: Id, callId: string, opts: IdsSelector): Met
 // ---------------------------------------------------------------------------
 
 /**
- * Find the response for a given call id and return its args, throwing on a
- * method-level "error" response (e.g. invalidArguments, unknownMethod).
+ * A method-level JMAP error response (RFC 8620 §3.6.2): the request succeeded at the
+ * transport level but one method returned `["error", { type, ... }, callId]`. Carries
+ * the `type` so callers can branch on it (e.g. `anchorNotFound`, `cannotCalculateChanges`)
+ * instead of string-matching the message.
+ */
+export class JmapMethodError extends Error {
+  constructor(
+    readonly type: string,
+    readonly callId: string,
+    readonly args: Record<string, unknown>,
+  ) {
+    super(`JMAP error for "${callId}": ${JSON.stringify(args)}`);
+    this.name = "JmapMethodError";
+  }
+}
+
+/**
+ * Find the response for a given call id and return its args, throwing a
+ * {@link JmapMethodError} on a method-level "error" response (e.g. invalidArguments,
+ * unknownMethod).
  *
  * NOTE: this does NOT inspect `/set` per-item failures (notCreated/notUpdated/
  * notDestroyed) — those ride on an otherwise-successful response, so a caller issuing
@@ -206,7 +224,9 @@ export function methodResult(responses: MethodResponse[], callId: string): Recor
   const found = responses.find((r) => r[2] === callId);
   if (!found) throw new Error(`No JMAP response for call id "${callId}"`);
   if (found[0] === "error") {
-    throw new Error(`JMAP error for "${callId}": ${JSON.stringify(found[1])}`);
+    const args = found[1];
+    const type = typeof args.type === "string" ? args.type : "unknown";
+    throw new JmapMethodError(type, callId, args);
   }
   return found[1];
 }
