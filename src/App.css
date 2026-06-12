@@ -40,7 +40,7 @@ body,
 .shell-threads {
   border-right: 1px solid #e2e2e2;
   background: #fbfbfb;
-  overflow-y: auto;
+  overflow: hidden;
 }
 
 .shell-view {
@@ -100,6 +100,108 @@ body,
   text-align: center;
 }
 
+/* ---- Conversation list --------------------------------------------------- */
+
+.thread-list {
+  height: 100%;
+  overflow-y: auto;
+}
+
+.thread-list-note,
+.thread-list-error {
+  padding: 1rem 0.9rem;
+  color: #6a6a6a;
+  font-size: 0.9rem;
+}
+
+.thread-list-error {
+  color: #b03030;
+  white-space: pre-wrap;
+}
+
+.thread-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  width: 100%;
+  padding: 0.55rem 0.9rem;
+  border: none;
+  border-bottom: 1px solid #ececec;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.thread-row:hover {
+  background: #f0f0f0;
+}
+
+.thread-row.is-selected {
+  background: #d6e4ff;
+}
+
+.thread-row.is-unread {
+  border-left: 3px solid #3b6fd4;
+  padding-left: calc(0.9rem - 3px);
+}
+
+.thread-row-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.thread-sender {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-date {
+  flex: none;
+  color: #8a8a8a;
+  font-size: 0.8rem;
+}
+
+.thread-subject {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.thread-subject-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-flag {
+  color: #d08400;
+}
+
+.thread-attach {
+  flex: none;
+  font-size: 0.8rem;
+}
+
+.thread-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #8a8a8a;
+  font-size: 0.85rem;
+}
+
+/* Unread emphasis — kept after the base rules so specificity ascends. */
+.thread-row.is-unread .thread-sender,
+.thread-row.is-unread .thread-subject-text {
+  font-weight: 700;
+}
+
 /* ---- Connection states --------------------------------------------------- */
 
 .centered {
@@ -152,5 +254,19 @@ body,
   .connect-error {
     background: #2a1a1a;
     border-color: #5a2a2a;
+  }
+
+  .thread-row {
+    border-bottom-color: #2c2c2c;
+  }
+  .thread-row:hover {
+    background: #262626;
+  }
+  .thread-row.is-selected {
+    background: #2b3a55;
+  }
+  .thread-date,
+  .thread-preview {
+    color: #9a9a9a;
   }
 }

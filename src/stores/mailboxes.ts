@@ -2,6 +2,7 @@ import { createStore, reconcile } from "solid-js/store";
 import { mailboxGet, methodResult } from "@/jmap/methods";
 import type { Mailbox, MailboxRole } from "@/jmap/types";
 import { jmap } from "./account";
+import { selectedMailboxId, setSelectedMailboxId } from "./ui";
 
 export const [mailboxes, setMailboxes] = createStore<Record<string, Mailbox>>({});
 
@@ -16,6 +17,12 @@ export async function loadMailboxes(): Promise<void> {
   // reconcile keeps referential stability for unchanged rows, so only mailboxes whose
   // fields actually changed (e.g. unread counts) trigger re-renders.
   setMailboxes(reconcile(byId));
+
+  // Land on the inbox by default so the conversation list isn't empty on launch.
+  if (!selectedMailboxId()) {
+    const inbox = list.find((m) => m.role === "inbox");
+    if (inbox) setSelectedMailboxId(inbox.id);
+  }
 }
 
 export interface MailboxNode {
