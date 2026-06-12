@@ -9,6 +9,7 @@ import {
   setConnectionStatus,
 } from "@/stores/account";
 import { loadMailboxes } from "@/stores/mailboxes";
+import { startSync } from "@/stores/sync";
 
 function App() {
   onMount(() => {
@@ -41,6 +42,7 @@ async function start() {
   // same way (error view + Retry) instead of leaving an empty folder pane.
   try {
     await loadMailboxes();
+    startSync(); // live updates via EventSource once the initial data is in
   } catch (err) {
     setConnectionError(err instanceof Error ? err.message : String(err));
     setConnectionStatus("error");

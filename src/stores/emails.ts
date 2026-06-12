@@ -1,8 +1,10 @@
 import { createStore, produce } from "solid-js/store";
 import {
   DETAIL_PROPERTIES,
+  emailChanges,
   emailGet,
   emailQuery,
+  emailQueryChanges,
   idsFromQuery,
   LIST_PROPERTIES,
   methodResult,
@@ -43,12 +45,22 @@ export const [threadList, setThreadList] = createStore<ThreadListState>({
 
 const PAGE_SIZE = 50;
 
+// Email state token (from /get and /changes responses), used as the `sinceState` for
+// Email/changes. Plain module state — it's a sync cursor, not reactive UI state.
+let emailState = "";
+
+// Merge rather than replace so a list-properties refetch (e.g. a $seen flag change via
+// sync) doesn't drop a body that an earlier DETAIL fetch loaded into the same record.
 function cacheEmails(list: Email[]): void {
   setEmails(
     produce((store) => {
-      for (const email of list) store[email.id] = email;
+      for (const email of list) store[email.id] = { ...store[email.id], ...email };
     }),
   );
+}
+
+function rememberEmailState(getResult: Record<string, unknown>): void {
+  if (typeof getResult.state === "string") emailState = getResult.state;
 }
 
 /**
@@ -69,6 +81,7 @@ async function fetchPage(mailboxId: string, position: number) {
   const query = methodResult(responses, "q");
   const get = methodResult(responses, "g");
   cacheEmails((get.list ?? []) as Email[]);
+  rememberEmailState(get);
   const ids = (query.ids ?? []) as string[];
   return {
     ids,
@@ -173,11 +186,111 @@ export async function loadThread(threadId: string): Promise<void> {
     const threadResult = methodResult(responses, "t");
     const getResult = methodResult(responses, "e");
     cacheEmails((getResult.list ?? []) as Email[]);
+    rememberEmailState(getResult);
     if (thread.threadId !== threadId) return; // superseded by a newer selection
     const list = (threadResult.list ?? []) as Array<{ id: string; emailIds: string[] }>;
     setThread({ emailIds: list[0]?.emailIds ?? [], loading: false });
   } catch (err) {
     if (thread.threadId !== threadId) return;
     setThread({ loading: false, error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+// --- Incremental sync (driven by push state changes) -----------------------
+
+/**
+ * Apply an Email/queryChanges delta to an ordered id list: drop removed ids, then
+ * splice each added id at its index (ascending, per RFC 8620 §5.6). Pure + tested.
+ */
+export function applyQueryChanges(
+  ids: string[],
+  removed: string[],
+  added: Array<{ id: string; index: number }>,
+): string[] {
+  const removedSet = new Set(removed);
+  const result = ids.filter((id) => !removedSet.has(id));
+  for (const item of [...added].sort((a, b) => a.index - b.index)) {
+    const at = Math.min(Math.max(item.index, 0), result.length);
+    result.splice(at, 0, item.id);
+  }
+  return result;
+}
+
+/** Patch the open folder's list from the server delta instead of refetching it. */
+export async function syncThreadList(): Promise<void> {
+  const mailboxId = threadList.mailboxId;
+  if (!mailboxId || !threadList.queryState || threadList.ids.length === 0) return;
+  const client = jmap();
+  // Bound the delta to the window we actually hold, so changes past it don't reorder us.
+  const upToId = threadList.ids[threadList.ids.length - 1];
+  try {
+    const responses = await client.request([
+      emailQueryChanges(client.accountId, threadList.queryState, "qc", {
+        mailboxId,
+        collapseThreads: true,
+        upToId,
+      }),
+    ]);
+    const qc = methodResult(responses, "qc");
+    const removed = (qc.removed ?? []) as string[];
+    const added = (qc.added ?? []) as Array<{ id: string; index: number }>;
+    const newQueryState = (qc.newQueryState ?? threadList.queryState) as string;
+
+    // Fetch list properties for any newly-added conversations we don't have cached.
+    const missing = added.map((a) => a.id).filter((id) => !emails[id]);
+    if (missing.length > 0) {
+      const got = await client.request([
+        emailGet(client.accountId, "g", { ids: missing, properties: LIST_PROPERTIES }),
+      ]);
+      cacheEmails((methodResult(got, "g").list ?? []) as Email[]);
+    }
+    if (threadList.mailboxId !== mailboxId) return;
+    setThreadList({
+      ids: applyQueryChanges(threadList.ids, removed, added),
+      queryState: newQueryState,
+    });
+  } catch {
+    // cannotCalculateChanges (or transient failure) → rebuild the list from scratch.
+    if (threadList.mailboxId === mailboxId) void openMailbox(mailboxId);
+  }
+}
+
+/** Refresh already-cached emails whose state changed (e.g. $seen toggled elsewhere). */
+export async function syncEmails(): Promise<void> {
+  if (!emailState) return;
+  const client = jmap();
+  const changed = new Set<string>();
+  const destroyed: string[] = [];
+  try {
+    // Drain all pending changes: Email/changes is windowed (hasMoreChanges), so one
+    // call can return only part of a large burst. The guard caps pathological loops.
+    let more = true;
+    for (let guard = 0; more && guard < 100; guard += 1) {
+      const responses = await client.request([emailChanges(client.accountId, emailState, "ec")]);
+      const ec = methodResult(responses, "ec");
+      for (const id of (ec.created ?? []) as string[]) changed.add(id);
+      for (const id of (ec.updated ?? []) as string[]) changed.add(id);
+      for (const id of (ec.destroyed ?? []) as string[]) destroyed.push(id);
+      emailState = (ec.newState ?? emailState) as string;
+      more = ec.hasMoreChanges === true;
+    }
+  } catch {
+    return; // a later change or folder switch will resync
+  }
+
+  // Only refresh emails we're actually displaying; new ones arrive via the list sync.
+  const toFetch = [...changed].filter((id) => emails[id]);
+  if (toFetch.length > 0) {
+    const got = await client.request([
+      emailGet(client.accountId, "g", { ids: toFetch, properties: LIST_PROPERTIES }),
+    ]);
+    cacheEmails((methodResult(got, "g").list ?? []) as Email[]);
+  }
+  if (destroyed.length > 0) {
+    setEmails(
+      produce((store) => {
+        for (const id of destroyed) delete store[id];
+      }),
+    );
   }
 }

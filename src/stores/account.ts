@@ -35,10 +35,13 @@ export async function connect(): Promise<void> {
     client = new JmapClient(sessionUrl, basicAuth(email, password));
     const s = await client.connect();
     if (import.meta.env.DEV) {
-      // Stalwart returns an absolute apiUrl (https://localhost/jmap/). Rewrite it to a
-      // same-origin path so subsequent requests go through the Vite dev proxy and never
-      // hit the dev server's self-signed certificate. (No-op in production builds.)
+      // Stalwart returns absolute URLs (https://localhost/...). Rewrite them to
+      // same-origin paths so requests go through the Vite dev proxy and never hit the
+      // dev server's self-signed certificate. (No-op in production builds.) The
+      // eventSourceUrl keeps its {types}/{closeafter}/{ping} template, so strip only
+      // the origin rather than parsing it as a URL.
       s.apiUrl = new URL(s.apiUrl, window.location.origin).pathname;
+      s.eventSourceUrl = s.eventSourceUrl.replace(/^https?:\/\/[^/]+/, "");
     }
     setSession(s);
     setConnectionStatus("connected");
