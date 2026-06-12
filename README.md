@@ -48,6 +48,20 @@ Type-check:
 pnpm typecheck
 ```
 
+### Dev server (JMAP)
+
+Qelo talks to a real JMAP server. For local development we run [Stalwart](https://stalw.art/)
+in Docker (per the no-mocking rule in `CLAUDE.md`):
+
+```sh
+pnpm dev:server      # start Stalwart in Docker
+pnpm dev:seed        # inject sample threaded mail into the test account
+pnpm dev:server:down # stop it
+```
+
+First-run setup (creating the test domain/account) and configuration details are in
+[`dev/stalwart/README.md`](./dev/stalwart/README.md).
+
 ## License
 
 Apache 2.0. See [LICENSE](./LICENSE).

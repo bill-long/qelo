@@ -1,0 +1,35 @@
+# Local Stalwart JMAP server for Qelo development.
+#
+# Stalwart is a real JMAP server (RFC 8620/8621) — per CLAUDE.md we develop and
+# test against a real server, never a mock.
+#
+# Stalwart v0.16 uses a one-time, browser-based setup wizard: on first run with an
+# empty config volume it enters "bootstrap mode" and serves a setup flow on :8080.
+# The wizard writes config.json + populates the database, which then persist in the
+# named volumes — so setup is a one-time step, not every run. See README.md.
+#
+# Usage (from repo root): `pnpm dev:server`  (see README "Development → Dev server")
+
+services:
+  stalwart:
+    image: stalwartlabs/stalwart:v0.16
+    container_name: qelo-stalwart
+    restart: unless-stopped
+    environment:
+      # Pin the bootstrap/recovery admin so the setup wizard login is reproducible
+      # (otherwise Stalwart prints a random one-time password in the logs). DEV ONLY.
+      STALWART_RECOVERY_ADMIN: "admin:qelo-dev-admin"
+    # Only the two ports the client/seed actually need are mapped. :443 must be free
+    # on the host; Stalwart issues absolute JMAP URLs from its configured hostname, so
+    # remapping to a different host port would break the session apiUrl. If :443 is
+    # taken, free it (or change Stalwart's hostname/port in the admin UI to match).
+    ports:
+      - "8080:8080" # HTTP — first-run setup wizard + web admin
+      - "443:443" # HTTPS — JMAP, management API, OAuth (self-signed cert in dev)
+    volumes:
+      - qelo-stalwart-etc:/etc/stalwart # persists the wizard-written config.json
+      - qelo-stalwart-data:/var/lib/stalwart # RocksDB data + blobs
+
+volumes:
+  qelo-stalwart-etc:
+  qelo-stalwart-data:
