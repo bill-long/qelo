@@ -7,10 +7,11 @@ import { syncMailboxes } from "./mailboxes";
 let unsubscribe: (() => void) | null = null;
 
 /**
- * State of the live push channel (EventSource): `connecting` until the first open,
- * `live` while delivering changes, `reconnecting` while retrying a dropped stream.
- * Surfaced in the UI so a persistent failure (bad push auth, proxy down) is visible
- * instead of silently leaving live updates dead. `null` when sync isn't running.
+ * State of the live push channel (EventSource): `connecting` while the first connection
+ * attempt is in flight, `live` while delivering changes, and `reconnecting` after a drop
+ * or a failed connection while it retries with backoff. Surfaced in the UI so a persistent
+ * failure (bad push auth, proxy down) is visible instead of silently leaving live updates
+ * dead. `null` when sync isn't running.
  */
 export const [pushStatus, setPushStatus] = createSignal<PushStatus | null>(null);
 
