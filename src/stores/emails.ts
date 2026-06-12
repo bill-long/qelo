@@ -54,6 +54,11 @@ let pageSize = 50;
 
 /** Test seam — see `pageSize`. Reset to the default (50) between tests. */
 export function setPageSize(n: number): void {
+  // Guard the seam: a non-positive or fractional window produces an invalid Email/query
+  // `limit` and breaks the short-page termination check, so fail loudly instead.
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`pageSize must be a positive integer, got ${n}`);
+  }
   pageSize = n;
 }
 

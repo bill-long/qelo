@@ -297,11 +297,13 @@ export async function createMessages(
   ]);
   const list = (got.list ?? []) as Array<{ id: Id; threadId: Id }>;
   const threadById = new Map(list.map((e) => [e.id, e.threadId]));
-  return ids.map((id, i) => ({
-    id,
-    threadId: threadById.get(id) ?? "",
-    messageId: messageIds[i] as string,
-  }));
+  return ids.map((id, i) => {
+    const threadId = threadById.get(id);
+    // A missing threadId means the fixture didn't land as expected; fail loudly rather than
+    // returning "" and surfacing as a confusing empty-thread failure downstream.
+    if (!threadId) throw new Error(`Email/get returned no threadId for created email ${id}`);
+    return { id, threadId, messageId: messageIds[i] as string };
+  });
 }
 
 /**
