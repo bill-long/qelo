@@ -1,116 +1,156 @@
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.solid:hover {
-  filter: drop-shadow(0 0 2em #2f5d90);
-}
 :root {
   font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
+  font-size: 15px;
+  line-height: 1.5;
+  color: #1a1a1a;
   background-color: #f6f6f6;
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
 }
 
-.container {
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
   margin: 0;
-  padding-top: 10vh;
+  height: 100%;
+}
+
+/* ---- Three-pane shell ---------------------------------------------------- */
+
+.shell {
+  display: grid;
+  grid-template-columns: 240px 360px 1fr;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.shell-folders {
+  border-right: 1px solid #e2e2e2;
+  background: #efefef;
+  overflow-y: auto;
+}
+
+.shell-threads {
+  border-right: 1px solid #e2e2e2;
+  background: #fbfbfb;
+  overflow-y: auto;
+}
+
+.shell-view {
+  background: #ffffff;
+  overflow-y: auto;
+}
+
+/* ---- Mailbox list -------------------------------------------------------- */
+
+.mailbox-list {
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  text-align: center;
+  padding: 0.5rem 0;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
-}
-
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
-}
-
-.row {
+.mailbox-row {
   display: flex;
-  justify-content: center;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.4rem 0.75rem;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
   cursor: pointer;
 }
 
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
+.mailbox-row:hover {
+  background: #e4e4e4;
 }
 
-input,
-button {
-  outline: none;
+.mailbox-row.is-selected {
+  background: #d6e4ff;
+  font-weight: 600;
 }
 
-#greet-input {
-  margin-right: 5px;
+.mailbox-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mailbox-unread {
+  flex: none;
+  min-width: 1.4rem;
+  padding: 0 0.4rem;
+  border-radius: 0.7rem;
+  background: #c2d4f5;
+  color: #1a1a1a;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+/* ---- Connection states --------------------------------------------------- */
+
+.centered {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  height: 100vh;
+  text-align: center;
+}
+
+.connect-error {
+  max-width: 28rem;
+  padding: 0.5rem 0.75rem;
+  background: #fff0f0;
+  border: 1px solid #f0c0c0;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  font-size: 0.85rem;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
+    color: #e8e8e8;
+    background-color: #1c1c1c;
   }
 
-  a:hover {
-    color: #24c8db;
+  .shell-folders {
+    background: #232323;
+    border-color: #333;
   }
-
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
+  .shell-threads {
+    background: #1f1f1f;
+    border-color: #333;
   }
-  button:active {
-    background-color: #0f0f0f69;
+  .shell-view {
+    background: #1a1a1a;
+  }
+  .mailbox-row:hover {
+    background: #2e2e2e;
+  }
+  .mailbox-row.is-selected {
+    background: #2b3a55;
+  }
+  .mailbox-unread {
+    background: #3a4a6b;
+    color: #e8e8e8;
+  }
+  .connect-error {
+    background: #2a1a1a;
+    border-color: #5a2a2a;
   }
 }
