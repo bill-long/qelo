@@ -184,6 +184,12 @@ async function appendPage(mailboxId: string): Promise<{ deadAnchor: string } | n
     throw err;
   }
   if (threadList.mailboxId !== mailboxId) return null;
+  // Superseded if a concurrent syncThreadList changed the tail we anchored on (same mailbox)
+  // while the request was in flight: the page no longer starts strictly after our last id, so
+  // appending it would violate the windowing invariant (a no-op-via-dedup, gap, or disorder).
+  // Drop it and let the next scroll re-anchor on the new tail. Covers the position-0 fallback
+  // too: there `anchor` is undefined, so this also requires the list to still be empty.
+  if (threadList.ids[threadList.ids.length - 1] !== anchor) return null;
   setThreadList(
     produce((s) => {
       // Anchoring at offset 1 makes the boundary exact: the page starts strictly after the
