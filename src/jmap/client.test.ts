@@ -50,7 +50,7 @@ describe("JmapClient auth recovery", () => {
 
     expect(refresh).not.toHaveBeenCalled();
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
-    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer initial");
+    expect(new Headers(init.headers).get("Authorization")).toBe("Bearer initial");
   });
 
   it("on 401 refreshes once and retries with the fresh header", async () => {
@@ -69,7 +69,7 @@ describe("JmapClient auth recovery", () => {
     expect(refresh).toHaveBeenCalledWith("Bearer initial");
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const retryInit = fetchMock.mock.calls[1]?.[1] as RequestInit;
-    expect((retryInit.headers as Record<string, string>).Authorization).toBe("Bearer refreshed");
+    expect(new Headers(retryInit.headers).get("Authorization")).toBe("Bearer refreshed");
   });
 
   it("throws JmapAuthError when refresh cannot recover (null)", async () => {

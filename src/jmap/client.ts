@@ -15,6 +15,17 @@ export class JmapAuthError extends Error {
 }
 
 /**
+ * Merge an `Authorization` value into the caller's headers. Goes through the `Headers`
+ * API rather than object-spread so it's correct for every `HeadersInit` form (a `Headers`
+ * instance or a `[name, value][]`, not just a plain object).
+ */
+function withAuth(base: HeadersInit | undefined, authorization: string): Headers {
+  const headers = new Headers(base);
+  headers.set("Authorization", authorization);
+  return headers;
+}
+
+/**
  * Low-level JMAP transport. Holds the session and turns batches of method calls into
  * a single HTTP round trip — the primitive every store action builds on. It knows
  * nothing about SolidJS or how the auth header is produced.
@@ -35,20 +46,14 @@ export class JmapClient {
    */
   async #fetch(url: string, init: RequestInit = {}): Promise<Response> {
     const header = await this.auth.header();
-    const res = await fetch(url, {
-      ...init,
-      headers: { ...init.headers, Authorization: header },
-    });
+    const res = await fetch(url, { ...init, headers: withAuth(init.headers, header) });
     if (res.status !== 401) return res;
 
     const fresh = await this.auth.refresh(header);
     if (fresh === null) {
       throw new JmapAuthError("Authentication failed; sign in again");
     }
-    const retry = await fetch(url, {
-      ...init,
-      headers: { ...init.headers, Authorization: fresh },
-    });
+    const retry = await fetch(url, { ...init, headers: withAuth(init.headers, fresh) });
     if (retry.status === 401) {
       throw new JmapAuthError("Authentication still failing after token refresh");
     }

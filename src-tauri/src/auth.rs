@@ -122,21 +122,14 @@ fn keychain(provider_id: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYCHAIN_SERVICE, provider_id).map_err(|e| e.to_string())
 }
 
-fn load_tokens(provider_id: &str) -> Result<StoredTokens, String> {
-    let raw = keychain(provider_id)?
-        .get_password()
-        .map_err(|e| e.to_string())?;
-    serde_json::from_str(&raw).map_err(|e| e.to_string())
-}
-
-/// Like `load_tokens` but distinguishes "never signed in" (`Ok(None)`) from a real
-/// keychain or deserialization failure (`Err`). Lets `force_refresh` tell a missing
-/// credential (→ re-auth) apart from a transient keychain error (→ retry).
+/// Load stored tokens, distinguishing "no usable credential" (`Ok(None)` → re-auth) from
+/// a transient keychain read error (`Err` → retry). A genuinely-absent entry *and* a
+/// corrupt/old-format entry both map to `Ok(None)`: a corrupt entry can never parse, so
+/// treating it as signed-out lets the next sign-in overwrite it, whereas returning `Err`
+/// would loop forever without ever offering a clean re-auth.
 fn try_load_tokens(provider_id: &str) -> Result<Option<StoredTokens>, String> {
     match keychain(provider_id)?.get_password() {
-        Ok(raw) => serde_json::from_str(&raw)
-            .map(Some)
-            .map_err(|e| e.to_string()),
+        Ok(raw) => Ok(serde_json::from_str(&raw).ok()),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(e) => Err(e.to_string()),
     }
@@ -351,7 +344,10 @@ fn access_token(provider_id: &str) -> Result<String, String> {
         }
     }
 
-    let stored = load_tokens(provider_id)?;
+    let stored = match try_load_tokens(provider_id)? {
+        Some(stored) => stored,
+        None => return Err("not signed in; sign in again".to_string()),
+    };
     let fresh = if near_expiry(stored.expires_at) {
         match stored.refresh_token {
             Some(rt) => refresh(provider_id, &rt)?,

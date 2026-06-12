@@ -30,9 +30,10 @@ async function syncMail(): Promise<void> {
 }
 
 /**
- * Run a fire-and-forget sync action. A 401 whose refresh failed flips the gate to re-auth
- * (handleAuthFailure also stops sync); any other failure is logged and ignored (a later
- * push or folder switch will resync).
+ * Run a fire-and-forget sync action. A {@link JmapAuthError} (token refresh impossible, or
+ * the retry still 401s) flips the gate to re-auth — handleAuthFailure also stops sync. Any
+ * other failure, including a refresh that *threw* (transient keychain/network error), is
+ * logged and ignored; a later push or folder switch will resync.
  */
 function runSync(action: () => Promise<void>): void {
   void action().catch((err) => {
