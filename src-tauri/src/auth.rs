@@ -122,11 +122,17 @@ fn keychain(provider_id: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYCHAIN_SERVICE, provider_id).map_err(|e| e.to_string())
 }
 
-fn load_tokens(provider_id: &str) -> Result<StoredTokens, String> {
-    let raw = keychain(provider_id)?
-        .get_password()
-        .map_err(|e| e.to_string())?;
-    serde_json::from_str(&raw).map_err(|e| e.to_string())
+/// Load stored tokens, distinguishing "no usable credential" (`Ok(None)` → re-auth) from
+/// a transient keychain read error (`Err` → retry). A genuinely-absent entry *and* a
+/// corrupt/old-format entry both map to `Ok(None)`: a corrupt entry can never parse, so
+/// treating it as signed-out lets the next sign-in overwrite it, whereas returning `Err`
+/// would loop forever without ever offering a clean re-auth.
+fn try_load_tokens(provider_id: &str) -> Result<Option<StoredTokens>, String> {
+    match keychain(provider_id)?.get_password() {
+        Ok(raw) => Ok(serde_json::from_str(&raw).ok()),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 fn save_tokens(provider_id: &str, tokens: &StoredTokens) -> Result<(), String> {
@@ -338,7 +344,10 @@ fn access_token(provider_id: &str) -> Result<String, String> {
         }
     }
 
-    let stored = load_tokens(provider_id)?;
+    let stored = match try_load_tokens(provider_id)? {
+        Some(stored) => stored,
+        None => return Err("not signed in; sign in again".to_string()),
+    };
     let fresh = if near_expiry(stored.expires_at) {
         match stored.refresh_token {
             Some(rt) => refresh(provider_id, &rt)?,
@@ -361,6 +370,60 @@ fn access_token(provider_id: &str) -> Result<String, String> {
     Ok(access_token)
 }
 
+/// Invalidate the cached token that produced a JMAP `401` and mint a fresh one.
+///
+/// Unlike `access_token`, this refreshes regardless of the clock: a token can be valid
+/// by `expires_at` yet rejected server-side (revoked), and tokens minted without
+/// `expires_in` are cached indefinitely — only the server's `401` reveals they are
+/// stale. Returns the new token, or `None` when re-authentication is required (no usable
+/// refresh token / not signed in).
+///
+/// Holding the cache lock across the refresh — plus the `stale_token` check — coalesces
+/// concurrent `401`s into a single refresh: a caller that reaches the lock after the
+/// refresh finds a token unequal to its `stale_token` and reuses it instead of spending
+/// the (possibly rotated) refresh token again.
+fn force_refresh(provider_id: &str, stale_token: &str) -> Result<Option<String>, String> {
+    let mut cache = token_cache()
+        .lock()
+        .map_err(|_| "token cache poisoned".to_string())?;
+    if let Some(cached) = cache.get(provider_id) {
+        if cached.access_token != stale_token {
+            // Another caller already refreshed while we waited on the lock.
+            return Ok(Some(cached.access_token.clone()));
+        }
+    }
+
+    // The cached token is the one that just failed (or there is none): replace it. A
+    // keychain read error propagates as Err (transient — the caller retries) rather than
+    // forcing a needless re-auth; only a genuinely-absent entry means "sign in again".
+    let stored = match try_load_tokens(provider_id)? {
+        Some(stored) => stored,
+        None => {
+            cache.remove(provider_id);
+            return Ok(None);
+        }
+    };
+    match stored.refresh_token {
+        Some(rt) => {
+            let fresh = refresh(provider_id, &rt)?;
+            let access_token = fresh.access_token.clone();
+            cache.insert(
+                provider_id.to_string(),
+                Cached {
+                    access_token: fresh.access_token,
+                    expires_at: fresh.expires_at,
+                },
+            );
+            Ok(Some(access_token))
+        }
+        // Cannot refresh without a refresh token: drop the dead token and signal re-auth.
+        None => {
+            cache.remove(provider_id);
+            Ok(None)
+        }
+    }
+}
+
 // --- Tauri commands --------------------------------------------------------
 
 /// Run the interactive sign-in. Returns the provider's JMAP session URL.
@@ -375,6 +438,18 @@ pub async fn oauth_login(provider_id: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn get_access_token(provider_id: String) -> Result<String, String> {
     tokio::task::spawn_blocking(move || access_token(&provider_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Invalidate the token that produced a JMAP `401` and return a fresh one, or `None`
+/// if the user must sign in again. Called by the JMAP client to recover from `401`s.
+#[tauri::command]
+pub async fn refresh_access_token(
+    provider_id: String,
+    stale_token: String,
+) -> Result<Option<String>, String> {
+    tokio::task::spawn_blocking(move || force_refresh(&provider_id, &stale_token))
         .await
         .map_err(|e| e.to_string())?
 }

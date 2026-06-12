@@ -11,7 +11,7 @@ import {
   threadGet,
 } from "@/jmap/methods";
 import type { Email } from "@/jmap/types";
-import { jmap } from "./account";
+import { handleAuthFailure, jmap } from "./account";
 import { setSelectedEmailId, setSelectedThreadId } from "./ui";
 
 /** Cache of fetched Email objects, keyed by id. Shared by the list and (later) reading pane. */
@@ -117,6 +117,7 @@ export async function openMailbox(mailboxId: string): Promise<void> {
       loading: false,
     });
   } catch (err) {
+    if (handleAuthFailure(err)) return;
     if (threadList.mailboxId !== mailboxId) return;
     setThreadList({ loading: false, error: err instanceof Error ? err.message : String(err) });
   }
@@ -157,6 +158,7 @@ export async function loadMore(): Promise<void> {
       }),
     );
   } catch (err) {
+    if (handleAuthFailure(err)) return;
     if (threadList.mailboxId !== mailboxId) return;
     // A pagination failure keeps the already-loaded rows; only flag a retryable footer.
     setThreadList({
@@ -209,6 +211,7 @@ export async function loadThread(threadId: string): Promise<void> {
     const list = (threadResult.list ?? []) as Array<{ id: string; emailIds: string[] }>;
     setThread({ emailIds: list[0]?.emailIds ?? [], loading: false });
   } catch (err) {
+    if (handleAuthFailure(err)) return;
     if (thread.threadId !== threadId) return;
     setThread({ loading: false, error: err instanceof Error ? err.message : String(err) });
   }
@@ -269,7 +272,8 @@ export async function syncThreadList(): Promise<void> {
       ids: applyQueryChanges(threadList.ids, removed, added),
       queryState: newQueryState,
     });
-  } catch {
+  } catch (err) {
+    if (handleAuthFailure(err)) return;
     // cannotCalculateChanges (or transient failure) → rebuild the list in place,
     // preserving the reading-pane selection (openMailbox would clear it).
     if (threadList.mailboxId === mailboxId) void reloadThreadList(mailboxId);
@@ -295,7 +299,8 @@ export async function syncEmails(): Promise<void> {
       emailState = (ec.newState ?? emailState) as string;
       more = ec.hasMoreChanges === true;
     }
-  } catch {
+  } catch (err) {
+    if (handleAuthFailure(err)) return;
     return; // a later change or folder switch will resync
   }
 
@@ -307,9 +312,11 @@ export async function syncEmails(): Promise<void> {
         emailGet(client.accountId, "g", { ids: toFetch, properties: LIST_PROPERTIES }),
       ]);
       cacheEmails((methodResult(got, "g").list ?? []) as Email[]);
-    } catch {
-      // Keep the existing cached rows; a later change will refresh them. Don't let a
-      // transient refresh failure reject the whole sync (it would skip the prune below).
+    } catch (err) {
+      // A failed token refresh (JmapAuthError) → re-auth. Otherwise keep the existing
+      // cached rows (a later change refreshes them) rather than rejecting the whole sync,
+      // which would skip the prune below.
+      if (handleAuthFailure(err)) return;
     }
   }
   if (destroyed.length > 0) {

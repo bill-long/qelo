@@ -1,6 +1,29 @@
-import type { AuthHeaderProvider } from "./auth";
+import type { AuthProvider } from "./auth";
 import { CAP_CORE, CAP_MAIL } from "./methods";
 import type { Id, MethodCall, MethodResponse, Session } from "./types";
+
+/**
+ * Thrown when a request is rejected for authentication reasons and the credentials
+ * could not be recovered (token refresh failed or isn't possible). Callers should
+ * treat this as "sign in again" rather than a transient transport error.
+ */
+export class JmapAuthError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "JmapAuthError";
+  }
+}
+
+/**
+ * Merge an `Authorization` value into the caller's headers. Goes through the `Headers`
+ * API rather than object-spread so it's correct for every `HeadersInit` form (a `Headers`
+ * instance or a `[name, value][]`, not just a plain object).
+ */
+function withAuth(base: HeadersInit | undefined, authorization: string): Headers {
+  const headers = new Headers(base);
+  headers.set("Authorization", authorization);
+  return headers;
+}
 
 /**
  * Low-level JMAP transport. Holds the session and turns batches of method calls into
@@ -12,14 +35,34 @@ export class JmapClient {
 
   constructor(
     private readonly sessionUrl: string,
-    private readonly auth: AuthHeaderProvider,
+    private readonly auth: AuthProvider,
   ) {}
+
+  /**
+   * Fetch with the current auth header and, on a `401`, invalidate those credentials,
+   * refresh once, and retry. Throws {@link JmapAuthError} when the credentials can't be
+   * recovered or the retry still `401`s. Other responses (incl. non-2xx) are returned
+   * for the caller to interpret.
+   */
+  async #fetch(url: string, init: RequestInit = {}): Promise<Response> {
+    const header = await this.auth.header();
+    const res = await fetch(url, { ...init, headers: withAuth(init.headers, header) });
+    if (res.status !== 401) return res;
+
+    const fresh = await this.auth.refresh(header);
+    if (fresh === null) {
+      throw new JmapAuthError("Authentication failed; sign in again");
+    }
+    const retry = await fetch(url, { ...init, headers: withAuth(init.headers, fresh) });
+    if (retry.status === 401) {
+      throw new JmapAuthError("Authentication still failing after token refresh");
+    }
+    return retry;
+  }
 
   /** Fetch and cache the session object. Must be called before `request()`. */
   async connect(): Promise<Session> {
-    const res = await fetch(this.sessionUrl, {
-      headers: { Authorization: await this.auth() },
-    });
+    const res = await this.#fetch(this.sessionUrl);
     if (!res.ok) {
       throw new Error(`Session fetch failed: ${res.status} ${res.statusText}`);
     }
@@ -49,12 +92,9 @@ export class JmapClient {
     methodCalls: MethodCall[],
     using: string[] = [CAP_CORE, CAP_MAIL],
   ): Promise<MethodResponse[]> {
-    const res = await fetch(this.session.apiUrl, {
+    const res = await this.#fetch(this.session.apiUrl, {
       method: "POST",
-      headers: {
-        Authorization: await this.auth(),
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ using, methodCalls }),
     });
     if (!res.ok) {
