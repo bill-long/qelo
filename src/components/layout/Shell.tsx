@@ -6,10 +6,12 @@ import { ThreadView } from "@/components/thread-view/ThreadView";
 export function Shell() {
   return (
     <div class="shell">
-      <nav class="shell-folders">
+      {/* The folder sidebar is an <aside>; MailboxList provides the inner <nav>
+          landmark, so nesting two navigation regions is avoided. */}
+      <aside class="shell-folders">
         <div class="brand">Qelo</div>
         <MailboxList />
-      </nav>
+      </aside>
       <section class="shell-threads">
         <ThreadList />
       </section>

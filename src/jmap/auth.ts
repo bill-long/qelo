@@ -18,7 +18,11 @@ export type AuthHeaderProvider = () => string | Promise<string>;
  * OAuth flow (which needs the Rust backend) isn't available — do not ship in prod.
  */
 export function basicAuth(email: string, password: string): AuthHeaderProvider {
-  const header = `Basic ${btoa(`${email}:${password}`)}`;
+  // HTTP Basic credentials are UTF-8 (RFC 7617), but btoa only accepts Latin-1 and throws
+  // on any non-ASCII char. Encode to UTF-8 bytes first so non-ASCII emails/passwords work.
+  const bytes = new TextEncoder().encode(`${email}:${password}`);
+  const binary = Array.from(bytes, (b) => String.fromCharCode(b)).join("");
+  const header = `Basic ${btoa(binary)}`;
   return () => header;
 }
 

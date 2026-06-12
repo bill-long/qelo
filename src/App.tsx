@@ -30,7 +30,7 @@ function App() {
       </Match>
       <Match when={connectionStatus() === "error"}>
         <Centered>
-          <p>Couldn't reach the mail server.</p>
+          <p>Couldn't connect to your mail.</p>
           <pre class="connect-error">{connectionError()}</pre>
           <div class="connect-actions">
             <Show when={isDesktop}>
