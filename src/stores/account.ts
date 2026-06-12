@@ -90,6 +90,17 @@ export function jmap(): JmapClient {
 }
 
 /**
+ * Test seam: install an already-connected client so the integration suite can drive the
+ * store actions against the live Stalwart container. CLAUDE.md mandates a real JMAP server
+ * (no mocking), and the singleton has no other injection point — `connect()` builds the
+ * client from build-target-specific auth/env that don't apply under the test runner. App
+ * code never calls this; it goes through `connect()`. Pass `null` to tear down between tests.
+ */
+export function adoptClient(injected: JmapClient | null): void {
+  client = injected;
+}
+
+/**
  * Route a caught error: if it's a {@link JmapAuthError} (a 401 whose token refresh
  * failed), tear down the live connection and flip back to the error/sign-in gate so the
  * user can re-authenticate, and return true. Non-auth errors are left for the caller to
