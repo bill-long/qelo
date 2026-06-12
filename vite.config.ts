@@ -1,3 +1,5 @@
+import { Buffer } from "node:buffer";
+import process from "node:process";
 import { fileURLToPath, URL } from "node:url";
 import { defineConfig, loadEnv, type ProxyOptions } from "vite";
 import solid from "vite-plugin-solid";

@@ -234,10 +234,12 @@ export function applyQueryChanges(
 /** Patch the open folder's list from the server delta instead of refetching it. */
 export async function syncThreadList(): Promise<void> {
   const mailboxId = threadList.mailboxId;
-  if (!mailboxId || !threadList.queryState || threadList.ids.length === 0) return;
+  if (!mailboxId || !threadList.queryState) return;
   const client = jmap();
-  // Bound the delta to the window we actually hold, so changes past it don't reorder us.
-  const upToId = threadList.ids[threadList.ids.length - 1];
+  // Bound the delta to the window we actually hold so changes past it don't reorder us.
+  // With an empty window (e.g. mail arriving in an open, empty folder) omit upToId so
+  // queryChanges still reports the additions instead of being skipped entirely.
+  const upToId = threadList.ids.length > 0 ? threadList.ids[threadList.ids.length - 1] : undefined;
   try {
     const responses = await client.request([
       emailQueryChanges(client.accountId, threadList.queryState, "qc", {
