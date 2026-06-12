@@ -58,7 +58,13 @@ function formsCycle(nodes: Map<string, MailboxNode>, nodeId: string, parentId: s
   const seen = new Set<string>();
   let current: string | null | undefined = parentId;
   while (current) {
-    if (current === nodeId || seen.has(current)) return true;
+    if (current === nodeId) return true;
+    // A pre-existing cycle among the ancestors that does NOT pass through nodeId: since
+    // we check each distinct ancestor against nodeId before adding it to `seen`, reaching
+    // a repeat means nodeId is not in the chain. Attaching node here adds no new cycle
+    // through it, so it's safe (the cyclic ancestors are themselves promoted to roots when
+    // processed). Return false rather than true, and stop to avoid looping forever.
+    if (seen.has(current)) return false;
     seen.add(current);
     current = nodes.get(current)?.mailbox.parentId;
   }

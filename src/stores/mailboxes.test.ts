@@ -66,6 +66,19 @@ describe("buildMailboxTree", () => {
     expect(tree.every((n) => n.children.length === 0)).toBe(true);
   });
 
+  it("keeps a non-cyclic child nested under a cyclic ancestor instead of promoting it", () => {
+    const tree = buildMailboxTree([
+      mb({ id: "a", parentId: "b" }),
+      mb({ id: "b", parentId: "a" }),
+      mb({ id: "c", parentId: "a" }), // c is not part of the a<->b cycle
+    ]);
+    // a and b are cyclic → roots; c is a valid child of a and must stay nested rather
+    // than being promoted just because its ancestor chain contains a cycle.
+    expect(tree.map((n) => n.mailbox.id).sort()).toEqual(["a", "b"]);
+    const a = tree.find((n) => n.mailbox.id === "a");
+    expect(a?.children.map((n) => n.mailbox.id)).toEqual(["c"]);
+  });
+
   it("sorts nested levels too", () => {
     const tree = buildMailboxTree([
       mb({ id: "p", name: "Parent" }),
