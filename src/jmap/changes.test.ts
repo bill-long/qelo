@@ -59,7 +59,7 @@ describe("drainChanges", () => {
     await expect(drainChanges(client, "s1", build("ec"))).rejects.toThrow("boom");
   });
 
-  it("caps a server that advances but never clears hasMoreChanges", async () => {
+  it("throws (not silently returns) when it can't finish draining within the cap", async () => {
     let n = 0;
     const client = {
       request: vi.fn(async (calls: MethodCall[]) => {
@@ -68,10 +68,10 @@ describe("drainChanges", () => {
         return [[name, { newState: `s${n}`, hasMoreChanges: true }, callId]] as MethodResponse[];
       }),
     } as unknown as JmapClient & { request: ReturnType<typeof vi.fn> };
-    const result = await drainChanges(client, "s0", build("ec"));
-    // Bounded at MAX_WINDOWS (100) rather than looping forever; returns the partial state.
+    // Bounded at MAX_WINDOWS (100); rather than returning a falsely-complete cursor it
+    // throws so callers don't persist a state that skips the undrained windows.
+    await expect(drainChanges(client, "s0", build("ec"))).rejects.toThrow(/within 100 windows/);
     expect((client.request as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(100);
-    expect(result.newState).toBe("s100");
   });
 
   it("fails fast when hasMoreChanges is set but newState does not advance", async () => {

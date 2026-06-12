@@ -54,5 +54,11 @@ export async function drainChanges(
     }
     state = next;
   }
+  // Exiting with changes still pending means the guard cap tripped, not that we reached
+  // the latest state. Returning `state` would let callers persist it and skip the unread
+  // windows forever, so throw instead and let them recover (e.g. a full reload).
+  if (more) {
+    throw new Error(`changes did not finish draining within ${MAX_WINDOWS} windows`);
+  }
   return { created, updated, destroyed, newState: state };
 }
