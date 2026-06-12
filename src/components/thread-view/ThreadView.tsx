@@ -1,10 +1,10 @@
-import { createEffect, For, Match, Show, Switch } from "solid-js";
+import { createEffect, For, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { selectBody } from "@/lib/body";
 import { formatBytes, formatDateTime, recipientList, senderName } from "@/lib/format";
 import { emailSrcdoc, sanitizeHtml } from "@/lib/sanitize";
 import { prefersDark } from "@/lib/theme";
 import { emails, loadThread, thread } from "@/stores/emails";
-import { selectedThreadId } from "@/stores/ui";
+import { selectedEmailId, selectedThreadId } from "@/stores/ui";
 
 export function ThreadView() {
   function load() {
@@ -44,13 +44,20 @@ export function ThreadView() {
 }
 
 function Message(props: { id: string }) {
+  let el: HTMLElement | undefined;
+  const isSelected = () => selectedEmailId() === props.id;
+  // Bring the clicked message into view when a multi-message thread opens.
+  onMount(() => {
+    if (isSelected()) el?.scrollIntoView({ block: "nearest" });
+  });
+
   return (
     <Show when={emails[props.id]}>
       {(mail) => {
         const body = () => selectBody(mail());
         const attachments = () => mail().attachments ?? [];
         return (
-          <article class="message">
+          <article ref={el} class="message" classList={{ "is-selected": isSelected() }}>
             <header class="message-head">
               <span class="message-from">{senderName(mail().from)}</span>
               <span class="message-date">{formatDateTime(mail().receivedAt)}</span>
@@ -100,6 +107,22 @@ function HtmlBody(props: { html: string }) {
     const doc = frame?.contentDocument;
     if (frame && doc) frame.style.height = `${doc.documentElement.scrollHeight}px`;
   }
+
+  // Re-fit when the pane width changes (content reflows taller/shorter). Keyed on
+  // width only, so our own height changes don't feed back into a resize loop.
+  onMount(() => {
+    if (!frame || typeof ResizeObserver === "undefined") return;
+    let lastWidth = 0;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? 0;
+      if (width !== lastWidth) {
+        lastWidth = width;
+        fitToContent();
+      }
+    });
+    observer.observe(frame);
+    onCleanup(() => observer.disconnect());
+  });
 
   return (
     <iframe

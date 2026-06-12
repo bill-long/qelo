@@ -8,7 +8,9 @@ import {
   isDesktop,
   setConnectionError,
   setConnectionStatus,
+  setSigningIn,
   signIn,
+  signingIn,
 } from "@/stores/account";
 import { loadMailboxes } from "@/stores/mailboxes";
 import { startSync } from "@/stores/sync";
@@ -20,6 +22,9 @@ function App() {
 
   return (
     <Switch fallback={<Centered>Connecting…</Centered>}>
+      <Match when={signingIn()}>
+        <Centered>Signing in… complete the sign-in in your browser.</Centered>
+      </Match>
       <Match when={connectionStatus() === "connected"}>
         <Shell />
       </Match>
@@ -60,12 +65,15 @@ async function start() {
 
 /** Desktop: run the OAuth sign-in, then connect. */
 async function signInThenStart() {
+  setSigningIn(true);
   try {
     await signIn();
   } catch (err) {
     setConnectionError(err instanceof Error ? err.message : String(err));
     setConnectionStatus("error");
     return;
+  } finally {
+    setSigningIn(false);
   }
   await start();
 }

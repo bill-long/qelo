@@ -39,6 +39,8 @@ export const [session, setSession] = createSignal<Session | null>(null);
 export const [connectionStatus, setConnectionStatus] =
   createSignal<ConnectionStatus>("disconnected");
 export const [connectionError, setConnectionError] = createSignal<string | null>(null);
+/** True while the interactive OAuth sign-in (browser consent) is in flight. */
+export const [signingIn, setSigningIn] = createSignal(false);
 
 // The JMAP client is plain (non-reactive) infrastructure; stores reach for it through
 // jmap() to issue requests. Held module-level so there is a single connection.

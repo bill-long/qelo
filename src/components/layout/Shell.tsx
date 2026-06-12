@@ -7,6 +7,7 @@ export function Shell() {
   return (
     <div class="shell">
       <nav class="shell-folders">
+        <div class="brand">Qelo</div>
         <MailboxList />
       </nav>
       <section class="shell-threads">
