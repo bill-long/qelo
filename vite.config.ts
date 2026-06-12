@@ -12,7 +12,15 @@ export default defineConfig(async ({ mode }) => {
   // set in `.env*` files — reading process.env at module load would miss those.
   const jmapTarget = env.VITE_JMAP_TARGET ?? "https://localhost";
 
-  const proxyBase = (): ProxyOptions => ({ target: jmapTarget, changeOrigin: true, secure: false });
+  // Only skip TLS verification for the local loopback dev server (self-signed cert).
+  // If the target is overridden to a remote host, keep verification on so a bad cert
+  // isn't silently accepted.
+  const loopbackTarget = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(jmapTarget);
+  const proxyBase = (): ProxyOptions => ({
+    target: jmapTarget,
+    changeOrigin: true,
+    secure: !loopbackTarget,
+  });
 
   // EventSource can't set an Authorization header, so the dev proxy injects the dev
   // Basic-auth credentials for the push endpoint only (regular JMAP requests carry

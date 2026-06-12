@@ -9,3 +9,5 @@ dist
 # Project uses pnpm; guard against accidental npm/yarn lockfiles
 package-lock.json
 yarn.lock
+# Stray Cygwin/MSYS crash dumps
+*.stackdump

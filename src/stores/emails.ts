@@ -122,6 +122,21 @@ export async function openMailbox(mailboxId: string): Promise<void> {
   }
 }
 
+/**
+ * Reload the current mailbox's first page in place, keeping the reading-pane selection
+ * and the currently shown rows (no loading blank). Used as the sync fallback when an
+ * incremental update can't be applied — unlike openMailbox, it must not clear selection.
+ */
+async function reloadThreadList(mailboxId: string): Promise<void> {
+  try {
+    const page = await fetchPage(mailboxId, 0);
+    if (threadList.mailboxId !== mailboxId) return;
+    setThreadList({ ids: page.ids, queryState: page.queryState, reachedEnd: page.reachedEnd });
+  } catch {
+    // Keep the existing rows; a later push or folder switch will retry.
+  }
+}
+
 /** Append the next page for the current mailbox (infinite scroll). */
 export async function loadMore(): Promise<void> {
   const mailboxId = threadList.mailboxId;
@@ -250,8 +265,9 @@ export async function syncThreadList(): Promise<void> {
       queryState: newQueryState,
     });
   } catch {
-    // cannotCalculateChanges (or transient failure) → rebuild the list from scratch.
-    if (threadList.mailboxId === mailboxId) void openMailbox(mailboxId);
+    // cannotCalculateChanges (or transient failure) → rebuild the list in place,
+    // preserving the reading-pane selection (openMailbox would clear it).
+    if (threadList.mailboxId === mailboxId) void reloadThreadList(mailboxId);
   }
 }
 
