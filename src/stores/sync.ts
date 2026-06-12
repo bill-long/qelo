@@ -1,16 +1,9 @@
 import { subscribeToChanges } from "@/jmap/push";
-import { jmap, session } from "./account";
+import { handleAuthFailure, jmap, session } from "./account";
 import { syncEmails, syncThreadList } from "./emails";
 import { loadMailboxes } from "./mailboxes";
 
 let unsubscribe: (() => void) | null = null;
-
-// Run a fire-and-forget sync action from the push callback. Any failure (transient
-// network error, or the client being torn down on sign-out) is logged rather than left
-// as an unhandled rejection; a later push or folder switch will resync.
-function runSync(action: () => Promise<void>): void {
-  void action().catch((err) => console.error("Background sync failed:", err));
-}
 
 // Push events can arrive in bursts, and the Email/Thread sync mutates a shared cursor
 // (emailState in emails.ts) plus the stores. Serialize it so only one run is in flight,
@@ -34,6 +27,18 @@ async function syncMail(): Promise<void> {
   } finally {
     mailSyncing = false;
   }
+}
+
+/**
+ * Run a fire-and-forget sync action. A 401 whose refresh failed flips the gate to re-auth
+ * (handleAuthFailure also stops sync); any other failure is logged and ignored (a later
+ * push or folder switch will resync).
+ */
+function runSync(action: () => Promise<void>): void {
+  void action().catch((err) => {
+    if (handleAuthFailure(err)) return;
+    console.error("Background sync failed:", err);
+  });
 }
 
 /**

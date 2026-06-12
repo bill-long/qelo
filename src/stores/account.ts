@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { createSignal } from "solid-js";
-import { type AuthHeaderProvider, basicAuth, bearerAuth } from "@/jmap/auth";
-import { JmapClient } from "@/jmap/client";
+import { type AuthProvider, basicAuth, bearerAuth } from "@/jmap/auth";
+import { JmapAuthError, JmapClient } from "@/jmap/client";
 import type { Session } from "@/jmap/types";
 import { stopSync } from "./sync";
 
@@ -17,9 +17,16 @@ const PROVIDER_ID = import.meta.env.VITE_JMAP_PROVIDER ?? "stalwart-dev";
  * On desktop, authenticate with OAuth bearer tokens minted by the Rust backend; in the
  * browser dev build (no backend), fall back to the Basic-auth shim.
  */
-function authProvider(): AuthHeaderProvider {
+function authProvider(): AuthProvider {
   if (isDesktop) {
-    return bearerAuth(() => invoke<string>("get_access_token", { providerId: PROVIDER_ID }));
+    return bearerAuth(
+      () => invoke<string>("get_access_token", { providerId: PROVIDER_ID }),
+      (staleToken) =>
+        invoke<string | null>("refresh_access_token", {
+          providerId: PROVIDER_ID,
+          staleToken,
+        }),
+    );
   }
   // Browser/PWA build: the Basic-auth shim is a DEV-only stopgap — it bakes credentials
   // (VITE_JMAP_PASSWORD) into the bundle. A production web build has no auth backend yet
@@ -80,6 +87,23 @@ let client: JmapClient | null = null;
 export function jmap(): JmapClient {
   if (!client) throw new Error("JMAP client is not connected — call connect() first");
   return client;
+}
+
+/**
+ * Route a caught error: if it's a {@link JmapAuthError} (a 401 whose token refresh
+ * failed), tear down the live connection and flip back to the error/sign-in gate so the
+ * user can re-authenticate, and return true. Non-auth errors are left for the caller to
+ * handle locally (return false). This is the single place a mid-session auth failure —
+ * from any store action — turns into a re-auth prompt.
+ */
+export function handleAuthFailure(err: unknown): boolean {
+  if (!(err instanceof JmapAuthError)) return false;
+  stopSync(); // the session is dead, so live updates are too — stop the EventSource
+  client = null;
+  setSession(null); // drop the stale session behind the now-dead client
+  setConnectionError(err.message);
+  setConnectionStatus("error");
+  return true;
 }
 
 /**

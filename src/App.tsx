@@ -5,6 +5,7 @@ import {
   connect,
   connectionError,
   connectionStatus,
+  handleAuthFailure,
   isDesktop,
   setConnectionError,
   setConnectionStatus,
@@ -58,6 +59,7 @@ async function start() {
     await loadMailboxes();
     startSync(); // live updates via EventSource once the initial data is in
   } catch (err) {
+    if (handleAuthFailure(err)) return;
     setConnectionError(err instanceof Error ? err.message : String(err));
     setConnectionStatus("error");
   }
