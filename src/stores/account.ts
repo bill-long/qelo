@@ -25,14 +25,26 @@ function authProvider(): AuthHeaderProvider {
   return basicAuth(email, password);
 }
 
-/** Run the interactive OAuth sign-in (desktop only). Resolves once tokens are stored. */
+// Session URL returned by the desktop OAuth flow (the Rust command resolves it per
+// provider). connect() prefers it so a provider whose session endpoint isn't the default
+// path works without also setting VITE_JMAP_SESSION_URL. Null until a desktop sign-in.
+let desktopSessionUrl: string | null = null;
+
+/**
+ * Run the interactive OAuth sign-in (desktop only). Resolves once tokens are stored,
+ * capturing the provider's JMAP session URL (returned by the Rust command) for connect().
+ */
 export async function signIn(): Promise<void> {
-  await invoke("oauth_login", { providerId: PROVIDER_ID });
+  const url = await invoke<string>("oauth_login", { providerId: PROVIDER_ID });
+  // In DEV, route the session URL through the same-origin Vite proxy (same reason connect()
+  // rewrites apiUrl/eventSourceUrl) so it avoids the dev server's self-signed cert.
+  desktopSessionUrl = import.meta.env.DEV ? new URL(url, window.location.origin).pathname : url;
 }
 
 /** Clear stored OAuth tokens (desktop only). */
 export async function signOut(): Promise<void> {
   await invoke("logout", { providerId: PROVIDER_ID });
+  desktopSessionUrl = null;
 }
 
 export const [session, setSession] = createSignal<Session | null>(null);
@@ -62,7 +74,10 @@ export async function connect(): Promise<void> {
   setConnectionStatus("connecting");
   setConnectionError(null);
   try {
-    const sessionUrl = import.meta.env.VITE_JMAP_SESSION_URL ?? "/.well-known/jmap";
+    // Prefer an explicit env override, then the URL captured from the desktop OAuth
+    // sign-in, then the default well-known path (browser dev build / not-yet-signed-in).
+    const sessionUrl =
+      import.meta.env.VITE_JMAP_SESSION_URL ?? desktopSessionUrl ?? "/.well-known/jmap";
     client = new JmapClient(sessionUrl, authProvider());
     const s = await client.connect();
     if (import.meta.env.DEV) {

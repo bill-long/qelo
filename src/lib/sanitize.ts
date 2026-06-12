@@ -29,8 +29,11 @@ export function sanitizeHtml(html: string): string {
 
 // CSP for the reading-pane iframe: no scripts, and the only resources allowed are
 // inline styles and data: URIs. This blocks remote images (tracking pixels), web
-// fonts, and any other network fetch the message might attempt.
-const EMAIL_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:";
+// fonts, and any other network fetch the message might attempt. base-uri and
+// form-action don't fall back to default-src, so lock them down explicitly to neutralize
+// any <base> hijack or <form> submission regardless of the iframe sandbox flags.
+const EMAIL_CSP =
+  "default-src 'none'; base-uri 'none'; form-action 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:";
 
 /**
  * Default frame styling for the given theme. `color-scheme` makes the UA render
