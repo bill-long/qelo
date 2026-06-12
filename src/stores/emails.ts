@@ -299,10 +299,15 @@ export async function syncEmails(): Promise<void> {
   // Only refresh emails we're actually displaying; new ones arrive via the list sync.
   const toFetch = [...changed].filter((id) => emails[id]);
   if (toFetch.length > 0) {
-    const got = await client.request([
-      emailGet(client.accountId, "g", { ids: toFetch, properties: LIST_PROPERTIES }),
-    ]);
-    cacheEmails((methodResult(got, "g").list ?? []) as Email[]);
+    try {
+      const got = await client.request([
+        emailGet(client.accountId, "g", { ids: toFetch, properties: LIST_PROPERTIES }),
+      ]);
+      cacheEmails((methodResult(got, "g").list ?? []) as Email[]);
+    } catch {
+      // Keep the existing cached rows; a later change will refresh them. Don't let a
+      // transient refresh failure reject the whole sync (it would skip the prune below).
+    }
   }
   if (destroyed.length > 0) {
     const gone = new Set(destroyed);

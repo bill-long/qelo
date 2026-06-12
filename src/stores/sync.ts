@@ -5,6 +5,13 @@ import { loadMailboxes } from "./mailboxes";
 
 let unsubscribe: (() => void) | null = null;
 
+// Run a fire-and-forget sync action from the push callback. Any failure (transient
+// network error, or the client being torn down on sign-out) is logged rather than left
+// as an unhandled rejection; a later push or folder switch will resync.
+function runSync(action: () => Promise<void>): void {
+  void action().catch((err) => console.error("Background sync failed:", err));
+}
+
 // Push events can arrive in bursts, and the Email/Thread sync mutates a shared cursor
 // (emailState in emails.ts) plus the stores. Serialize it so only one run is in flight,
 // and coalesce events that arrive mid-run into a single follow-up pass instead of
@@ -41,8 +48,8 @@ export function startSync(): void {
   const accountId = jmap().accountId;
   unsubscribe = subscribeToChanges(current, ["Mailbox", "Email", "Thread"], (account, changed) => {
     if (account !== accountId) return;
-    if ("Email" in changed || "Thread" in changed) void syncMail();
-    if ("Mailbox" in changed) void loadMailboxes();
+    if ("Email" in changed || "Thread" in changed) runSync(syncMail);
+    if ("Mailbox" in changed) runSync(loadMailboxes);
   });
 }
 

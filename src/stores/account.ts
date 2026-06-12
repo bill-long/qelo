@@ -21,6 +21,14 @@ function authProvider(): AuthHeaderProvider {
   if (isDesktop) {
     return bearerAuth(() => invoke<string>("get_access_token", { providerId: PROVIDER_ID }));
   }
+  // Browser/PWA build: the Basic-auth shim is a DEV-only stopgap — it bakes credentials
+  // (VITE_JMAP_PASSWORD) into the bundle. A production web build has no auth backend yet
+  // (OAuth needs the Rust shell), so fail closed rather than shipping embedded creds.
+  if (!import.meta.env.DEV) {
+    throw new Error(
+      "No authentication method available in this build (sign-in requires the desktop app).",
+    );
+  }
   const email = import.meta.env.VITE_JMAP_EMAIL ?? "test@example.test";
   const password = import.meta.env.VITE_JMAP_PASSWORD ?? "";
   return basicAuth(email, password);
