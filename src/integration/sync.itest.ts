@@ -1,7 +1,8 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Id } from "@/jmap/types";
 import { emails, openMailbox, syncEmails, syncThreadList, threadList } from "@/stores/emails";
-import { loadMailboxes, syncMailboxes } from "@/stores/mailboxes";
+import { loadMailboxes, mailboxes, syncMailboxes } from "@/stores/mailboxes";
+import { selectedMailboxId, setSelectedMailboxId } from "@/stores/ui";
 import {
   connectTestClient,
   createMailbox,
@@ -118,6 +119,46 @@ describe("incremental sync", () => {
       mailboxesToClean.splice(mailboxesToClean.indexOf(created), 1);
       await syncMailboxes();
       expect(mailboxRow(created)).toBeUndefined();
+    });
+
+    it("redirects the selection to the inbox when the *selected* mailbox is destroyed", async () => {
+      await loadMailboxes(); // baseline cursor + populate the inbox
+      const inbox = Object.values(mailboxes).find((m) => m.role === "inbox");
+      expect(inbox, "seed account must expose an inbox").toBeDefined();
+
+      const created = await createMailbox(`itest-sync-mbredirect-${Date.now()}`);
+      mailboxesToClean.push(created);
+      await syncMailboxes();
+      setSelectedMailboxId(created); // view the folder we're about to destroy
+
+      await destroyMailbox(created);
+      mailboxesToClean.splice(mailboxesToClean.indexOf(created), 1);
+      await syncMailboxes();
+
+      expect(mailboxRow(created)).toBeUndefined();
+      // Not left dangling on the dead folder — redirected to the inbox.
+      expect(selectedMailboxId()).toBe(inbox?.id);
+    });
+  });
+
+  describe("loadMailboxes (full reload)", () => {
+    it("redirects the selection to the inbox when the selected mailbox is gone from the reload", async () => {
+      await loadMailboxes();
+      const inbox = Object.values(mailboxes).find((m) => m.role === "inbox");
+      expect(inbox, "seed account must expose an inbox").toBeDefined();
+
+      const created = await createMailbox(`itest-load-mbredirect-${Date.now()}`);
+      mailboxesToClean.push(created);
+      await loadMailboxes(); // pick up the new folder (selection stays on the inbox — still valid)
+      setSelectedMailboxId(created);
+      expect(mailboxRow(created)).toBeDefined();
+
+      await destroyMailbox(created);
+      mailboxesToClean.splice(mailboxesToClean.indexOf(created), 1);
+      await loadMailboxes();
+
+      expect(mailboxRow(created)).toBeUndefined();
+      expect(selectedMailboxId()).toBe(inbox?.id);
     });
   });
 });
