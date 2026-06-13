@@ -24,11 +24,24 @@ export async function loadMailboxes(): Promise<void> {
   // fields actually changed (e.g. unread counts) trigger re-renders.
   setMailboxes(reconcile(byId));
 
-  // Land on the inbox by default so the conversation list isn't empty on launch.
-  if (!selectedMailboxId()) {
-    const inbox = list.find((m) => m.role === "inbox");
-    if (inbox) setSelectedMailboxId(inbox.id);
+  // Land on the inbox by default when nothing is selected (launch), and redirect there if
+  // the previously selected folder is gone from the new list (a full reload after it was
+  // destroyed server-side) — otherwise the thread-list would keep querying a folder that no
+  // longer exists. Changing the signal re-triggers ThreadList's openMailbox effect, so the
+  // list reloads on its own.
+  const current = selectedMailboxId();
+  if (!current || !byId[current]) {
+    setSelectedMailboxId(defaultLandingId(list));
   }
+}
+
+/**
+ * The folder to land on by default: the inbox. Returns null if the account exposes no inbox
+ * role (rare) — callers then clear the selection rather than leave it pointing at a folder
+ * that's gone.
+ */
+function defaultLandingId(list: Mailbox[]): string | null {
+  return list.find((m) => m.role === "inbox")?.id ?? null;
 }
 
 /**
@@ -86,6 +99,18 @@ export async function syncMailboxes(): Promise<void> {
         for (const id of destroyed) delete store[id];
       }),
     );
+    // If the folder currently being viewed was just destroyed, the thread-list is now
+    // querying a dead folder. Redirect the selection to the inbox (the same default landing
+    // loadMailboxes uses) so the view isn't stranded on a removed folder. We read the live
+    // selection (not a stale capture), so a concurrent user navigation away is respected:
+    // only redirect when the *current* selection is the destroyed one. Changing the signal
+    // re-triggers ThreadList's openMailbox effect, so the list reloads on its own — no
+    // direct reload here. (Reads `mailboxes` post-delete, so the pick can't land on a
+    // just-destroyed folder.)
+    const current = selectedMailboxId();
+    if (current && destroyed.has(current)) {
+      setSelectedMailboxId(defaultLandingId(Object.values(mailboxes)));
+    }
   }
   mailboxState = result.newState;
 }
