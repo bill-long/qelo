@@ -220,7 +220,11 @@ describe("subscribeToChanges with an injected transport", () => {
   // These drive that seam directly: subscribeToChanges keeps owning reconnection/backoff, so
   // we assert the brain reacts to a stub transport's callbacks the same way it does to an ES.
   beforeEach(() => vi.useFakeTimers());
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    // Clean up here (not inline) so a stub set by a test can't leak if the test throws first.
+    vi.unstubAllGlobals();
+  });
 
   interface FakeTransport {
     url: string;
@@ -259,7 +263,6 @@ describe("subscribeToChanges with an injected transport", () => {
     const { transports, open } = makeOpener();
     subscribeToChanges(SESSION, ["Email"], { onChange: () => {} }, open);
     expect(transports).toHaveLength(1);
-    vi.unstubAllGlobals();
   });
 
   it("routes state, then reconnects with backoff after a drop", () => {
