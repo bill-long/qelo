@@ -8,7 +8,9 @@ pub fn run() {
             auth::oauth_login,
             auth::get_access_token,
             auth::refresh_access_token,
-            auth::logout
+            auth::logout,
+            auth::open_push_stream,
+            auth::close_push_stream
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

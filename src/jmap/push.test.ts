@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { backoffDelay, type PushStatus, subscribeToChanges } from "./push";
+import {
+  backoffDelay,
+  type OpenTransport,
+  type PushStatus,
+  subscribeToChanges,
+  type TransportCallbacks,
+} from "./push";
 import type { Session } from "./types";
 
 // A session whose eventSourceUrl carries the template placeholders subscribeToChanges
@@ -206,5 +212,112 @@ describe("subscribeToChanges", () => {
     es.emit("error");
     vi.advanceTimersByTime(60000);
     expect(FakeEventSource.instances).toHaveLength(1);
+  });
+});
+
+describe("subscribeToChanges with an injected transport", () => {
+  // The desktop build injects a transport (the Rust push channel) instead of EventSource.
+  // These drive that seam directly: subscribeToChanges keeps owning reconnection/backoff, so
+  // we assert the brain reacts to a stub transport's callbacks the same way it does to an ES.
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    // Clean up here (not inline) so a stub set by a test can't leak if the test throws first.
+    vi.unstubAllGlobals();
+  });
+
+  interface FakeTransport {
+    url: string;
+    cbs: TransportCallbacks;
+    closed: boolean;
+  }
+
+  function makeOpener() {
+    const transports: FakeTransport[] = [];
+    const open: OpenTransport = (url, cbs) => {
+      const t: FakeTransport = { url, cbs, closed: false };
+      transports.push(t);
+      return {
+        close: () => {
+          t.closed = true;
+        },
+      };
+    };
+    const last = (): FakeTransport => {
+      const t = transports.at(-1);
+      if (!t) throw new Error("no transport was opened");
+      return t;
+    };
+    return { transports, open, last };
+  }
+
+  it("uses the injected transport (with the substituted URL) instead of EventSource", () => {
+    const { transports, open, last } = makeOpener();
+    subscribeToChanges(SESSION, ["Email"], { onChange: () => {} }, open);
+    expect(transports).toHaveLength(1);
+    expect(last().url).toBe("https://jmap.test/events?types=Email&closeafter=no&ping=30");
+  });
+
+  it("is honored even when EventSource is unavailable", () => {
+    vi.stubGlobal("EventSource", undefined);
+    const { transports, open } = makeOpener();
+    subscribeToChanges(SESSION, ["Email"], { onChange: () => {} }, open);
+    expect(transports).toHaveLength(1);
+  });
+
+  it("routes state, then reconnects with backoff after a drop", () => {
+    const { transports, open, last } = makeOpener();
+    const statuses: PushStatus[] = [];
+    const changes: Array<[string, Record<string, string>]> = [];
+    subscribeToChanges(
+      SESSION,
+      ["Email"],
+      { onChange: (a, c) => changes.push([a, c]), onStatus: (s) => statuses.push(s) },
+      open,
+    );
+
+    last().cbs.onOpen();
+    last().cbs.onState(JSON.stringify({ changed: { acc1: { Email: "s2" } } }));
+    expect(changes).toEqual([["acc1", { Email: "s2" }]]);
+    expect(statuses).toEqual(["connecting", "live"]);
+
+    const dropped = last();
+    dropped.cbs.onError();
+    expect(dropped.closed).toBe(true);
+    expect(statuses).toEqual(["connecting", "live", "reconnecting"]);
+    expect(transports).toHaveLength(1); // no reconnect before the backoff elapses
+    vi.advanceTimersByTime(1000);
+    expect(transports).toHaveLength(2);
+  });
+
+  it("ignores callbacks from a superseded transport", () => {
+    const { transports, open, last } = makeOpener();
+    subscribeToChanges(SESSION, ["Email"], { onChange: () => {} }, open);
+    const t1 = last();
+    t1.cbs.onOpen();
+    t1.cbs.onError(); // drop → schedule reconnect
+    vi.advanceTimersByTime(1000); // reconnect → t2 is now active
+    const t2 = last();
+    expect(transports).toHaveLength(2);
+
+    // A late callback from the superseded t1 must not close t2 or schedule another reconnect.
+    t1.cbs.onError();
+    vi.advanceTimersByTime(60000);
+    expect(transports).toHaveLength(2);
+    expect(t2.closed).toBe(false);
+  });
+
+  it("closes the active transport on unsubscribe and stops reconnecting", () => {
+    const { transports, open, last } = makeOpener();
+    const stop = subscribeToChanges(SESSION, ["Email"], { onChange: () => {} }, open);
+    last().cbs.onOpen();
+    const t = last();
+
+    stop();
+    expect(t.closed).toBe(true);
+
+    t.cbs.onError(); // a late drop after unsubscribe must not reconnect
+    vi.advanceTimersByTime(60000);
+    expect(transports).toHaveLength(1);
   });
 });

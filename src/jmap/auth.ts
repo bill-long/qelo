@@ -10,6 +10,8 @@
 // server accepts HTTP Basic auth, which is enough to exercise the whole client against
 // real data.
 
+import { JmapAuthError } from "./client";
+
 /**
  * Supplies the `Authorization` header for JMAP requests and recovers from `401`s. The
  * protocol layer stays free of any knowledge about *how* credentials are obtained or
@@ -48,14 +50,23 @@ export function basicAuth(email: string, password: string): AuthProvider {
  * refreshes as needed) on each request, and on a `401` asks the backend to invalidate
  * the rejected token and mint a fresh one. `getToken`/`forceRefresh` are injected so
  * this module stays free of any Tauri coupling.
+ *
+ * `getToken` returns `null` when re-authentication is required (not signed in, or a
+ * revoked/expired refresh token) — distinct from throwing, which signals a transient
+ * failure. On `null`, `header()` throws {@link JmapAuthError} so the re-auth gate fires
+ * even when the token expires *before* any request reaches the server (no `401` needed).
  */
 export function bearerAuth(
-  getToken: () => string | Promise<string>,
+  getToken: () => string | null | Promise<string | null>,
   forceRefresh: (staleToken: string) => Promise<string | null>,
 ): AuthProvider {
   return {
     async header() {
-      return `Bearer ${await getToken()}`;
+      const token = await getToken();
+      if (token === null) {
+        throw new JmapAuthError("Not signed in; sign in again");
+      }
+      return `Bearer ${token}`;
     },
     async refresh(failedHeader) {
       const staleToken = failedHeader.replace(/^Bearer /, "");

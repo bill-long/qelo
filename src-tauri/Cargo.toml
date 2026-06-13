@@ -23,15 +23,24 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# OAuth 2.0 (Authorization Code + PKCE) against the JMAP provider.
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "form", "rustls"] }
+# OAuth 2.0 (Authorization Code + PKCE) against the JMAP provider. `stream` powers the
+# async EventSource push proxy (browsers can't set an Authorization header on EventSource,
+# so the push stream is opened here with the bearer token; see open_push_stream).
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "form", "rustls", "stream"] }
 tiny_http = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
 rand = "0.8"
 urlencoding = "2"
+# Proper URL/host parsing for OAuth redirect query params and loopback-host detection
+# (avoids hand-rolled splitting that mishandles userinfo / IPv6 / ports). Already in the
+# dependency tree via reqwest.
+url = "2"
 open = "5"
-tokio = { version = "1", features = ["rt"] }
+# `sync` for the Notify-based push cancellation, `macros` for tokio::select! in the stream loop.
+tokio = { version = "1", features = ["rt", "sync", "macros"] }
+# StreamExt::next over reqwest's byte stream in the push loop.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 # OS keychain for token storage — platform-native backends.
 [target.'cfg(windows)'.dependencies]

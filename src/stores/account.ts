@@ -11,7 +11,7 @@ export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "er
 // desktop shell has the Rust backend that performs the OAuth flow.
 export const isDesktop = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
-const PROVIDER_ID = import.meta.env.VITE_JMAP_PROVIDER ?? "stalwart-dev";
+export const PROVIDER_ID = import.meta.env.VITE_JMAP_PROVIDER ?? "stalwart-dev";
 
 /**
  * On desktop, authenticate with OAuth bearer tokens minted by the Rust backend; in the
@@ -20,7 +20,7 @@ const PROVIDER_ID = import.meta.env.VITE_JMAP_PROVIDER ?? "stalwart-dev";
 function authProvider(): AuthProvider {
   if (isDesktop) {
     return bearerAuth(
-      () => invoke<string>("get_access_token", { providerId: PROVIDER_ID }),
+      () => invoke<string | null>("get_access_token", { providerId: PROVIDER_ID }),
       (staleToken) =>
         invoke<string | null>("refresh_access_token", {
           providerId: PROVIDER_ID,
@@ -136,11 +136,16 @@ export async function connect(): Promise<void> {
     if (import.meta.env.DEV) {
       // Stalwart returns absolute URLs (https://localhost/...). Rewrite them to
       // same-origin paths so requests go through the Vite dev proxy and never hit the
-      // dev server's self-signed certificate. (No-op in production builds.) The
-      // eventSourceUrl keeps its {types}/{closeafter}/{ping} template, so strip only
-      // the origin rather than parsing it as a URL.
+      // dev server's self-signed certificate. (No-op in production builds.)
       s.apiUrl = new URL(s.apiUrl, window.location.origin).pathname;
-      s.eventSourceUrl = s.eventSourceUrl.replace(/^https?:\/\/[^/]+/, "");
+      // The push stream is opened by EventSource in the browser (must be same-origin to use
+      // the Vite proxy that injects credentials) but by the Rust backend on desktop, which
+      // connects to the provider directly and trusts the loopback cert itself — so leave the
+      // eventSourceUrl absolute for desktop. The {types}/{closeafter}/{ping} template is
+      // preserved either way, so strip only the origin rather than parsing it as a URL.
+      if (!isDesktop) {
+        s.eventSourceUrl = s.eventSourceUrl.replace(/^https?:\/\/[^/]+/, "");
+      }
     }
     setSession(s);
     setConnectionStatus("connected");
