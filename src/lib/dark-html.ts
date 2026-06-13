@@ -10,10 +10,15 @@
 // <style> blocks and <body> tags entirely (its html profile carries no CSS sanitizer),
 // so the only authored color surface that survives sanitization is inline `style`
 // attributes, `bgcolor` attributes, and `<font color>` — which is exactly what we walk.
+// Inline `style` is rewritten as text (not via the CSSOM, whose mutations jsdom fails to
+// reflect back into the serialized attribute): we split declarations on top-level `;` only —
+// paren-aware, so a `url(data:…;…)` stays one declaration — and touch just the
+// color/background-color/background properties, leaving a `background` shorthand that uses any
+// function (url/gradient/image-set) alone so images are never mangled.
 //
-// Strategy: property-aware *conditional* lightness inversion. We only touch a color that
-// would be illegible in dark mode — a dark foreground or a light background — and flip its
-// HSL lightness (preserving hue/saturation so brand colors stay recognizable). Already-light
+// Strategy: property-aware *conditional* inversion. We only touch a color that would be
+// illegible in dark mode — a dark foreground or a light background — and flip its *perceived*
+// brightness (keeping hue and saturation, so brand colors stay recognizable). Already-light
 // text and already-dark backgrounds are left untouched, which preserves emails that were
 // authored dark in the first place, per-color, with no fragile whole-email detection. The
 // rule is idempotent: a color we've inverted won't qualify on a second pass.
@@ -202,10 +207,17 @@ function hslToRgb(h: number, s: number, l: number): { r: number; g: number; b: n
   return { r: hue(h + 1 / 3) * 255, g: hue(h) * 255, b: hue(h - 1 / 3) * 255 };
 }
 
-/** Flip lightness for dark mode, preserving hue, saturation, and alpha. */
-function invertLightness(color: Rgba): Rgba {
-  const { h, s, l } = rgbToHsl(color);
-  const { r, g, b } = hslToRgb(h, s, 1 - l);
+/**
+ * Flip a color's perceived brightness for dark mode, preserving hue, saturation, and alpha.
+ * The target lightness comes from *perceived* brightness, not HSL lightness: a saturated
+ * color like pure blue sits at HSL lightness 0.5 yet reads as dark, so flipping HSL lightness
+ * alone would be a no-op (leaving blue links illegible). Driving the new lightness from
+ * brightness guarantees a dark color becomes light — and a light one dark — regardless of
+ * saturation.
+ */
+function invertBrightness(color: Rgba): Rgba {
+  const { h, s } = rgbToHsl(color);
+  const { r, g, b } = hslToRgb(h, s, 1 - brightness(color) / 255);
   return { r: clampByte(r), g: clampByte(g), b: clampByte(b), a: color.a };
 }
 
@@ -226,31 +238,61 @@ export function adaptColor(input: string, role: ColorRole): string {
   const bright = brightness(color);
   const shouldInvert = role === "foreground" ? bright < 128 : bright > 128;
   if (!shouldInvert) return input;
-  return formatColor(invertLightness(color));
+  return formatColor(invertBrightness(color));
 }
 
 function remapColorTokens(value: string, role: ColorRole): string {
   return value.replace(COLOR_TOKEN_RE, (token) => adaptColor(token, role));
 }
 
+// Split a declaration list on top-level `;` only — a `;` inside `(...)` (e.g. a
+// `url(data:image/svg+xml;…)` value) stays part of its declaration instead of fragmenting
+// into a phantom `prop:value` that would get mis-remapped.
+function splitDeclarations(style: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < style.length; i++) {
+    const c = style[i];
+    if (c === "(") depth++;
+    else if (c === ")") depth = Math.max(0, depth - 1);
+    else if (c === ";" && depth === 0) {
+      parts.push(style.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(style.slice(start));
+  return parts;
+}
+
 /** Remap colors in an inline `style` attribute value, preserving everything else verbatim. */
 export function remapInlineStyle(style: string): string {
-  return style
-    .split(";")
+  return splitDeclarations(style)
     .map((decl) => {
+      // The first `:` is always the property/value boundary (property names have no colon),
+      // so a `:` inside the value (e.g. `url(http://…)`) is left to the value.
       const colon = decl.indexOf(":");
       if (colon < 0) return decl;
       const prop = decl.slice(0, colon).trim().toLowerCase();
       const role = COLOR_PROP_ROLE[prop];
       if (role === undefined) return decl;
       const value = decl.slice(colon + 1);
-      // The `background` shorthand can carry an image or gradient; don't risk mangling a
-      // url()/gradient() — only bare background colors are remapped.
-      if (prop === "background" && /url\(|gradient\(/i.test(value)) return decl;
+      // A `background` shorthand using any function (url/gradient/image-set/…) may carry an
+      // image; leave it untouched rather than risk mangling it. Plain-color backgrounds and
+      // the `background-color` longhand are still remapped.
+      if (prop === "background" && value.includes("(")) return decl;
       const remapped = remapColorTokens(value, role);
       return remapped === value ? decl : `${decl.slice(0, colon)}:${remapped}`;
     })
     .join(";");
+}
+
+// Adapt a presentational color attribute (bgcolor, <font color>) in place.
+function adaptAttr(el: Element, attr: string, role: ColorRole): void {
+  const value = el.getAttribute(attr);
+  if (value === null) return;
+  const adapted = adaptColor(value, role);
+  if (adapted !== value) el.setAttribute(attr, adapted);
 }
 
 /**
@@ -276,20 +318,8 @@ export function adaptHtmlForDark(html: string): string {
       const remapped = remapInlineStyle(style);
       if (remapped !== style) el.setAttribute("style", remapped);
     }
-
-    const bgcolor = el.getAttribute("bgcolor");
-    if (bgcolor !== null) {
-      const remapped = adaptColor(bgcolor, "background");
-      if (remapped !== bgcolor) el.setAttribute("bgcolor", remapped);
-    }
-
-    if (el.tagName === "FONT") {
-      const color = el.getAttribute("color");
-      if (color !== null) {
-        const remapped = adaptColor(color, "foreground");
-        if (remapped !== color) el.setAttribute("color", remapped);
-      }
-    }
+    adaptAttr(el, "bgcolor", "background");
+    if (el.tagName === "FONT") adaptAttr(el, "color", "foreground");
   }
 
   return doc.body.innerHTML;

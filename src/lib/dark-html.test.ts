@@ -65,28 +65,45 @@ describe("adaptColor", () => {
     }
   });
 
+  it("lightens a saturated color that sits at HSL lightness 0.5 (pure blue link)", () => {
+    // The classic email link color: HSL lightness is exactly 0.5, so an HSL-lightness flip
+    // would be a no-op. Perceived-brightness inversion must still make it readable.
+    const remapped = adaptColor("#0000ff", "foreground");
+    expect(remapped).not.toBe("#0000ff");
+    const out = parseColor(remapped);
+    expect(out).not.toBeNull();
+    if (out) {
+      expect(out.b).toBeGreaterThan(out.r); // still blue-dominant
+      // Perceived brightness rose well past the dark threshold — now legible on dark.
+      expect((out.r * 299 + out.g * 587 + out.b * 114) / 1000).toBeGreaterThan(128);
+    }
+  });
+
   it("is idempotent — a remapped color stays put on a second pass", () => {
     const once = adaptColor("#000000", "foreground");
     expect(adaptColor(once, "foreground")).toBe(once);
+    const blue = adaptColor("#0000ff", "foreground");
+    expect(adaptColor(blue, "foreground")).toBe(blue);
   });
 });
 
 describe("remapInlineStyle", () => {
-  it("remaps color and background-color", () => {
-    expect(remapInlineStyle("color:#000;background-color:#fff")).toBe(
-      "color:#ffffff;background-color:#000000",
+  it("remaps color and background-color, leaving other declarations verbatim", () => {
+    expect(remapInlineStyle("color:#000;margin:0;background-color:#fff")).toBe(
+      "color:#ffffff;margin:0;background-color:#000000",
     );
   });
 
-  it("leaves non-color declarations and unrelated properties verbatim", () => {
-    expect(remapInlineStyle("margin:0;font-size:14px")).toBe("margin:0;font-size:14px");
+  it("keeps a url() value with an internal ; as a single declaration", () => {
+    // A naive split on ';' would fragment this into a phantom 'color:black)' declaration.
+    const style = "background:url(data:image/svg+xml;color:black) no-repeat";
+    expect(remapInlineStyle(style)).toBe(style);
   });
 
-  it("does not touch a background image/gradient", () => {
-    const style = "background:url(data:image/png;base64,AAAA) no-repeat";
-    expect(remapInlineStyle(style)).toBe(style);
-    const grad = "background:linear-gradient(#fff,#000)";
-    expect(remapInlineStyle(grad)).toBe(grad);
+  it("leaves a background shorthand that uses a function untouched", () => {
+    expect(remapInlineStyle("background:linear-gradient(#fff,#000)")).toBe(
+      "background:linear-gradient(#fff,#000)",
+    );
   });
 
   it("preserves !important and surrounding whitespace", () => {
@@ -94,11 +111,35 @@ describe("remapInlineStyle", () => {
   });
 });
 
+// Helper: pull the resolved inline color off an element after a dark-mode pass, so
+// assertions don't depend on whether the serializer emits hex or rgb().
+function resolvedStyle(html: string, prop: "color" | "background-color"): string {
+  const el = new DOMParser().parseFromString(adaptHtmlForDark(html), "text/html").body
+    .firstElementChild as HTMLElement;
+  return el.style.getPropertyValue(prop);
+}
+
 describe("adaptHtmlForDark", () => {
-  it("remaps inline light colors", () => {
-    const out = adaptHtmlForDark('<p style="color:#000">hi</p>');
-    expect(out).not.toContain('#000"');
-    expect(out).toContain("#ffffff");
+  it("lightens a hard-coded dark foreground color", () => {
+    const color = parseColor(resolvedStyle('<p style="color:#000">hi</p>', "color"));
+    expect(color).not.toBeNull();
+    if (color) expect((color.r * 299 + color.g * 587 + color.b * 114) / 1000).toBeGreaterThan(128);
+  });
+
+  it("does not mangle a background shorthand that carries an image", () => {
+    // The `;` inside the data: URL must not fragment the declaration, and a shorthand with a
+    // function is left untouched, so the whole thing round-trips byte-for-byte.
+    const html =
+      '<div style="background:url(data:image/png;base64,AAAA) #ffffff no-repeat">x</div>';
+    expect(adaptHtmlForDark(html)).toBe(html);
+  });
+
+  it("remaps the color half of a background shorthand with no image", () => {
+    const bg = parseColor(
+      resolvedStyle('<div style="background:#ffffff">x</div>', "background-color"),
+    );
+    expect(bg).not.toBeNull();
+    if (bg) expect((bg.r * 299 + bg.g * 587 + bg.b * 114) / 1000).toBeLessThan(128);
   });
 
   it("remaps bgcolor attributes", () => {
@@ -111,7 +152,7 @@ describe("adaptHtmlForDark", () => {
     expect(out).toContain('color="#ffffff"');
   });
 
-  it("preserves an already-dark email design", () => {
+  it("preserves an already-dark email design untouched", () => {
     const html = '<div style="background-color:#111111;color:#eeeeee">x</div>';
     expect(adaptHtmlForDark(html)).toBe(html);
   });

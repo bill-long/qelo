@@ -54,7 +54,8 @@ describe("emailSrcdoc", () => {
     const html = '<p style="color:#000000">hi</p>';
     expect(emailSrcdoc(html, "light")).toContain("color:#000000");
     const dark = emailSrcdoc(html, "dark");
-    expect(dark).not.toContain("color:#000000");
-    expect(dark).toContain("#ffffff");
+    // The authored black is gone, replaced with a light color (hex or rgb serialization).
+    expect(dark).not.toMatch(/color:\s*(#000000|rgb\(0, 0, 0\))/);
+    expect(dark).toMatch(/#ffffff|rgb\(255, 255, 255\)/);
   });
 });
