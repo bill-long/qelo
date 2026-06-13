@@ -771,8 +771,11 @@ body,
   resize: vertical;
 }
 
+/* The body isn't inside a .composer-field row, so it has no :focus-within underline — give it
+   the standard accent outline so keyboard focus stays visible. */
 .composer-body:focus-visible {
-  outline: none;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .composer-error {
