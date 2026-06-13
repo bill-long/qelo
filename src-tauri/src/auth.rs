@@ -726,6 +726,21 @@ async fn open_authenticated(
     }
 }
 
+/// Require the push `url` to share the provider's origin (scheme + host + port). The URL is
+/// supplied by the frontend, and the stream attaches the OAuth bearer token, so without this
+/// a compromised webview could point the stream at an attacker host and exfiltrate the token.
+/// Pinned to the provider's `session_url` origin (the eventSourceUrl is same-origin with it).
+fn ensure_provider_origin(provider_id: &str, url: &str) -> Result<(), String> {
+    let p = provider(provider_id)?;
+    let expected = ::url::Url::parse(p.session_url).map_err(|e| e.to_string())?;
+    let requested = ::url::Url::parse(url).map_err(|_| "invalid push url".to_string())?;
+    if requested.origin() == expected.origin() {
+        Ok(())
+    } else {
+        Err("push url is not on the provider's origin".to_string())
+    }
+}
+
 /// Stream upstream SSE to the channel until it ends or errors. Returns `Err` on any failure
 /// the frontend should treat as a drop (and reconnect with backoff). Cancellation is handled
 /// by the caller dropping this future (see `open_push_stream`), which closes the connection.
@@ -734,6 +749,8 @@ async fn run_push_stream(
     url: &str,
     channel: &Channel<PushEvent>,
 ) -> Result<(), String> {
+    // Validate the origin before touching the token (see ensure_provider_origin).
+    ensure_provider_origin(provider_id, url)?;
     let client = async_http_client(url)?;
     let response = open_authenticated(&client, url, provider_id).await?;
     channel.send(PushEvent::Open).map_err(|e| e.to_string())?;
@@ -905,6 +922,26 @@ mod tests {
         assert!(!is_loopback_url("https://127.0.0.1@evil.com/"));
         // A malformed URL falls back to "not loopback" (validate certs).
         assert!(!is_loopback_url("not a url"));
+    }
+
+    #[test]
+    fn push_url_must_match_provider_origin() {
+        // The seeded eventSourceUrl shares stalwart-dev's origin.
+        assert!(
+            ensure_provider_origin("stalwart-dev", "https://localhost/jmap/eventsource?x=1")
+                .is_ok()
+        );
+        // A foreign host, a different scheme, and a different port are all rejected so a
+        // compromised webview can't redirect the bearer token elsewhere.
+        assert!(
+            ensure_provider_origin("stalwart-dev", "https://evil.com/jmap/eventsource").is_err()
+        );
+        assert!(
+            ensure_provider_origin("stalwart-dev", "http://localhost/jmap/eventsource").is_err()
+        );
+        assert!(ensure_provider_origin("stalwart-dev", "https://localhost:8443/jmap").is_err());
+        assert!(ensure_provider_origin("stalwart-dev", "not a url").is_err());
+        assert!(ensure_provider_origin("unknown-provider", "https://localhost/").is_err());
     }
 
     #[test]
