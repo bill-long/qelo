@@ -100,9 +100,23 @@ describe("remapInlineStyle", () => {
     expect(remapInlineStyle(style)).toBe(style);
   });
 
-  it("leaves a background shorthand that uses a function untouched", () => {
+  it("leaves a background shorthand that carries an image untouched", () => {
     expect(remapInlineStyle("background:linear-gradient(#fff,#000)")).toBe(
       "background:linear-gradient(#fff,#000)",
+    );
+    const withUrl = "background:url(a.png) #ffffff no-repeat";
+    expect(remapInlineStyle(withUrl)).toBe(withUrl);
+  });
+
+  it("remaps a background shorthand that's just a color function", () => {
+    expect(remapInlineStyle("background:rgb(255, 255, 255)")).toBe("background:#000000");
+  });
+
+  it("does not split on a ; inside a quoted value", () => {
+    // The ; lives inside content's quoted string; only the real color: declaration is remapped,
+    // and the quoted text (despite containing a color-like substring) is left verbatim.
+    expect(remapInlineStyle('content:"a; color:red";color:#000')).toBe(
+      'content:"a; color:red";color:#ffffff',
     );
   });
 

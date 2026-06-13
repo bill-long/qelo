@@ -100,6 +100,11 @@ const COLOR_TOKEN_RE = new RegExp(
   "gi",
 );
 
+// Image-producing functions in a `background` shorthand. We leave the whole shorthand alone
+// when one is present (an image may sit behind the color), but a shorthand that's just a
+// color function — `background: rgb(…)` — is still remapped.
+const BG_IMAGE_FN_RE = /\b(?:url|image-set|image|cross-fade|paint|element)\(|gradient\(/i;
+
 function clampByte(n: number): number {
   return Math.max(0, Math.min(255, Math.round(n)));
 }
@@ -245,16 +250,23 @@ function remapColorTokens(value: string, role: ColorRole): string {
   return value.replace(COLOR_TOKEN_RE, (token) => adaptColor(token, role));
 }
 
-// Split a declaration list on top-level `;` only — a `;` inside `(...)` (e.g. a
-// `url(data:image/svg+xml;…)` value) stays part of its declaration instead of fragmenting
-// into a phantom `prop:value` that would get mis-remapped.
+// Split a declaration list on top-level `;` only. A `;` inside `(...)` (e.g. a
+// `url(data:image/svg+xml;…)` value) or inside a quoted string (e.g. `content:"a;b"`) stays
+// part of its declaration instead of fragmenting into a phantom `prop:value` that would get
+// mis-remapped.
 function splitDeclarations(style: string): string[] {
   const parts: string[] = [];
   let depth = 0;
   let start = 0;
+  let quote = "";
   for (let i = 0; i < style.length; i++) {
     const c = style[i];
-    if (c === "(") depth++;
+    if (quote !== "") {
+      if (c === "\\")
+        i++; // skip the escaped character
+      else if (c === quote) quote = "";
+    } else if (c === '"' || c === "'") quote = c;
+    else if (c === "(") depth++;
     else if (c === ")") depth = Math.max(0, depth - 1);
     else if (c === ";" && depth === 0) {
       parts.push(style.slice(start, i));
@@ -277,10 +289,10 @@ export function remapInlineStyle(style: string): string {
       const role = COLOR_PROP_ROLE[prop];
       if (role === undefined) return decl;
       const value = decl.slice(colon + 1);
-      // A `background` shorthand using any function (url/gradient/image-set/…) may carry an
-      // image; leave it untouched rather than risk mangling it. Plain-color backgrounds and
-      // the `background-color` longhand are still remapped.
-      if (prop === "background" && value.includes("(")) return decl;
+      // A `background` shorthand carrying an image may sit a color behind it; leave the whole
+      // thing untouched rather than risk mangling the image. Plain-color backgrounds (incl.
+      // `background: rgb(…)`) and the `background-color` longhand are still remapped.
+      if (prop === "background" && BG_IMAGE_FN_RE.test(value)) return decl;
       const remapped = remapColorTokens(value, role);
       return remapped === value ? decl : `${decl.slice(0, colon)}:${remapped}`;
     })
