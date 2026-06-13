@@ -85,23 +85,12 @@ async function signInThenStart() {
   await start();
 }
 
-/** Desktop token provider: store the pasted API token, then connect. */
-async function submitTokenThenStart(token: string) {
-  try {
-    await submitApiToken(token);
-  } catch (err) {
-    setConnectionError(err instanceof Error ? err.message : String(err));
-    setConnectionStatus("error");
-    return;
-  }
-  // start() flips the gate to "connecting" and on to "connected"/"error" on its own.
-  await start();
-}
-
 /**
  * Paste-a-token affordance for a token provider (e.g. Fastmail). Sits in the connection
- * gate in place of the OAuth "Sign in" button. The input is local component state; the
- * token is handed to the Rust keychain via {@link submitTokenThenStart} on submit.
+ * gate in place of the OAuth "Sign in" button. The input is local component state; on submit
+ * the token is handed to the Rust keychain (via {@link submitApiToken}) and then connect()
+ * runs. Once the keychain holds the token (the source of truth), the local copy is cleared
+ * so a long-lived credential doesn't linger in memory/the DOM if the gate stays visible.
  */
 function ApiTokenForm() {
   const [token, setToken] = createSignal("");
@@ -113,10 +102,21 @@ function ApiTokenForm() {
     if (!canSubmit()) return;
     setSubmitting(true);
     try {
-      await submitTokenThenStart(token());
+      await submitApiToken(token());
+    } catch (err) {
+      // The handoff itself failed (e.g. keychain write) — keep the typed token so the user
+      // can retry without re-pasting, and surface the error in the gate.
+      setConnectionError(err instanceof Error ? err.message : String(err));
+      setConnectionStatus("error");
+      return;
     } finally {
       setSubmitting(false);
     }
+    // Token is now in the keychain; drop the in-memory/DOM copy before (re)connecting. A
+    // transient connect() failure leaves the gate up, but Retry reuses the stored token.
+    setToken("");
+    // start() flips the gate to "connecting" and on to "connected"/"error" on its own.
+    await start();
   }
 
   return (
