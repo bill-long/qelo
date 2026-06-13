@@ -64,9 +64,11 @@ export function Composer() {
   }
 
   return (
-    <dialog ref={dialog} class="composer" aria-label="New message" onCancel={onCancel}>
+    <dialog ref={dialog} class="composer" aria-labelledby="composer-title" onCancel={onCancel}>
       <header class="composer-head">
-        <h2 class="composer-title">New message</h2>
+        <h2 id="composer-title" class="composer-title">
+          New message
+        </h2>
         <button
           type="button"
           class="composer-close"
@@ -113,12 +115,16 @@ export function Composer() {
             class="composer-input"
             type="text"
             autocomplete="off"
+            aria-invalid={invalidTo().length > 0}
+            aria-describedby={invalidTo().length > 0 ? "composer-to-error" : undefined}
             value={draft.to}
             onInput={(event) => updateDraft("to", event.currentTarget.value)}
           />
         </label>
         <Show when={invalidTo().length > 0}>
-          <p class="composer-invalid">Not a valid address: {invalidTo().join(", ")}</p>
+          <p id="composer-to-error" class="composer-invalid">
+            Not a valid address: {invalidTo().join(", ")}
+          </p>
         </Show>
 
         <label class="composer-field">
@@ -127,12 +133,16 @@ export function Composer() {
             class="composer-input"
             type="text"
             autocomplete="off"
+            aria-invalid={invalidCc().length > 0}
+            aria-describedby={invalidCc().length > 0 ? "composer-cc-error" : undefined}
             value={draft.cc}
             onInput={(event) => updateDraft("cc", event.currentTarget.value)}
           />
         </label>
         <Show when={invalidCc().length > 0}>
-          <p class="composer-invalid">Not a valid address: {invalidCc().join(", ")}</p>
+          <p id="composer-cc-error" class="composer-invalid">
+            Not a valid address: {invalidCc().join(", ")}
+          </p>
         </Show>
 
         <label class="composer-field">
@@ -141,12 +151,16 @@ export function Composer() {
             class="composer-input"
             type="text"
             autocomplete="off"
+            aria-invalid={invalidBcc().length > 0}
+            aria-describedby={invalidBcc().length > 0 ? "composer-bcc-error" : undefined}
             value={draft.bcc}
             onInput={(event) => updateDraft("bcc", event.currentTarget.value)}
           />
         </label>
         <Show when={invalidBcc().length > 0}>
-          <p class="composer-invalid">Not a valid address: {invalidBcc().join(", ")}</p>
+          <p id="composer-bcc-error" class="composer-invalid">
+            Not a valid address: {invalidBcc().join(", ")}
+          </p>
         </Show>
 
         <label class="composer-field">
