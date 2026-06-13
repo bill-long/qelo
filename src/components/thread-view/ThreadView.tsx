@@ -87,6 +87,7 @@ function Message(props: { id: string }) {
                     <button
                       type="button"
                       class="message-action"
+                      aria-pressed={seen()}
                       onClick={() => void markSeen([mail().id], !seen())}
                     >
                       {seen() ? "Mark unread" : "Mark read"}

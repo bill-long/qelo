@@ -126,6 +126,7 @@ function ThreadRow(props: { id: string }) {
               <button
                 type="button"
                 class="row-action"
+                aria-pressed={seen()}
                 title={seen() ? "Mark unread" : "Mark read"}
                 aria-label={seen() ? "Mark unread" : "Mark read"}
                 onClick={() => void markSeen([mail().id], !seen())}
