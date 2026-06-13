@@ -19,7 +19,7 @@ import {
 import type { Email } from "@/jmap/types";
 import { handleAuthFailure, jmap } from "./account";
 import { selectedMailboxRights } from "./mailboxes";
-import { setSelectedEmailId, setSelectedThreadId } from "./ui";
+import { selectedThreadId, setSelectedEmailId, setSelectedThreadId } from "./ui";
 
 /** Cache of fetched Email objects, keyed by id. Shared by the list and (later) reading pane. */
 export const [emails, setEmails] = createStore<Record<string, Email>>({});
@@ -570,7 +570,11 @@ export async function setFlagged(ids: string[], flagged: boolean): Promise<void>
  * unread" is a separate user action that simply wins — nothing here re-triggers it.
  */
 function autoMarkThreadRead(threadId: string): void {
-  if (thread.threadId !== threadId) return; // selection moved on before we got here
+  // Gate on the live UI selection, not `thread.threadId`: navigating away (a mailbox switch
+  // clears selectedThreadId) doesn't reset the `thread` store, so `thread.threadId` can still
+  // equal `threadId` after the user has left — auto-marking a thread they no longer have open.
+  // selectedThreadId is the source of truth for "still showing this conversation".
+  if (selectedThreadId() !== threadId) return;
   if (!selectedMailboxRights()?.maySetSeen) return;
   const unread = thread.emailIds.filter((id) => emails[id] && !emails[id]?.keywords.$seen);
   if (unread.length === 0) return;

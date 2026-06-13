@@ -302,9 +302,15 @@ export function setResult(responses: MethodResponse[], callId: string): SetResul
   // The raw args are the EmailSetResponse wire shape (nullable maps); SetResult is its
   // normalized form. methodResult has already thrown on a method-level error.
   const args = methodResult(responses, callId) as unknown as EmailSetResponse;
+  // newState is a required cursor token on a successful /set (RFC 8620 §5.3). A missing/
+  // non-string one signals a malformed response — fail fast rather than hand back "" and let
+  // a caller persist an invalid cursor.
+  if (typeof args.newState !== "string") {
+    throw new Error(`/set response for "${callId}" has no string newState`);
+  }
   return {
     oldState: typeof args.oldState === "string" ? args.oldState : null,
-    newState: typeof args.newState === "string" ? args.newState : "",
+    newState: args.newState,
     created: args.created ?? {},
     updated: args.updated ?? {},
     destroyed: args.destroyed ?? [],
