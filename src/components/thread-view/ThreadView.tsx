@@ -4,6 +4,7 @@ import { formatBytes, formatDateTime, recipientList, senderName } from "@/lib/fo
 import { emailSrcdoc, sanitizeHtml } from "@/lib/sanitize";
 import { prefersDark } from "@/lib/theme";
 import { emails, loadThread, thread } from "@/stores/emails";
+import { openExternal } from "@/stores/open-external";
 import { selectedEmailId, selectedThreadId } from "@/stores/ui";
 
 export function ThreadView() {
@@ -108,6 +109,33 @@ function HtmlBody(props: { html: string }) {
     if (frame && doc) frame.style.height = `${doc.documentElement.scrollHeight}px`;
   }
 
+  // The sandbox neutralizes in-pane navigation, so link clicks do nothing on their own.
+  // Because the frame runs no scripts of its own, we delegate from the parent — the frame
+  // is same-origin (allow-same-origin), so a click inside it still bubbles to a listener
+  // the parent attaches to the frame's document — and open http(s) links in the OS browser
+  // (openExternal drops anything else). A fresh srcdoc (e.g. on theme change) loads a new
+  // document, so we (re)attach in onLoad; the listener dies with the old document.
+  function onFrameClick(event: MouseEvent) {
+    // event.target lives in the iframe's realm, so `instanceof Element` (parent realm) is
+    // cross-realm-false — duck-type via closest()/.href, which are realm-agnostic. Mouse
+    // events target elements in practice, but guard `closest` so a non-Element target (e.g.
+    // a Text node) degrades to a no-op instead of throwing.
+    const target = event.target as Element | null;
+    const anchor =
+      typeof target?.closest === "function"
+        ? (target.closest("a[href]") as HTMLAnchorElement | null)
+        : null;
+    if (!anchor) return;
+    // Always swallow the click (no in-pane navigation, ever); only http(s) is opened out.
+    event.preventDefault();
+    openExternal(anchor.href);
+  }
+
+  function onLoad() {
+    fitToContent();
+    frame?.contentDocument?.addEventListener("click", onFrameClick);
+  }
+
   // Re-fit when the pane width changes (content reflows taller/shorter). Keyed on
   // width only, so our own height changes don't feed back into a resize loop.
   onMount(() => {
@@ -131,7 +159,7 @@ function HtmlBody(props: { html: string }) {
       title="Message content"
       sandbox="allow-same-origin"
       srcdoc={emailSrcdoc(sanitizeHtml(props.html), prefersDark() ? "dark" : "light")}
-      onLoad={fitToContent}
+      onLoad={onLoad}
     />
   );
 }
