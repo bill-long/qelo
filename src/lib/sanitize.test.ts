@@ -49,4 +49,12 @@ describe("emailSrcdoc", () => {
     expect(emailSrcdoc("<p>x</p>", "dark")).toContain("color-scheme:dark");
     expect(emailSrcdoc("<p>x</p>", "light")).toContain("color-scheme:light");
   });
+
+  it("remaps hard-coded light colors only in dark mode", () => {
+    const html = '<p style="color:#000000">hi</p>';
+    expect(emailSrcdoc(html, "light")).toContain("color:#000000");
+    const dark = emailSrcdoc(html, "dark");
+    expect(dark).not.toContain("color:#000000");
+    expect(dark).toContain("#ffffff");
+  });
 });
