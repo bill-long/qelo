@@ -148,10 +148,20 @@ export function resetCompose(): void {
   setComposeError(null);
 }
 
+// The clear "this account can't send" message, shared by every entry point that needs the
+// submission capability (Identity/get and EmailSubmission/set both live under it).
+const NO_SUBMISSION_MESSAGE = "This account can't send mail (no submission capability).";
+
 /** Fetch the account's sending identities and default the selection to the first. */
 export async function loadIdentities(): Promise<void> {
   try {
     const client = jmap();
+    // Identity/get is itself under the submission capability, so a non-sending account (e.g. a
+    // read-only token) would 404/error here too — fail fast with the same clear message as send().
+    if (!client.accountHasCapability(CAP_SUBMISSION)) {
+      setComposeError(NO_SUBMISSION_MESSAGE);
+      return;
+    }
     const responses = await client.request(
       [identityGet(client.accountId, "i")],
       [CAP_CORE, CAP_MAIL, CAP_SUBMISSION],
@@ -279,7 +289,7 @@ export async function send(): Promise<boolean> {
   // the server will reject with a confusing error. Email/set + EmailSubmission/set share this one
   // account by JMAP design, so the same accountId serves both.
   if (!jmap().accountHasCapability(CAP_SUBMISSION)) {
-    setComposeError("This account can't send mail (no submission capability).");
+    setComposeError(NO_SUBMISSION_MESSAGE);
     return false;
   }
   setBusy("send");
