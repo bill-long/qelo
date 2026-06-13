@@ -1,11 +1,23 @@
 import { createStore, produce, reconcile } from "solid-js/store";
 import { drainChanges } from "@/jmap/changes";
 import { mailboxChanges, mailboxGet, methodResult } from "@/jmap/methods";
-import type { Mailbox, MailboxRole } from "@/jmap/types";
+import type { Mailbox, MailboxRights, MailboxRole } from "@/jmap/types";
 import { handleAuthFailure, jmap } from "./account";
 import { selectedMailboxId, setSelectedMailboxId } from "./ui";
 
 export const [mailboxes, setMailboxes] = createStore<Record<string, Mailbox>>({});
+
+/**
+ * The `myRights` of the currently-open folder (or undefined if none is selected / not yet
+ * loaded). Reactive — reads the selection signal and the mailboxes store — so callers gate
+ * mutation affordances on it (e.g. `maySetSeen`/`maySetKeywords`) and the gate updates live
+ * if the server revises rights. The single source so the reading pane, the list, and the
+ * auto-mark-read path all gate identically.
+ */
+export function selectedMailboxRights(): MailboxRights | undefined {
+  const id = selectedMailboxId();
+  return id ? mailboxes[id]?.myRights : undefined;
+}
 
 // Mailbox state token (from /get and /changes responses), used as the `sinceState` for
 // Mailbox/changes. Plain module state — it's a sync cursor, not reactive UI state.

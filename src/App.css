@@ -201,12 +201,19 @@ body,
 
 .thread-row {
   display: flex;
+  align-items: stretch;
+  width: 100%;
+  border-bottom: 1px solid var(--line);
+}
+
+.thread-row-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
   flex-direction: column;
   gap: 0.2rem;
-  width: 100%;
   padding: 0.7rem 1rem;
   border: none;
-  border-bottom: 1px solid var(--line);
   border-radius: 0;
   background: transparent;
   box-shadow: none;
@@ -220,7 +227,7 @@ body,
   background: var(--hover);
 }
 
-.thread-row:focus-visible {
+.thread-row-main:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
@@ -228,6 +235,43 @@ body,
 .thread-row.is-selected {
   background: var(--selection);
   box-shadow: inset 3px 0 0 var(--accent);
+}
+
+/* Per-row keyword actions (flag / read-toggle), gated on myRights in the markup. */
+.thread-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+  padding: 0 0.4rem;
+}
+
+.row-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.85rem;
+  height: 1.85rem;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.row-action:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.row-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.row-action[aria-pressed="true"] {
+  color: var(--accent);
 }
 
 .thread-row-head {
@@ -363,6 +407,42 @@ body,
   font-size: 1.4rem;
   font-weight: 600;
   line-height: 1.25;
+}
+
+.message-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.6rem;
+}
+
+.message-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.message-action:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.message-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.message-action[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .message-html {

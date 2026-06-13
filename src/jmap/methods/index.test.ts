@@ -1,15 +1,20 @@
 import { describe, expect, it } from "vitest";
 import type { MethodResponse } from "../types";
 import {
+  clearKeyword,
   DETAIL_PROPERTIES,
   emailGet,
   emailQuery,
   emailQueryChanges,
+  emailSet,
   idsFromQuery,
   JmapMethodError,
+  keywordPatch,
   LIST_PROPERTIES,
   mailboxGet,
   methodResult,
+  setKeyword,
+  setResult,
   threadGet,
 } from "./index";
 
@@ -102,6 +107,78 @@ describe("emailQueryChanges", () => {
     expect(args).not.toHaveProperty("limit");
     expect(args).not.toHaveProperty("position");
     expect(args).not.toHaveProperty("anchor");
+  });
+});
+
+describe("keyword patch helpers", () => {
+  it("setKeyword builds a presence pointer set to true", () => {
+    expect(setKeyword("$seen")).toEqual({ "keywords/$seen": true });
+  });
+
+  it("clearKeyword builds a presence pointer set to null (removal)", () => {
+    expect(clearKeyword("$flagged")).toEqual({ "keywords/$flagged": null });
+  });
+
+  it("keywordPatch toggles between the set and clear forms", () => {
+    expect(keywordPatch("$seen", true)).toEqual({ "keywords/$seen": true });
+    expect(keywordPatch("$seen", false)).toEqual({ "keywords/$seen": null });
+  });
+});
+
+describe("emailSet", () => {
+  it("forwards create/update/destroy and tags the call id", () => {
+    const [name, args, callId] = emailSet("acc", "set", {
+      update: { e1: { "keywords/$seen": true } },
+      destroy: ["e2"],
+    });
+    expect(name).toBe("Email/set");
+    expect(callId).toBe("set");
+    expect(args).toEqual({
+      accountId: "acc",
+      update: { e1: { "keywords/$seen": true } },
+      destroy: ["e2"],
+    });
+  });
+
+  it("omits absent sections (no empty create/update/destroy keys)", () => {
+    const [, args] = emailSet("acc", "set", { update: { e1: { "keywords/$flagged": null } } });
+    expect(args).not.toHaveProperty("create");
+    expect(args).not.toHaveProperty("destroy");
+    expect(args.update).toEqual({ e1: { "keywords/$flagged": null } });
+  });
+});
+
+describe("setResult", () => {
+  it("normalizes the per-item maps to {} and destroyed to [] when absent", () => {
+    const responses: MethodResponse[] = [
+      ["Email/set", { newState: "s2", updated: { e1: null } }, "set"],
+    ];
+    const r = setResult(responses, "set");
+    expect(r.newState).toBe("s2");
+    expect(r.updated).toEqual({ e1: null });
+    expect(r.created).toEqual({});
+    expect(r.destroyed).toEqual([]);
+    expect(r.notCreated).toEqual({});
+    expect(r.notUpdated).toEqual({});
+    expect(r.notDestroyed).toEqual({});
+  });
+
+  it("surfaces the notUpdated SetErrors that ride on a successful response", () => {
+    const responses: MethodResponse[] = [
+      [
+        "Email/set",
+        { newState: "s3", notUpdated: { e1: { type: "forbidden", description: "no rights" } } },
+        "set",
+      ],
+    ];
+    const r = setResult(responses, "set");
+    expect(Object.keys(r.notUpdated)).toEqual(["e1"]);
+    expect(r.notUpdated.e1?.type).toBe("forbidden");
+  });
+
+  it("throws a JmapMethodError on a method-level error (via methodResult)", () => {
+    const responses: MethodResponse[] = [["error", { type: "accountNotFound" }, "set"]];
+    expect(() => setResult(responses, "set")).toThrow(JmapMethodError);
   });
 });
 
