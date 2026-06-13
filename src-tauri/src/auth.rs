@@ -566,6 +566,14 @@ fn push_registry() -> &'static Mutex<HashMap<String, Arc<Notify>>> {
     REG.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Lock the push registry, recovering from a poisoned lock rather than propagating it. The
+/// map holds only cancellation handles, so a panic elsewhere can't leave it in a state worth
+/// refusing — and erroring would be worse than recovering: `Mutex` poison is sticky, so it
+/// would permanently disable opening/cancelling *all* push streams for the session.
+fn lock_push_registry() -> std::sync::MutexGuard<'static, HashMap<String, Arc<Notify>>> {
+    push_registry().lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// A parsed Server-Sent Event: its `event` name (default `message`) and joined `data`.
 #[derive(Debug, PartialEq)]
 struct SseFrame {
@@ -760,8 +768,10 @@ pub async fn open_push_stream(
     on_event: Channel<PushEvent>,
 ) -> Result<(), String> {
     let cancel = Arc::new(Notify::new());
-    if let Ok(mut reg) = push_registry().lock() {
-        reg.insert(stream_id.clone(), Arc::clone(&cancel));
+    // Stream ids are fresh per open (a UUID), so a collision shouldn't happen — but if one
+    // ever did, cancel the displaced stream rather than orphaning its connection.
+    if let Some(prev) = lock_push_registry().insert(stream_id.clone(), Arc::clone(&cancel)) {
+        prev.notify_one();
     }
     // Race the stream against cancellation so a `close_push_stream` interrupts *any* phase —
     // including a connection-open that hangs after TCP connect (no read timeout is set). When
@@ -771,7 +781,9 @@ pub async fn open_push_stream(
         _ = cancel.notified() => Ok(()),
         outcome = run_push_stream(&provider_id, &url, &on_event) => outcome,
     };
-    if let Ok(mut reg) = push_registry().lock() {
+    // Only remove our own handle: if a collision replaced it, the newer stream owns the entry.
+    let mut reg = lock_push_registry();
+    if reg.get(&stream_id).is_some_and(|h| Arc::ptr_eq(h, &cancel)) {
         reg.remove(&stream_id);
     }
     result
@@ -781,10 +793,7 @@ pub async fn open_push_stream(
 /// no-op if the stream already ended.
 #[tauri::command]
 pub fn close_push_stream(stream_id: String) {
-    let handle = push_registry()
-        .lock()
-        .ok()
-        .and_then(|reg| reg.get(&stream_id).cloned());
+    let handle = lock_push_registry().get(&stream_id).cloned();
     if let Some(cancel) = handle {
         cancel.notify_one();
     }
