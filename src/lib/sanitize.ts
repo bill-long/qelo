@@ -3,8 +3,10 @@ import DOMPurify from "dompurify";
 // Force every link to a new browsing context. Combined with the iframe's sandbox
 // (no allow-popups / allow-top-navigation), this means a click can't navigate the
 // reading pane to a remote page — which would otherwise replace the message and load
-// remote content outside our CSP. (Opening links in the system browser is a later
-// feature.) Overriding any author-supplied target also defeats target="_self".
+// remote content outside our CSP. ThreadView intercepts clicks and opens http(s) links in
+// the OS browser (see stores/open-external.ts); this target/rel is the defense-in-depth
+// fallback if that handler ever doesn't run. Overriding any author-supplied target also
+// defeats target="_self".
 function forceExternalLinkTargets(node: Element): void {
   if (node.nodeName === "A") {
     node.setAttribute("target", "_blank");

@@ -96,8 +96,8 @@ const THREADS = [
       from: { name: "Newsletter", email: "news@example.test" },
       subject: "This week in email standards",
       seen: false,
-      text: "JMAP adoption continues to grow. Remote images in this message are blocked by default for privacy.",
-      html: '<p>JMAP adoption continues to grow.</p><img src="https://tracker.example.com/pixel.gif" alt="tracking pixel"><p>Remote images in this message are blocked by default for privacy.</p>',
+      text: "JMAP adoption continues to grow. Read more at https://jmap.io/ — remote images in this message are blocked by default for privacy.",
+      html: '<p>JMAP adoption continues to grow. Read more at <a href="https://jmap.io/">jmap.io</a>.</p><img src="https://tracker.example.com/pixel.gif" alt="tracking pixel"><p>Remote images in this message are blocked by default for privacy.</p>',
     },
   ],
 ];
