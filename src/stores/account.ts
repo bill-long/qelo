@@ -83,9 +83,10 @@ export async function submitApiToken(token: string): Promise<void> {
 }
 
 /**
- * Sign out (desktop): clear the stored OAuth tokens and tear down the live connection —
- * stop push sync, drop the client/session, and return to a disconnected state — so no
- * further authenticated requests go out.
+ * Sign out (desktop): clear the provider's stored credentials (OAuth tokens or a pasted
+ * API token — `logout` forgets whichever the keychain holds) and tear down the live
+ * connection — stop push sync, drop the client/session, and return to a disconnected
+ * state — so no further authenticated requests go out.
  */
 export async function signOut(): Promise<void> {
   await invoke("logout", { providerId: PROVIDER_ID });
