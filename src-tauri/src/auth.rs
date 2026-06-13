@@ -143,10 +143,10 @@ fn random_b64(bytes: usize) -> String {
     URL_SAFE_NO_PAD.encode(buf)
 }
 
-/// Is `url`'s host a loopback address (localhost / 127.0.0.1)? Used to scope self-signed-cert
-/// trust to the local dev server — a remote host (e.g. Fastmail) is always validated. Matches
-/// the host *exactly* (up to the first `/`, `:`, or end) so a lookalike like
-/// `https://localhost.evil.com` is not mistaken for loopback.
+/// Is `url`'s host a loopback address (localhost / 127.0.0.1 / ::1)? Used to scope
+/// self-signed-cert trust to the local dev server — a remote host (e.g. Fastmail) is always
+/// validated. Matches the host *exactly* so a lookalike like `https://localhost.evil.com` is
+/// not mistaken for loopback, and handles bracketed IPv6 literals (`http://[::1]:1420`).
 fn is_loopback_url(url: &str) -> bool {
     let Some(rest) = url
         .strip_prefix("https://")
@@ -154,8 +154,13 @@ fn is_loopback_url(url: &str) -> bool {
     else {
         return false;
     };
-    let host = rest.split(['/', ':']).next().unwrap_or("");
-    host == "localhost" || host == "127.0.0.1"
+    let host = match rest.strip_prefix('[') {
+        // Bracketed IPv6 literal: the host runs up to the closing ']'.
+        Some(after) => after.split(']').next().unwrap_or(""),
+        // Otherwise the host runs up to the port (`:`) or path (`/`).
+        None => rest.split(['/', ':']).next().unwrap_or(""),
+    };
+    host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
 /// An HTTP client that trusts the dev server's self-signed cert for loopback issuers
@@ -404,7 +409,11 @@ fn refresh(provider_id: &str, refresh_token: &str) -> Result<StoredTokens, Refre
         .map_err(RefreshError::Other)
 }
 
-fn access_token(provider_id: &str) -> Result<String, String> {
+/// Return a valid access token, or `Ok(None)` when re-authentication is required (not signed
+/// in, or the refresh token is revoked/expired). `Ok(None)` is distinct from `Err` (a
+/// transient keychain/network failure worth retrying): the frontend maps `None` to a clean
+/// `JmapAuthError` re-auth gate, whereas a thrown `Err` is a transient transport error.
+fn access_token(provider_id: &str) -> Result<Option<String>, String> {
     // Hold the cache lock across the whole operation so concurrent callers share one
     // cached token and at most one refresh runs at a time (no refresh-token races).
     let mut cache = token_cache()
@@ -412,13 +421,13 @@ fn access_token(provider_id: &str) -> Result<String, String> {
         .map_err(|_| "token cache poisoned".to_string())?;
     if let Some(cached) = cache.get(provider_id) {
         if !near_expiry(cached.expires_at) {
-            return Ok(cached.access_token.clone());
+            return Ok(Some(cached.access_token.clone()));
         }
     }
 
     let stored = match try_load_tokens(provider_id)? {
         Some(stored) => stored,
-        None => return Err("not signed in; sign in again".to_string()),
+        None => return Ok(None), // not signed in → re-auth
     };
     let fresh = if near_expiry(stored.expires_at) {
         match stored.refresh_token {
@@ -429,13 +438,12 @@ fn access_token(provider_id: &str) -> Result<String, String> {
                 Err(RefreshError::InvalidGrant) => {
                     cache.remove(provider_id);
                     let _ = forget_tokens(provider_id);
-                    return Err("session expired; sign in again".to_string());
+                    return Ok(None);
                 }
                 Err(RefreshError::Other(e)) => return Err(e),
             },
-            None => {
-                return Err("access token expired and no refresh token; sign in again".to_string())
-            }
+            // Expired with no way to refresh → re-auth.
+            None => return Ok(None),
         }
     } else {
         stored
@@ -449,7 +457,7 @@ fn access_token(provider_id: &str) -> Result<String, String> {
             expires_at: fresh.expires_at,
         },
     );
-    Ok(access_token)
+    Ok(Some(access_token))
 }
 
 /// Invalidate the cached token that produced a JMAP `401` and mint a fresh one.
@@ -526,9 +534,11 @@ pub async fn oauth_login(provider_id: String) -> Result<String, String> {
         .map_err(|e| e.to_string())?
 }
 
-/// Return a valid bearer token, refreshing if needed. Errors if not signed in.
+/// Return a valid bearer token, refreshing if needed, or `None` when the user must sign in
+/// again (not signed in, or a revoked/expired refresh token). The frontend maps `None` to a
+/// clean re-auth gate; an `Err` is a transient failure.
 #[tauri::command]
-pub async fn get_access_token(provider_id: String) -> Result<String, String> {
+pub async fn get_access_token(provider_id: String) -> Result<Option<String>, String> {
     tokio::task::spawn_blocking(move || access_token(&provider_id))
         .await
         .map_err(|e| e.to_string())?
@@ -688,9 +698,12 @@ async fn open_sse(
 /// off the async runtime.
 async fn blocking_access_token(provider_id: &str) -> Result<String, String> {
     let pid = provider_id.to_string();
-    tokio::task::spawn_blocking(move || access_token(&pid))
+    let token = tokio::task::spawn_blocking(move || access_token(&pid))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())??;
+    // No usable token means re-auth; for the push stream that surfaces as a failed open →
+    // reconnect, while the regular request path raises the JmapAuthError re-auth gate.
+    token.ok_or_else(|| "not signed in; sign in again".to_string())
 }
 
 async fn blocking_force_refresh(provider_id: &str, stale: &str) -> Result<Option<String>, String> {
@@ -869,12 +882,16 @@ mod tests {
         ));
         assert!(is_loopback_url("https://127.0.0.1:8080/jmap"));
         assert!(is_loopback_url("http://localhost:1420"));
+        // Bracketed IPv6 loopback literal, with and without a port.
+        assert!(is_loopback_url("http://[::1]:1420"));
+        assert!(is_loopback_url("https://[::1]/jmap/eventsource"));
         // A lookalike host must not be trusted as loopback.
         assert!(!is_loopback_url("https://localhost.evil.com/jmap"));
         assert!(!is_loopback_url("https://127.0.0.1.evil.com"));
         assert!(!is_loopback_url(
             "https://api.fastmail.com/jmap/eventsource"
         ));
+        assert!(!is_loopback_url("https://[2001:db8::1]/jmap"));
         assert!(!is_loopback_url("ftp://localhost"));
     }
 

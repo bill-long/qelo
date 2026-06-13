@@ -20,7 +20,7 @@ export const PROVIDER_ID = import.meta.env.VITE_JMAP_PROVIDER ?? "stalwart-dev";
 function authProvider(): AuthProvider {
   if (isDesktop) {
     return bearerAuth(
-      () => invoke<string>("get_access_token", { providerId: PROVIDER_ID }),
+      () => invoke<string | null>("get_access_token", { providerId: PROVIDER_ID }),
       (staleToken) =>
         invoke<string | null>("refresh_access_token", {
           providerId: PROVIDER_ID,

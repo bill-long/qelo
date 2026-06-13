@@ -31,7 +31,13 @@ export const tauriChannelTransport: OpenTransport = (url, callbacks) => {
   };
 
   void invoke("open_push_stream", { providerId: PROVIDER_ID, streamId, url, onEvent: channel })
-    .catch(() => {}) // a dropped stream rejects; the error itself is just "reconnect"
+    .catch((err) => {
+      // A dropped stream rejects with a diagnostic (e.g. "push stream unauthorized; sign in
+      // again"). Recovery is the same — push.ts reconnects on onError, and a genuine auth
+      // failure also surfaces via the next regular JMAP request's JmapAuthError gate — but
+      // log the reason so a persistent push failure isn't invisible. Skip if we closed it.
+      if (!closed) console.warn("Push stream ended:", err);
+    })
     .finally(() => {
       // The command settled, so the stream ended. If we didn't close it deliberately, treat
       // it as a drop so the reconnection logic in push.ts schedules a retry.
