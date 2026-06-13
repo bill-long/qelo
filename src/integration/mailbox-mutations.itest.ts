@@ -182,13 +182,41 @@ describe("mailbox mutations", () => {
     });
   });
 
-  describe("refused move reconciles + re-inserts the row", () => {
-    it("keeps the accepted row moved and restores the refused row to the list", async () => {
+  describe("refused move reconciles + re-inserts a still-present row", () => {
+    it("reconciles the email to server truth and restores its optimistically-pruned row", async () => {
       const src = await freshMailbox("refuse-src");
-      const dst = await freshMailbox("refuse-dst");
+      const deadDst = await freshMailbox("refuse-dead");
+      const [msg] = await createMessages(src, [{ subject: "Survives a refused move" }]);
+      const id = msg?.id as Id;
+
+      await settleConversations(src, 1);
+      setSelectedMailboxId(src);
+      await openMailbox(src);
+      expect(threadList.ids).toContain(id);
+
+      // Destroy the DESTINATION (not the email), so the move's mailboxIds patch references a gone
+      // mailbox and the server refuses it — the email stays in src and must be reconciled + the
+      // optimistically-pruned row re-inserted.
+      await destroyMailbox(deadDst);
+
+      await moveEmails([id], deadDst);
+
+      // Reconciled to server truth: still in src, never in the dead destination.
+      expect(emails[id]?.mailboxIds[src]).toBe(true);
+      expect(emails[id]?.mailboxIds[deadDst]).toBeUndefined();
+      expect((await serverMailboxIds(id))[src]).toBe(true);
+      // The optimistically-pruned row is restored.
+      expect(threadList.ids).toContain(id);
+    });
+  });
+
+  describe("move refused because the email is gone leaves no ghost row", () => {
+    it("does not re-insert a row for an email the reconcile finds destroyed", async () => {
+      const src = await freshMailbox("ghost-src");
+      const dst = await freshMailbox("ghost-dst");
       const [alive, doomed] = await createMessages(src, [
         { subject: "Survives move" },
-        { subject: "Refused move" },
+        { subject: "Destroyed before move" },
       ]);
       const aliveId = alive?.id as Id;
       const doomedId = doomed?.id as Id;
@@ -198,23 +226,21 @@ describe("mailbox mutations", () => {
       await openMailbox(src);
       expect(threadList.ids).toEqual(expect.arrayContaining([aliveId, doomedId]));
 
-      // Destroy `doomed` server-side but keep it cached (no sync), so the batched Email/set
-      // update accepts `alive` and refuses `doomed` (notFound in notUpdated) — the per-item
-      // refusal the reconcile + list re-insert must handle.
+      // Destroy `doomed` server-side but keep it cached, so the batched move accepts `alive` and
+      // refuses `doomed` with notFound. The reconcile finds it gone — its mailboxIds is rolled
+      // back to the pre-optimistic snapshot only for the destroy push, so its row must NOT be
+      // re-inserted (that would be a ghost until the next sync).
       await destroyEmails([doomedId]);
 
       await moveEmails([aliveId, doomedId], dst);
 
-      // Accepted row: moved, and dropped from the list.
+      // Accepted row: moved and dropped from the list.
       expect(emails[aliveId]?.mailboxIds[dst]).toBe(true);
       expect((await serverMailboxIds(aliveId))[dst]).toBe(true);
       expect(threadList.ids).not.toContain(aliveId);
 
-      // Refused row: reconciled back to its prior folder and re-inserted into the list (it never
-      // really left the open folder, so its row belongs there).
-      expect(emails[doomedId]?.mailboxIds[src]).toBe(true);
-      expect(emails[doomedId]?.mailboxIds[dst]).toBeUndefined();
-      expect(threadList.ids).toContain(doomedId);
+      // Gone row: no ghost — it is NOT re-inserted into the open list.
+      expect(threadList.ids).not.toContain(doomedId);
     });
   });
 

@@ -478,13 +478,20 @@ function applyPresence(email: Email, p: PresencePatch): void {
  * Resolves (never rejects) so callers can fire-and-forget: a transport/method failure rolls
  * everything back and is logged; an auth failure raises the re-auth gate.
  *
- * Returns the ids whose optimistic change did NOT persist — server-refused (reconciled to
- * truth) or locally reverted on a transport/auth failure — so a caller layering its own
- * optimistic UI on top (PR 2's threadList.ids prune) knows exactly which rows to restore. An
- * accepted change returns no id.
+ * Returns the ids whose optimistic change did NOT persist:
+ *   - `reverted` — server-refused (reconciled to truth) or locally reverted on a transport/auth
+ *     failure, so a caller layering its own optimistic UI on top (PR 2's threadList.ids prune)
+ *     knows which rows to restore. An accepted change yields none.
+ *   - `gone` — the subset of `reverted` the server no longer returns at all (destroyed
+ *     elsewhere). Their `mailboxIds` was rolled back to the pre-optimistic snapshot only so the
+ *     destroy push can prune them, so a caller MUST NOT treat that snapshot as "still here" and
+ *     restore a row for them — that would be a ghost row until the next sync.
  */
-async function optimisticEmailUpdate(ids: string[], patches: PresencePatch[]): Promise<string[]> {
-  if (ids.length === 0) return [];
+async function optimisticEmailUpdate(
+  ids: string[],
+  patches: PresencePatch[],
+): Promise<{ reverted: string[]; gone: string[] }> {
+  if (ids.length === 0) return { reverted: [], gone: [] };
   const held = ids.filter((id) => emails[id]);
 
   // Capture pre-optimistic presence of each patched field, per held row, for a precise revert.
@@ -527,14 +534,15 @@ async function optimisticEmailUpdate(ids: string[], patches: PresencePatch[]): P
     if (!handleAuthFailure(err)) {
       console.error("Email/set update failed:", err);
     }
-    return held;
+    // Couldn't refetch, so we don't know which (if any) are gone — treat none as gone.
+    return { reverted: held, gone: [] };
   }
   // Per-item refusals (e.g. forbidden / revoked rights): the server kept its own state, so it —
   // not our pre-optimistic snapshot — is the truth. Refetch the refused ids and apply server
   // truth rather than reverting to `prior`: this undoes our optimistic write AND reconciles a
   // concurrent change race-free (the same-value race a local guard can't detect).
-  if (refused.length > 0) await reconcileRefused(refused, patches, prior);
-  return refused;
+  const gone = refused.length > 0 ? await reconcileRefused(refused, patches, prior) : [];
+  return { reverted: refused, gone };
 }
 
 /**
@@ -544,12 +552,15 @@ async function optimisticEmailUpdate(ids: string[], patches: PresencePatch[]): P
  * then prune them). On a refetch failure, fall back to the guarded local revert for all of them.
  * Does NOT advance emailState — like syncEmails' follow-up /get, this is a partial fetch and the
  * push-driven drain owns the cursor.
+ *
+ * Returns the ids the server no longer returns (destroyed elsewhere). Their reverted snapshot is
+ * NOT current truth, so a caller restoring optimistic UI must skip them — see optimisticEmailUpdate.
  */
 async function reconcileRefused(
   ids: string[],
   patches: PresencePatch[],
   prior: Map<string, boolean[]>,
-): Promise<void> {
+): Promise<string[]> {
   let returned: Set<string>;
   try {
     const client = jmap();
@@ -561,10 +572,11 @@ async function reconcileRefused(
     returned = new Set(list.map((e) => e.id));
   } catch (err) {
     if (!handleAuthFailure(err)) rollbackPresence(ids, patches, prior);
-    return;
+    return []; // couldn't refetch — we don't know which are gone
   }
   const destroyed = ids.filter((id) => !returned.has(id));
   if (destroyed.length > 0) rollbackPresence(destroyed, patches, prior);
+  return destroyed;
 }
 
 function rollbackPresence(
@@ -664,16 +676,21 @@ async function optimisticMove(ids: string[], fromId: string, toId: string): Prom
   const { rows } = pruneIds(threadList.ids, moving);
   if (rows.length > 0) setThreadList("ids", (cur) => cur.filter((id) => !moving.has(id)));
 
-  const reverted = await optimisticEmailUpdate(ids, [
+  const { reverted, gone } = await optimisticEmailUpdate(ids, [
     { map: "mailboxIds", key: fromId, present: false },
     { map: "mailboxIds", key: toId, present: true },
   ]);
 
-  // Re-insert only rows the move didn't stick for: server truth (post-reconcile) still has the
-  // email in the from-folder. A concurrent actor that genuinely moved it leaves mailboxIds
-  // without fromId, so we correctly leave that row out. Only while that folder is still open.
+  // Re-insert only rows the move didn't stick for AND that still exist server-side in the
+  // from-folder. Exclude `gone` ids: their mailboxIds was reverted to the pre-optimistic snapshot
+  // only so the destroy push can prune them — restoring a row for them would be a ghost. A
+  // concurrent actor that genuinely moved (not destroyed) it leaves mailboxIds without fromId, so
+  // that case is filtered too. Only while that folder is still open.
   if (rows.length > 0 && reverted.length > 0 && threadList.mailboxId === fromId) {
-    const restore = new Set(reverted.filter((id) => emails[id]?.mailboxIds[fromId] === true));
+    const goneSet = new Set(gone);
+    const restore = new Set(
+      reverted.filter((id) => !goneSet.has(id) && emails[id]?.mailboxIds[fromId] === true),
+    );
     if (restore.size > 0) setThreadList("ids", (cur) => spliceBack(cur, rows, restore));
   }
 }
