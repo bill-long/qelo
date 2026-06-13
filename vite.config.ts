@@ -26,7 +26,9 @@ export default defineConfig(async ({ mode }) => {
 
   // EventSource can't set an Authorization header, so the dev proxy injects the dev
   // Basic-auth credentials for the push endpoint only (regular JMAP requests carry
-  // their own header from the app).
+  // their own header from the app). This serves the browser/PWA dev build; the desktop
+  // build routes push through Rust instead (which can attach the OAuth bearer token), so
+  // it never uses this proxy entry.
   const eventSourceProxy: ProxyOptions = {
     ...proxyBase(),
     configure(proxy) {

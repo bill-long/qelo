@@ -1,8 +1,9 @@
 import { createSignal } from "solid-js";
-import { type PushStatus, subscribeToChanges } from "@/jmap/push";
-import { handleAuthFailure, jmap, session } from "./account";
+import { type OpenTransport, type PushStatus, subscribeToChanges } from "@/jmap/push";
+import { handleAuthFailure, isDesktop, jmap, session } from "./account";
 import { syncEmails, syncThreadList } from "./emails";
 import { syncMailboxes } from "./mailboxes";
+import { tauriChannelTransport } from "./push-transport";
 
 let unsubscribe: (() => void) | null = null;
 
@@ -72,23 +73,32 @@ export function startSync(): void {
   const current = session();
   if (!current) return;
   const accountId = jmap().accountId;
+  // On desktop, push auth needs the OAuth bearer token, which EventSource can't send — route
+  // the stream through Rust. The browser/PWA build uses the default EventSource transport
+  // (push auth rides on the Vite proxy's injected credentials).
+  const openTransport: OpenTransport | undefined = isDesktop ? tauriChannelTransport : undefined;
   // subscribeToChanges emits "connecting" synchronously when it actually opens a stream
   // (and stays silent — pushStatus null — when EventSource is unavailable), so don't
   // pre-set a status here that could strand the UI on "Connecting…".
-  unsubscribe = subscribeToChanges(current, ["Mailbox", "Email", "Thread"], {
-    onChange: (account, changed) => {
-      if (account !== accountId) return;
-      if ("Email" in changed || "Thread" in changed) runSync(syncMail);
-      if ("Mailbox" in changed) runSync(syncFolders);
+  unsubscribe = subscribeToChanges(
+    current,
+    ["Mailbox", "Email", "Thread"],
+    {
+      onChange: (account, changed) => {
+        if (account !== accountId) return;
+        if ("Email" in changed || "Thread" in changed) runSync(syncMail);
+        if ("Mailbox" in changed) runSync(syncFolders);
+      },
+      onStatus: setPushStatus,
+      onReopen: () => {
+        // We were disconnected and may have missed change notifications — resync both the
+        // mail view and the folder list to catch up.
+        runSync(syncMail);
+        runSync(syncFolders);
+      },
     },
-    onStatus: setPushStatus,
-    onReopen: () => {
-      // We were disconnected and may have missed change notifications — resync both the
-      // mail view and the folder list to catch up.
-      runSync(syncMail);
-      runSync(syncFolders);
-    },
-  });
+    openTransport,
+  );
 }
 
 export function stopSync(): void {
