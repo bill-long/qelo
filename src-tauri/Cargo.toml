@@ -32,6 +32,10 @@ sha2 = "0.10"
 base64 = "0.22"
 rand = "0.8"
 urlencoding = "2"
+# Proper URL/host parsing for OAuth redirect query params and loopback-host detection
+# (avoids hand-rolled splitting that mishandles userinfo / IPv6 / ports). Already in the
+# dependency tree via reqwest.
+url = "2"
 open = "5"
 # `sync` for the Notify-based push cancellation, `macros` for tokio::select! in the stream loop.
 tokio = { version = "1", features = ["rt", "sync", "macros"] }

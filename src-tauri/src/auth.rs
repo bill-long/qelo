@@ -143,24 +143,22 @@ fn random_b64(bytes: usize) -> String {
     URL_SAFE_NO_PAD.encode(buf)
 }
 
-/// Is `url`'s host a loopback address (localhost / 127.0.0.1 / ::1)? Used to scope
+/// Is `url`'s host a loopback address (localhost / 127.0.0.0/8 / ::1)? Used to scope
 /// self-signed-cert trust to the local dev server — a remote host (e.g. Fastmail) is always
-/// validated. Matches the host *exactly* so a lookalike like `https://localhost.evil.com` is
-/// not mistaken for loopback, and handles bracketed IPv6 literals (`http://[::1]:1420`).
-fn is_loopback_url(url: &str) -> bool {
-    let Some(rest) = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-    else {
+/// validated. Parses the authority with the `url` crate rather than splitting by hand, so
+/// userinfo (`https://localhost:443@evil.com`), ports, and IPv6 literals can't smuggle a
+/// non-loopback host past the check. A parse failure or missing host returns `false` (the
+/// safe default: validate certs).
+fn is_loopback_url(raw: &str) -> bool {
+    let Ok(parsed) = ::url::Url::parse(raw) else {
         return false;
     };
-    let host = match rest.strip_prefix('[') {
-        // Bracketed IPv6 literal: the host runs up to the closing ']'.
-        Some(after) => after.split(']').next().unwrap_or(""),
-        // Otherwise the host runs up to the port (`:`) or path (`/`).
-        None => rest.split(['/', ':']).next().unwrap_or(""),
-    };
-    host == "localhost" || host == "127.0.0.1" || host == "::1"
+    match parsed.host() {
+        Some(::url::Host::Domain(domain)) => domain == "localhost",
+        Some(::url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(::url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    }
 }
 
 /// An HTTP client that trusts the dev server's self-signed cert for loopback issuers
@@ -321,11 +319,11 @@ fn wait_for_code(server: &tiny_http::Server, expected_state: &str) -> Result<Str
         let mut code: Option<String> = None;
         let mut state: Option<String> = None;
         let mut error: Option<String> = None;
-        for (key, value) in url::form_pairs(query) {
-            match key.as_str() {
-                "code" => code = Some(value),
-                "state" => state = Some(value),
-                "error" => error = Some(value),
+        for (key, value) in ::url::form_urlencoded::parse(query.as_bytes()) {
+            match key.as_ref() {
+                "code" => code = Some(value.into_owned()),
+                "state" => state = Some(value.into_owned()),
+                "error" => error = Some(value.into_owned()),
                 _ => {}
             }
         }
@@ -351,28 +349,6 @@ fn wait_for_code(server: &tiny_http::Server, expected_state: &str) -> Result<Str
         );
         let _ = request.respond(response);
         return outcome;
-    }
-}
-
-/// Minimal `application/x-www-form-urlencoded` query parser (avoids pulling `url`).
-mod url {
-    pub fn form_pairs(query: &str) -> Vec<(String, String)> {
-        if query.is_empty() {
-            return Vec::new();
-        }
-        query
-            .split('&')
-            .map(|pair| {
-                let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-                (decode(k), decode(v))
-            })
-            .collect()
-    }
-
-    fn decode(s: &str) -> String {
-        urlencoding::decode(&s.replace('+', " "))
-            .map(|c| c.into_owned())
-            .unwrap_or_else(|_| s.to_string())
     }
 }
 
@@ -892,7 +868,12 @@ mod tests {
             "https://api.fastmail.com/jmap/eventsource"
         ));
         assert!(!is_loopback_url("https://[2001:db8::1]/jmap"));
-        assert!(!is_loopback_url("ftp://localhost"));
+        // Userinfo must not smuggle a loopback-looking host past the real authority.
+        assert!(!is_loopback_url("https://localhost:443@evil.com/jmap"));
+        assert!(!is_loopback_url("https://localhost@evil.com/jmap"));
+        assert!(!is_loopback_url("https://127.0.0.1@evil.com/"));
+        // A malformed URL falls back to "not loopback" (validate certs).
+        assert!(!is_loopback_url("not a url"));
     }
 
     #[test]
