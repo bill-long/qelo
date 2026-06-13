@@ -422,9 +422,10 @@ body,
 }
 
 /* When every action is gated out (read-only folder), don't reserve the bar's space. Solid's
-   inactive <Show> leaves only comment nodes, which :empty ignores. */
-.message-actions:empty,
-.thread-row-actions:empty {
+   inactive <Show> leaves comment-node placeholders, so `:empty` would NOT match — test for the
+   absence of an element child instead (`:has(*)` only considers elements, ignoring comments). */
+.message-actions:not(:has(*)),
+.thread-row-actions:not(:has(*)) {
   display: none;
 }
 
