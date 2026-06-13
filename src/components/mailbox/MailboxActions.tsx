@@ -16,21 +16,32 @@ import { selectedMailboxId } from "@/stores/ui";
  * Every affordance is myRights-gated (CLAUDE.md / D2): archive and trash need `mayRemoveItems`
  * on the open folder AND a role target that grants `mayAddItems` (resolved by
  * `moveTargetByRole`); "delete forever" is a hard destroy offered only from within Trash, gated
- * on `mayDelete`. The store actions are the real enforcement (server `notUpdated`/`notDestroyed`);
- * these gates just avoid offering an action the server would reject.
+ * on `mayRemoveItems` (the right that governs removing/destroying an email). The store actions
+ * are the real enforcement (server `notUpdated`/`notDestroyed`); these gates just avoid offering
+ * an action the server would reject.
+ *
+ * For a conversation row the `ids` are the collapsed thread's representative email only (the same
+ * scope as PR 1's per-row keyword toggles), so a multi-message thread is acted on one message at
+ * a time and the rest reconcile via the push-driven list sync.
  */
 export function MailboxActions(props: { ids: () => string[]; variant: "message" | "row" }) {
   const rights = () => selectedMailboxRights();
   const canRemove = () => Boolean(rights()?.mayRemoveItems);
   const archiveTarget = () => moveTargetByRole("archive");
   const trashTarget = () => moveTargetByRole("trash");
-  const canDeleteForever = () => selectedMailboxRole() === "trash" && Boolean(rights()?.mayDelete);
+  // A hard destroy removes the email from its mailbox(es), so the governing right is
+  // `mayRemoveItems` (RFC 8621) — NOT `mayDelete`, which is the right to delete the mailbox
+  // itself. Offered only from within Trash (D2).
+  const canDeleteForever = () => selectedMailboxRole() === "trash" && canRemove();
 
-  // Every other mailbox that accepts items, for the generic move picker (reading pane only).
+  // Every other mailbox that accepts items, for the generic move picker (reading pane only) —
+  // minus the archive/trash roles that already have their own dedicated buttons beside it, so a
+  // destination is never offered twice.
   const moveTargets = () => {
     const current = selectedMailboxId();
+    const dedicated = new Set([archiveTarget(), trashTarget()].filter(Boolean));
     return Object.values(mailboxes)
-      .filter((m) => m.id !== current && m.myRights.mayAddItems)
+      .filter((m) => m.id !== current && m.myRights.mayAddItems && !dedicated.has(m.id))
       .sort((a, b) => a.name.localeCompare(b.name));
   };
 

@@ -421,6 +421,13 @@ body,
   margin-top: 0.6rem;
 }
 
+/* When every action is gated out (read-only folder), don't reserve the bar's space. Solid's
+   inactive <Show> leaves only comment nodes, which :empty ignores. */
+.message-actions:empty,
+.thread-row-actions:empty {
+  display: none;
+}
+
 .message-action {
   display: inline-flex;
   align-items: center;
