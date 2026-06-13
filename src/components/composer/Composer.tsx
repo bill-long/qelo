@@ -38,11 +38,12 @@ export function Composer() {
   const hasInvalid = createMemo(
     () => invalidTo().length > 0 || invalidCc().length > 0 || invalidBcc().length > 0,
   );
-  // Also require a resolved sending identity, so Send isn't briefly enabled before
-  // loadIdentities() resolves (clicking then would just fail with "no identity").
-  const canSend = createMemo(
-    () => hasRecipient() && !hasInvalid() && Boolean(selectedIdentity()) && busy() === null,
-  );
+  // Both submits need a resolved identity (so they aren't briefly enabled before loadIdentities()
+  // resolves) and no invalid tokens (the store rejects those rather than drop them silently). Send
+  // additionally needs ≥1 recipient; a draft may be recipient-less, so Save does not.
+  const ready = createMemo(() => !hasInvalid() && Boolean(selectedIdentity()) && busy() === null);
+  const canSend = createMemo(() => ready() && hasRecipient());
+  const canSave = createMemo(() => ready());
 
   // Escape discards (only when idle — don't yank the window out from under an in-flight send).
   function onKeyDown(event: KeyboardEvent) {
@@ -180,7 +181,7 @@ export function Composer() {
           <button
             type="button"
             class="composer-save"
-            disabled={busy() !== null}
+            disabled={!canSave()}
             onClick={() => void saveDraft()}
           >
             {busy() === "save" ? "Saving…" : "Save draft"}

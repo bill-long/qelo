@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { CAP_CORE, CAP_MAIL, emailGet, emailQuery, emailSet, methodResult } from "@/jmap/methods";
 import type { Email, Id } from "@/jmap/types";
 import {
+  composeError,
   identities,
   loadIdentities,
   resetCompose,
@@ -130,6 +131,22 @@ describe("compose", () => {
     const email = await serverEmail(ids[0] as Id);
     expect(email.keywords.$draft).toBe(true);
     expect(email.mailboxIds[draftsId as Id]).toBe(true);
+  });
+
+  it("send rejects a mistyped recipient instead of silently dropping it", async () => {
+    await loadMailboxes();
+    await loadIdentities();
+
+    // A valid recipient AND a mistyped one: parseRecipients would drop "nope" and send only to the
+    // valid address. The store must instead refuse, naming the bad token, with no round trip.
+    updateDraft("to", "valid@example.test, nope");
+    updateDraft("subject", freshSubject("invalid"));
+    updateDraft("body", "Should not be sent.");
+
+    const before = testClient().requestCount;
+    expect(await send()).toBe(false);
+    expect(composeError()).toContain("nope");
+    expect(testClient().requestCount).toBe(before); // refused before any send
   });
 
   it("send is one batch: files the Sent copy ($draft cleared) and delivers to Inbox", async () => {

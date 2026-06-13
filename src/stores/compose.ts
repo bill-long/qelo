@@ -12,7 +12,7 @@ import {
   setResult,
 } from "@/jmap/methods";
 import type { EmailAddress, EmailSubmission, Identity } from "@/jmap/types";
-import { parseRecipients } from "@/lib/addresses";
+import { invalidRecipients, parseRecipients } from "@/lib/addresses";
 import { handleAuthFailure, jmap } from "./account";
 import { mailboxIdByRole } from "./mailboxes";
 
@@ -158,11 +158,27 @@ export async function loadIdentities(): Promise<void> {
     );
     const list = (methodResult(responses, "i").list ?? []) as Identity[];
     setIdentities(list);
-    if (!selectedIdentityId() && list[0]) setSelectedIdentityId(list[0].id);
+    // Default the selection to the first identity, and also REVISE it if a reload dropped the
+    // previously-selected one — otherwise the <select> would hold a value matching no option.
+    const current = selectedIdentityId();
+    if (!current || !list.some((i) => i.id === current)) {
+      setSelectedIdentityId(list[0]?.id ?? null);
+    }
   } catch (err) {
     if (handleAuthFailure(err)) return;
     setComposeError(err instanceof Error ? err.message : String(err));
   }
+}
+
+// Every mistyped token across to/cc/bcc. parseRecipients DROPS invalid tokens, so saving or
+// sending without this check would silently lose a mistyped recipient — both actions reject on a
+// non-empty result rather than send to a partial set the user never confirmed.
+function invalidDraftRecipients(): string[] {
+  return [
+    ...invalidRecipients(draft.to),
+    ...invalidRecipients(draft.cc),
+    ...invalidRecipients(draft.bcc),
+  ];
 }
 
 // Build the draft create object from the current reactive state + a resolved identity.
@@ -195,6 +211,12 @@ export async function saveDraft(): Promise<boolean> {
   const identity = selectedIdentity();
   if (!identity) {
     setComposeError("No sending identity available.");
+    return false;
+  }
+  // A draft may be recipient-less, but it must not silently DROP a mistyped one.
+  const invalid = invalidDraftRecipients();
+  if (invalid.length > 0) {
+    setComposeError(`Fix or remove these addresses: ${invalid.join(", ")}`);
     return false;
   }
   setBusy("save");
@@ -240,6 +262,12 @@ export async function send(): Promise<boolean> {
   const identity = selectedIdentity();
   if (!identity) {
     setComposeError("No sending identity available.");
+    return false;
+  }
+  // Reject a mistyped recipient rather than silently sending to only the valid subset.
+  const invalid = invalidDraftRecipients();
+  if (invalid.length > 0) {
+    setComposeError(`Fix or remove these addresses: ${invalid.join(", ")}`);
     return false;
   }
   // At least one recipient across to/cc/bcc, else there is nothing to submit to.
