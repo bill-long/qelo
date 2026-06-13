@@ -13,6 +13,7 @@
   --ink-soft: #6b655c; /* meta / secondary text */
   --line: #e7dfd1; /* hairline borders */
   --accent: #c25a3c; /* terracotta */
+  --danger: #b23a2a; /* destructive actions (delete forever) */
   --selection: #f1e2d9; /* selected-row wash */
   --hover: #efe7d9;
   --email-canvas: #ffffff; /* behind sanitized HTML bodies */
@@ -274,6 +275,10 @@ body,
   color: var(--accent);
 }
 
+.row-action.is-danger:hover {
+  color: var(--danger);
+}
+
 .thread-row-head {
   display: flex;
   justify-content: space-between;
@@ -445,6 +450,22 @@ body,
   border-color: var(--accent);
 }
 
+/* "Move to…" picker — styled to sit in the action row like the buttons beside it. */
+.message-move {
+  appearance: none;
+  padding-right: 0.6rem;
+}
+
+.message-action.is-danger {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
+}
+
+.message-action.is-danger:hover {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+
 .message-html {
   display: block;
   width: 100%;
@@ -590,6 +611,7 @@ body,
     --ink-soft: #a39b8d;
     --line: #34302a;
     --accent: #e07a5f;
+    --danger: #e8705a;
     --selection: #3a2e26;
     --hover: #2a2620;
     --email-canvas: #1a1a1a;

@@ -225,6 +225,17 @@ export function keywordPatch(keyword: string, on: boolean): EmailPatch {
   return on ? setKeyword(keyword) : clearKeyword(keyword);
 }
 
+/**
+ * Patch that moves an email between mailboxes: removes the `from` mailbox and adds the `to`
+ * one in a single `Email/set update` — `{"mailboxIds/<from>": null, "mailboxIds/<to>": true}`.
+ * `mailboxIds` is a presence map exactly like `keywords`, so a move is just two pointer ops on
+ * it. (The optimistic store path builds the same shape from its presence patches; this is the
+ * standalone wire-shape helper, parallel to the keyword helpers.)
+ */
+export function movePatch(fromId: Id, toId: Id): EmailPatch {
+  return { [`mailboxIds/${fromId}`]: null, [`mailboxIds/${toId}`]: true };
+}
+
 // ---------------------------------------------------------------------------
 // Thread
 // ---------------------------------------------------------------------------

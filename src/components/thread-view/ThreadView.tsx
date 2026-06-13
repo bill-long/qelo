@@ -1,4 +1,5 @@
 import { createEffect, createMemo, For, Match, onCleanup, onMount, Show, Switch } from "solid-js";
+import { MailboxActions } from "@/components/mailbox/MailboxActions";
 import { selectBody } from "@/lib/body";
 import { formatBytes, formatDateTime, recipientList, senderName } from "@/lib/format";
 import { emailSrcdoc, sanitizeHtml } from "@/lib/sanitize";
@@ -71,7 +72,7 @@ function Message(props: { id: string }) {
                 {(to) => <span class="message-to">to {to()}</span>}
               </Show>
               <h2 class="message-subject">{mail().subject || "(no subject)"}</h2>
-              <Show when={rights()?.maySetSeen || rights()?.maySetKeywords}>
+              <Show when={rights()}>
                 <div class="message-actions">
                   <Show when={rights()?.maySetKeywords}>
                     <button
@@ -93,6 +94,7 @@ function Message(props: { id: string }) {
                       {seen() ? "Mark unread" : "Mark read"}
                     </button>
                   </Show>
+                  <MailboxActions ids={() => [mail().id]} variant="message" />
                 </div>
               </Show>
             </header>

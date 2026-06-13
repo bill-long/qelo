@@ -179,11 +179,17 @@ export async function settleConversations(
   }
 }
 
-/** Create an empty top-level mailbox and return its server id. */
-export async function createMailbox(name: string): Promise<Id> {
+/**
+ * Create an empty top-level mailbox and return its server id. Pass `role` to provision a
+ * role mailbox (e.g. `"archive"`) the dev account's default set doesn't include, so a
+ * role-resolved store action (archive/trash) has a target to find.
+ */
+export async function createMailbox(name: string, role?: string): Promise<Id> {
+  const create: Record<string, unknown> = { name, parentId: null };
+  if (role) create.role = role;
   const set = await callOne([
     "Mailbox/set",
-    { accountId: accountId(), create: { mb: { name, parentId: null } } },
+    { accountId: accountId(), create: { mb: create } },
     "mbs",
   ]);
   const created = (set.created ?? {}) as Record<string, { id: Id }>;

@@ -13,6 +13,7 @@ import {
   LIST_PROPERTIES,
   mailboxGet,
   methodResult,
+  movePatch,
   setKeyword,
   setResult,
   threadGet,
@@ -122,6 +123,13 @@ describe("keyword patch helpers", () => {
   it("keywordPatch toggles between the set and clear forms", () => {
     expect(keywordPatch("$seen", true)).toEqual({ "keywords/$seen": true });
     expect(keywordPatch("$seen", false)).toEqual({ "keywords/$seen": null });
+  });
+
+  it("movePatch removes the from-mailbox pointer and adds the to-mailbox pointer", () => {
+    expect(movePatch("mbA", "mbB")).toEqual({
+      "mailboxIds/mbA": null,
+      "mailboxIds/mbB": true,
+    });
   });
 });
 

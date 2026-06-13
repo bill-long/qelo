@@ -19,6 +19,33 @@ export function selectedMailboxRights(): MailboxRights | undefined {
   return id ? mailboxes[id]?.myRights : undefined;
 }
 
+/**
+ * The id of the (first) mailbox with the given role, or undefined if the account exposes
+ * none. Reactive — reads the mailboxes store — so a move/archive/trash affordance gated on it
+ * appears only once the target folder is known and disappears (fails safe) if it's absent.
+ */
+export function mailboxIdByRole(role: MailboxRole): string | undefined {
+  return Object.values(mailboxes).find((m) => m.role === role)?.id;
+}
+
+/** The role of the currently-open folder (or null if none selected / it has no role). */
+export function selectedMailboxRole(): MailboxRole | null {
+  const id = selectedMailboxId();
+  return id ? (mailboxes[id]?.role ?? null) : null;
+}
+
+/**
+ * A role mailbox the open folder's contents can be moved INTO: it exists, isn't the open
+ * folder itself (no self-move), and grants `mayAddItems`. Returns its id or undefined — the
+ * single gate the archive/trash affordances use so they only offer a destination the server
+ * will actually accept.
+ */
+export function moveTargetByRole(role: MailboxRole): string | undefined {
+  const id = mailboxIdByRole(role);
+  if (!id || id === selectedMailboxId()) return undefined;
+  return mailboxes[id]?.myRights.mayAddItems ? id : undefined;
+}
+
 // Mailbox state token (from /get and /changes responses), used as the `sinceState` for
 // Mailbox/changes. Plain module state — it's a sync cursor, not reactive UI state.
 let mailboxState = "";
