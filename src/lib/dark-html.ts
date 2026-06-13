@@ -312,7 +312,10 @@ export function adaptHtmlForDark(html: string): string {
   if (typeof DOMParser === "undefined") return html;
   const doc = new DOMParser().parseFromString(html, "text/html");
 
-  for (const el of Array.from(doc.body.querySelectorAll<HTMLElement>("*"))) {
+  // Only elements carrying an authored color surface are candidates. querySelectorAll
+  // returns a static NodeList, so rewriting attributes while iterating is safe (we never
+  // add/remove elements), and no snapshot copy is needed.
+  for (const el of doc.body.querySelectorAll<HTMLElement>("[style], [bgcolor], font[color]")) {
     const style = el.getAttribute("style");
     if (style !== null) {
       const remapped = remapInlineStyle(style);
