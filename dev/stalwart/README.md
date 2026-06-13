@@ -71,6 +71,21 @@ Override defaults via env vars:
 > `NODE_TLS_REJECT_UNAUTHORIZED=0` for `localhost` only. The desktop app handles the
 > dev cert via the `stalwart-dev` provider entry (see `src-tauri` auth config).
 
+### Inject the dark-mode demo email
+
+To eyeball the dark-mode color remapping (`src/lib/dark-html.ts`):
+
+```sh
+QELO_SEED_PASS='<the password you set>' pnpm dev:inject-dark
+# (PowerShell: $env:QELO_SEED_PASS='<pw>'; pnpm dev:inject-dark)
+```
+
+This injects a single email that hard-codes light colors (black text, white backgrounds,
+a `#0000ff` link, a `<font color>` line, a `bgcolor` table) plus one block that is *authored
+dark*. Open it in the reading pane and toggle your OS theme: in dark mode the light surfaces
+flip to match the dark canvas while the already-dark block stays put. Same env vars as the
+seed script; keyed on a stable `Message-ID`, so re-running replaces the prior copy.
+
 ## OAuth
 
 Stalwart accepts **any `client_id` with PKCE** by default

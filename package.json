@@ -14,6 +14,7 @@
     "dev:server": "docker compose -f dev/stalwart/docker-compose.yml up -d",
     "dev:server:down": "docker compose -f dev/stalwart/docker-compose.yml down",
     "dev:seed": "node dev/stalwart/seed.mjs",
+    "dev:inject-dark": "node dev/stalwart/inject-dark-test.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "pnpm lint:biome && pnpm lint:solid",
     "lint:biome": "biome check .",
