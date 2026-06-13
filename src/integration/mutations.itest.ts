@@ -52,6 +52,23 @@ describe("keyword mutations", () => {
     return list[0]?.keywords ?? {};
   }
 
+  /**
+   * Poll the server until an email's keyword reaches `present`. Auto-mark-read fires the
+   * Email/set as fire-and-forget off loadThread (it must not block the reading pane), so a
+   * one-shot read could race the in-flight write — poll instead of sleeping on timing.
+   */
+  async function expectServerKeyword(id: Id, keyword: string, present: boolean): Promise<void> {
+    const deadline = Date.now() + 5000;
+    for (;;) {
+      const has = (await serverKeywords(id))[keyword] === true;
+      if (has === present) return;
+      if (Date.now() >= deadline) {
+        throw new Error(`server ${keyword} on ${id} never became ${present}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
   describe("markSeen", () => {
     it("toggles $seen on the store and the server", async () => {
       const mb = await freshMailbox("seen");
@@ -102,11 +119,12 @@ describe("keyword mutations", () => {
       setSelectedThreadId(threadId);
       await loadThread(threadId);
 
-      // Every rendered message flips to $seen, on both the store and the server.
+      // Every rendered message flips to $seen, on both the store (synchronous optimistic
+      // apply) and the server (the fire-and-forget Email/set, polled to avoid a write race).
       expect(thread.emailIds.length).toBe(2);
       for (const m of msgs) {
         expect(emails[m.id]?.keywords.$seen).toBe(true);
-        expect((await serverKeywords(m.id)).$seen).toBe(true);
+        await expectServerKeyword(m.id, "$seen", true);
       }
     });
 

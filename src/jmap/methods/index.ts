@@ -4,7 +4,7 @@
 //
 // Pure protocol — no SolidJS, no UI. Field names follow RFC 8620/8621 exactly.
 
-import type { Email, Id, MethodCall, MethodResponse, SetError } from "../types";
+import type { Email, EmailSetResponse, Id, MethodCall, MethodResponse, SetError } from "../types";
 
 export const CAP_CORE = "urn:ietf:params:jmap:core";
 export const CAP_MAIL = "urn:ietf:params:jmap:mail";
@@ -299,15 +299,17 @@ export interface SetResult {
  * `Object.keys(result.notUpdated)` without a guard.
  */
 export function setResult(responses: MethodResponse[], callId: string): SetResult {
-  const args = methodResult(responses, callId);
+  // The raw args are the EmailSetResponse wire shape (nullable maps); SetResult is its
+  // normalized form. methodResult has already thrown on a method-level error.
+  const args = methodResult(responses, callId) as unknown as EmailSetResponse;
   return {
     oldState: typeof args.oldState === "string" ? args.oldState : null,
     newState: typeof args.newState === "string" ? args.newState : "",
-    created: (args.created ?? {}) as Record<Id, Partial<Email> | null>,
-    updated: (args.updated ?? {}) as Record<Id, Partial<Email> | null>,
-    destroyed: (args.destroyed ?? []) as Id[],
-    notCreated: (args.notCreated ?? {}) as Record<Id, SetError>,
-    notUpdated: (args.notUpdated ?? {}) as Record<Id, SetError>,
-    notDestroyed: (args.notDestroyed ?? {}) as Record<Id, SetError>,
+    created: args.created ?? {},
+    updated: args.updated ?? {},
+    destroyed: args.destroyed ?? [],
+    notCreated: args.notCreated ?? {},
+    notUpdated: args.notUpdated ?? {},
+    notDestroyed: args.notDestroyed ?? {},
   };
 }
