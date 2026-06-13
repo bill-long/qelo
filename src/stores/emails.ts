@@ -18,7 +18,7 @@ import {
 } from "@/jmap/methods";
 import type { Email } from "@/jmap/types";
 import { handleAuthFailure, jmap } from "./account";
-import { selectedMailboxRights } from "./mailboxes";
+import { mailboxIdByRole, selectedMailboxRights } from "./mailboxes";
 import { selectedThreadId, setSelectedEmailId, setSelectedThreadId } from "./ui";
 
 /** Cache of fetched Email objects, keyed by id. Shared by the list and (later) reading pane. */
@@ -477,9 +477,21 @@ function applyPresence(email: Email, p: PresencePatch): void {
  *
  * Resolves (never rejects) so callers can fire-and-forget: a transport/method failure rolls
  * everything back and is logged; an auth failure raises the re-auth gate.
+ *
+ * Returns the ids whose optimistic change did NOT persist:
+ *   - `reverted` — server-refused (reconciled to truth) or locally reverted on a transport/auth
+ *     failure, so a caller layering its own optimistic UI on top (PR 2's threadList.ids prune)
+ *     knows which rows to restore. An accepted change yields none.
+ *   - `gone` — the subset of `reverted` the server no longer returns at all (destroyed
+ *     elsewhere). Their `mailboxIds` was rolled back to the pre-optimistic snapshot only so the
+ *     destroy push can prune them, so a caller MUST NOT treat that snapshot as "still here" and
+ *     restore a row for them — that would be a ghost row until the next sync.
  */
-async function optimisticEmailUpdate(ids: string[], patches: PresencePatch[]): Promise<void> {
-  if (ids.length === 0) return;
+async function optimisticEmailUpdate(
+  ids: string[],
+  patches: PresencePatch[],
+): Promise<{ reverted: string[]; gone: string[] }> {
+  if (ids.length === 0) return { reverted: [], gone: [] };
   const held = ids.filter((id) => emails[id]);
 
   // Capture pre-optimistic presence of each patched field, per held row, for a precise revert.
@@ -522,13 +534,15 @@ async function optimisticEmailUpdate(ids: string[], patches: PresencePatch[]): P
     if (!handleAuthFailure(err)) {
       console.error("Email/set update failed:", err);
     }
-    return;
+    // Couldn't refetch, so we don't know which (if any) are gone — treat none as gone.
+    return { reverted: held, gone: [] };
   }
   // Per-item refusals (e.g. forbidden / revoked rights): the server kept its own state, so it —
   // not our pre-optimistic snapshot — is the truth. Refetch the refused ids and apply server
   // truth rather than reverting to `prior`: this undoes our optimistic write AND reconciles a
   // concurrent change race-free (the same-value race a local guard can't detect).
-  if (refused.length > 0) await reconcileRefused(refused, patches, prior);
+  const gone = refused.length > 0 ? await reconcileRefused(refused, patches, prior) : [];
+  return { reverted: refused, gone };
 }
 
 /**
@@ -538,12 +552,15 @@ async function optimisticEmailUpdate(ids: string[], patches: PresencePatch[]): P
  * then prune them). On a refetch failure, fall back to the guarded local revert for all of them.
  * Does NOT advance emailState — like syncEmails' follow-up /get, this is a partial fetch and the
  * push-driven drain owns the cursor.
+ *
+ * Returns the ids the server no longer returns (destroyed elsewhere). Their reverted snapshot is
+ * NOT current truth, so a caller restoring optimistic UI must skip them — see optimisticEmailUpdate.
  */
 async function reconcileRefused(
   ids: string[],
   patches: PresencePatch[],
   prior: Map<string, boolean[]>,
-): Promise<void> {
+): Promise<string[]> {
   let returned: Set<string>;
   try {
     const client = jmap();
@@ -555,10 +572,11 @@ async function reconcileRefused(
     returned = new Set(list.map((e) => e.id));
   } catch (err) {
     if (!handleAuthFailure(err)) rollbackPresence(ids, patches, prior);
-    return;
+    return []; // couldn't refetch — we don't know which are gone
   }
   const destroyed = ids.filter((id) => !returned.has(id));
   if (destroyed.length > 0) rollbackPresence(destroyed, patches, prior);
+  return destroyed;
 }
 
 function rollbackPresence(
@@ -594,6 +612,171 @@ export async function markSeen(ids: string[], seen: boolean): Promise<void> {
 /** Flag/unflag the given emails ($flagged). Optimistic; rolls back any the server refuses. */
 export async function setFlagged(ids: string[], flagged: boolean): Promise<void> {
   await optimisticEmailUpdate(ids, [{ map: "keywords", key: "$flagged", present: flagged }]);
+}
+
+// --- Mailbox mutations: move / archive / trash / delete --------------------
+
+/** A representative id removed from a visible id list, with where it sat, for a rollback. */
+interface PrunedRow {
+  id: string;
+  index: number;
+}
+
+/**
+ * Split `current` into the ids that survive a removal and the rows we dropped (id + original
+ * index), so a refused mutation can splice them back where they were. Pure + unit-tested.
+ */
+export function pruneIds(
+  current: string[],
+  remove: Set<string>,
+): { kept: string[]; rows: PrunedRow[] } {
+  const rows: PrunedRow[] = [];
+  current.forEach((id, index) => {
+    if (remove.has(id)) rows.push({ id, index });
+  });
+  return { kept: current.filter((id) => !remove.has(id)), rows };
+}
+
+/**
+ * Splice pruned rows back into a (possibly concurrently-changed) id list. Stale-snapshot safe:
+ * skips any id the caller no longer wants restored (`allow`) and any already present (a
+ * concurrent syncThreadList may have re-added it), and clamps each insert so a shrunk list can't
+ * throw. Ascending row order preserves the rows' relative order. Pure + unit-tested.
+ */
+export function spliceBack(current: string[], rows: PrunedRow[], allow: Set<string>): string[] {
+  const have = new Set(current);
+  const next = [...current];
+  for (const { id, index } of rows) {
+    if (!allow.has(id) || have.has(id)) continue;
+    have.add(id);
+    next.splice(Math.min(index, next.length), 0, id);
+  }
+  return next;
+}
+
+/**
+ * Move emails out of the currently-open folder into `toMailboxId`: optimistically patch
+ * `mailboxIds` (remove the open folder, add the target) AND drop the moved-away representative
+ * rows from the open list, then reconcile. The from-mailbox is the open folder, so a single
+ * shared patch serves every id (matching optimisticEmailUpdate's one-patchObj model).
+ *
+ * Stale-snapshot discipline (qelo-review-checklist): the list prune races a coalesced
+ * syncThreadList across the /set await. We capture the open folder + each pruned row's index,
+ * and on a refused/failed move re-insert ONLY rows whose server truth still has them in the
+ * open folder (`mailboxIds[fromId]`), only while that same folder is still open, and only if
+ * sync hasn't already re-added them — never a wholesale revert. We do NOT route through the push
+ * coalesce() or advance any cursor; the push-driven sync owns those.
+ */
+async function optimisticMove(ids: string[], fromId: string, toId: string): Promise<void> {
+  if (ids.length === 0 || fromId === toId) return;
+  const moving = new Set(ids);
+
+  // Optimistically prune the moved representatives from the open list, remembering where they
+  // were. fromId is the open folder, so it's also the folder the re-insert re-validates against.
+  const { rows } = pruneIds(threadList.ids, moving);
+  if (rows.length > 0) setThreadList("ids", (cur) => cur.filter((id) => !moving.has(id)));
+
+  const { reverted, gone } = await optimisticEmailUpdate(ids, [
+    { map: "mailboxIds", key: fromId, present: false },
+    { map: "mailboxIds", key: toId, present: true },
+  ]);
+
+  // Re-insert only rows the move didn't stick for AND that still exist server-side in the
+  // from-folder. Exclude `gone` ids: their mailboxIds was reverted to the pre-optimistic snapshot
+  // only so the destroy push can prune them — restoring a row for them would be a ghost. A
+  // concurrent actor that genuinely moved (not destroyed) it leaves mailboxIds without fromId, so
+  // that case is filtered too. Only while that folder is still open.
+  if (rows.length > 0 && reverted.length > 0 && threadList.mailboxId === fromId) {
+    const goneSet = new Set(gone);
+    const restore = new Set(
+      reverted.filter((id) => !goneSet.has(id) && emails[id]?.mailboxIds[fromId] === true),
+    );
+    if (restore.size > 0) setThreadList("ids", (cur) => spliceBack(cur, rows, restore));
+  }
+}
+
+/** Move emails from the open folder into `toMailboxId`. Optimistic; rolls back on refusal. */
+export async function moveEmails(ids: string[], toMailboxId: string): Promise<void> {
+  const fromId = threadList.mailboxId;
+  if (!fromId) return;
+  await optimisticMove(ids, fromId, toMailboxId);
+}
+
+/** Archive (D2): move the given emails from the open folder to the archive-role mailbox. */
+export async function archive(ids: string[]): Promise<void> {
+  const to = mailboxIdByRole("archive");
+  if (to) await moveEmails(ids, to);
+}
+
+/** Trash (D2 default delete): move the given emails from the open folder to the trash-role mailbox. */
+export async function trash(ids: string[]): Promise<void> {
+  const to = mailboxIdByRole("trash");
+  if (to) await moveEmails(ids, to);
+}
+
+/**
+ * Delete forever: a hard `Email/set destroy` (D2 — only offered from within Trash). Optimistically
+ * drops the rows from the open list AND the reading pane, then on a per-item refusal (or a
+ * transport/auth failure) re-inserts exactly the rows the server kept — guarded against a
+ * concurrent syncThreadList/syncEmails exactly like a move. Prunes the destroyed ids from the
+ * email cache so they vanish at once (idempotent with the destroy push). Resolves, never rejects.
+ */
+export async function deleteForever(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const removing = new Set(ids);
+
+  // Optimistic list/pane prune, remembering positions for a rollback re-insert. Capture the
+  // open folder AND the open conversation so a re-insert can bail if either was superseded
+  // across the await (the stale-snapshot class): a folder switch invalidates the list rows, a
+  // thread switch invalidates the pane rows — re-inserting then would inject ids into the wrong
+  // list. spliceBack additionally skips anything a concurrent sync already re-added.
+  const prunedFrom = threadList.mailboxId;
+  const prunedThreadId = thread.threadId;
+  const listRows = pruneIds(threadList.ids, removing).rows;
+  const paneRows = pruneIds(thread.emailIds, removing).rows;
+  if (listRows.length > 0) setThreadList("ids", (cur) => cur.filter((id) => !removing.has(id)));
+  if (paneRows.length > 0) setThread("emailIds", (cur) => cur.filter((id) => !removing.has(id)));
+  const restorePrunedRows = (allow: Set<string>): void => {
+    if (listRows.length > 0 && threadList.mailboxId === prunedFrom) {
+      setThreadList("ids", (cur) => spliceBack(cur, listRows, allow));
+    }
+    if (paneRows.length > 0 && thread.threadId === prunedThreadId) {
+      setThread("emailIds", (cur) => spliceBack(cur, paneRows, allow));
+    }
+  };
+
+  // `gone` = ids the server removed; `survived` = ids it refused to destroy and still holds.
+  // A `notFound` refusal means the email was already gone (e.g. another client destroyed it),
+  // so it counts as gone — keep its row pruned and drop the cache entry — NOT survived. Only a
+  // substantive refusal (forbidden, etc.) leaves the email in place and warrants a re-insert.
+  const gone = new Set<string>();
+  const survived = new Set<string>();
+  try {
+    const client = jmap();
+    const responses = await client.request([emailSet(client.accountId, "set", { destroy: ids })]);
+    const r = setResult(responses, "set");
+    for (const id of r.destroyed) gone.add(id);
+    for (const [id, err] of Object.entries(r.notDestroyed)) {
+      if (err.type === "notFound") gone.add(id);
+      else survived.add(id);
+    }
+  } catch (err) {
+    // Unknown outcome: restore every pruned row (guarded) and let a later sync reconcile.
+    restorePrunedRows(new Set(ids));
+    if (!handleAuthFailure(err)) console.error("Email/set destroy failed:", err);
+    return;
+  }
+
+  // Prune gone ids from the cache (idempotent with the destroy push).
+  if (gone.size > 0) {
+    setEmails(
+      produce((store) => {
+        for (const id of gone) delete store[id];
+      }),
+    );
+  }
+  // Re-insert rows for emails the server refused to destroy and still holds.
+  if (survived.size > 0) restorePrunedRows(survived);
 }
 
 /**

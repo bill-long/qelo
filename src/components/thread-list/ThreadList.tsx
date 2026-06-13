@@ -1,4 +1,5 @@
 import { createEffect, For, Show } from "solid-js";
+import { MailboxActions } from "@/components/mailbox/MailboxActions";
 import { formatDate, senderName } from "@/lib/format";
 import { emails, loadMore, markSeen, openMailbox, setFlagged, threadList } from "@/stores/emails";
 import { selectedMailboxRights } from "@/stores/mailboxes";
@@ -134,6 +135,7 @@ function ThreadRow(props: { id: string }) {
                 {seen() ? "○" : "●"}
               </button>
             </Show>
+            <MailboxActions ids={() => [mail().id]} variant="row" />
           </div>
         </div>
       )}
