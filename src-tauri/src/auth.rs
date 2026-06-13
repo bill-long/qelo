@@ -48,34 +48,72 @@ fn near_expiry(expires_at: Option<u64>) -> bool {
         .unwrap_or(false)
 }
 
-/// A configured JMAP provider. Endpoints are discovered from the issuer at runtime.
+/// How a provider authenticates. Both kinds end up as a bearer token the JMAP client and
+/// push stream attach uniformly; they differ only in how that token is obtained and renewed.
+enum ProviderKind {
+    /// OAuth 2.0 Authorization Code + PKCE. Endpoints are discovered from `issuer` at
+    /// runtime; the access token is renewed via the refresh-token grant.
+    OAuth {
+        issuer: &'static str,
+        client_id: &'static str,
+        scope: &'static str,
+    },
+    /// A long-lived API token the user pastes (e.g. a Fastmail API token). There is no OAuth
+    /// dance and nothing to refresh: a rejected token (`401`) means re-auth — paste a new one.
+    Token,
+}
+
+/// A configured JMAP provider: how it authenticates plus where its session lives.
 struct Provider {
-    issuer: &'static str,
-    client_id: &'static str,
-    scope: &'static str,
+    kind: ProviderKind,
     session_url: &'static str,
+}
+
+impl Provider {
+    /// The OAuth parameters, or an error for a `Token` provider (which has no OAuth flow).
+    /// Lets the OAuth-only code paths (`login_flow`, `refresh`) fail loudly rather than
+    /// silently misbehave if ever reached for a token provider.
+    fn oauth(&self) -> Result<(&str, &str, &str), String> {
+        match &self.kind {
+            ProviderKind::OAuth {
+                issuer,
+                client_id,
+                scope,
+            } => Ok((issuer, client_id, scope)),
+            ProviderKind::Token => Err("provider does not use OAuth".to_string()),
+        }
+    }
 }
 
 fn provider(id: &str) -> Result<Provider, String> {
     match id {
         // Local dev (see dev/stalwart). Stalwart accepts any client_id with PKCE.
         "stalwart-dev" => Ok(Provider {
-            issuer: "https://localhost",
-            client_id: "qelo-dev",
-            scope: "",
+            kind: ProviderKind::OAuth {
+                issuer: "https://localhost",
+                client_id: "qelo-dev",
+                scope: "",
+            },
             session_url: "https://localhost/.well-known/jmap",
         }),
-        // Fastmail scaffold — NOT yet usable. Fastmail has no self-serve OAuth *client*
-        // registration (an account only exposes API tokens and app passwords), so there is
-        // no client_id to plug in here; `"qelo"` is a placeholder. The scopes (JMAP core +
-        // mail) and the loopback redirect (RFC 8252) this flow already uses are what a
-        // registered client would need. Until a client_id is obtained, the realistic
-        // production path for Fastmail is its API-token bearer (a manual token the user
-        // pastes), which is a separate auth provider — tracked in the plan, not built here.
+        // Fastmail OAuth scaffold — NOT usable. Fastmail has no self-serve OAuth *client*
+        // registration (an account only exposes API tokens and app passwords), so there is no
+        // client_id to plug in here; `"qelo"` is a placeholder. Kept to document the blocker
+        // and to be ready if Fastmail ever offers client registration. The usable Fastmail
+        // path today is `fastmail-token` below (a pasted API token).
         "fastmail" => Ok(Provider {
-            issuer: "https://api.fastmail.com",
-            client_id: "qelo",
-            scope: "urn:ietf:params:jmap:core urn:ietf:params:jmap:mail",
+            kind: ProviderKind::OAuth {
+                issuer: "https://api.fastmail.com",
+                client_id: "qelo",
+                scope: "urn:ietf:params:jmap:core urn:ietf:params:jmap:mail",
+            },
+            session_url: "https://api.fastmail.com/jmap/session",
+        }),
+        // Fastmail via a pasted API token (Settings → Privacy & Security → Connected apps &
+        // API tokens). Stored in the keychain like an OAuth access token but never refreshed;
+        // the same bearer is attached to JMAP requests and the push stream.
+        "fastmail-token" => Ok(Provider {
+            kind: ProviderKind::Token,
             session_url: "https://api.fastmail.com/jmap/session",
         }),
         other => Err(format!("Unknown provider: {other}")),
@@ -235,8 +273,9 @@ fn store_token_response(
 /// open the browser, capture the redirect on a loopback port, exchange the code.
 fn login_flow(provider_id: &str) -> Result<String, String> {
     let p = provider(provider_id)?;
-    let client = http_client(p.issuer)?;
-    let meta = metadata(&client, p.issuer)?;
+    let (issuer, client_id, scope) = p.oauth()?;
+    let client = http_client(issuer)?;
+    let meta = metadata(&client, issuer)?;
 
     // Loopback listener on an ephemeral port (RFC 8252 native-app redirect).
     let server = tiny_http::Server::http("127.0.0.1:0").map_err(|e| e.to_string())?;
@@ -255,13 +294,13 @@ fn login_flow(provider_id: &str) -> Result<String, String> {
     let mut auth_url = format!(
         "{}?response_type=code&client_id={}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256",
         meta.authorization_endpoint,
-        urlencoding::encode(p.client_id),
+        urlencoding::encode(client_id),
         urlencoding::encode(&redirect_uri),
         urlencoding::encode(&state),
         challenge,
     );
-    if !p.scope.is_empty() {
-        auth_url.push_str(&format!("&scope={}", urlencoding::encode(p.scope)));
+    if !scope.is_empty() {
+        auth_url.push_str(&format!("&scope={}", urlencoding::encode(scope)));
     }
 
     open::that(&auth_url).map_err(|e| format!("could not open browser: {e}"))?;
@@ -273,7 +312,7 @@ fn login_flow(provider_id: &str) -> Result<String, String> {
         ("grant_type", "authorization_code"),
         ("code", code.as_str()),
         ("redirect_uri", redirect_uri.as_str()),
-        ("client_id", p.client_id),
+        ("client_id", client_id),
         ("code_verifier", verifier.as_str()),
     ];
     let resp: TokenResponse = client
@@ -354,12 +393,13 @@ fn wait_for_code(server: &tiny_http::Server, expected_state: &str) -> Result<Str
 
 fn refresh(provider_id: &str, refresh_token: &str) -> Result<StoredTokens, RefreshError> {
     let p = provider(provider_id).map_err(RefreshError::Other)?;
-    let client = http_client(p.issuer).map_err(RefreshError::Other)?;
-    let meta = metadata(&client, p.issuer).map_err(RefreshError::Other)?;
+    let (issuer, client_id, _scope) = p.oauth().map_err(RefreshError::Other)?;
+    let client = http_client(issuer).map_err(RefreshError::Other)?;
+    let meta = metadata(&client, issuer).map_err(RefreshError::Other)?;
     let params = [
         ("grant_type", "refresh_token"),
         ("refresh_token", refresh_token),
-        ("client_id", p.client_id),
+        ("client_id", client_id),
     ];
     let resp = client
         .post(&meta.token_endpoint)
@@ -506,6 +546,45 @@ fn force_refresh(provider_id: &str, stale_token: &str) -> Result<Option<String>,
 #[tauri::command]
 pub async fn oauth_login(provider_id: String) -> Result<String, String> {
     tokio::task::spawn_blocking(move || login_flow(&provider_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Store a user-pasted API token for a `Token` provider (e.g. Fastmail), the bearer-auth
+/// analogue of `oauth_login`. Persists it in the keychain as a credential with no refresh
+/// token and no expiry, so `access_token` returns it verbatim and a `401` falls straight
+/// through to the re-auth gate (nothing to refresh). Returns the provider's session URL.
+fn store_api_token_inner(provider_id: &str, token: &str) -> Result<String, String> {
+    let p = provider(provider_id)?;
+    if !matches!(p.kind, ProviderKind::Token) {
+        return Err("provider does not accept a pasted API token".to_string());
+    }
+    let token = token.trim();
+    if token.is_empty() {
+        return Err("API token is empty".to_string());
+    }
+    let tokens = StoredTokens {
+        access_token: token.to_string(),
+        refresh_token: None,
+        expires_at: None,
+    };
+    save_tokens(provider_id, &tokens)?;
+    if let Ok(mut cache) = token_cache().lock() {
+        cache.insert(
+            provider_id.to_string(),
+            Cached {
+                access_token: token.to_string(),
+                expires_at: None,
+            },
+        );
+    }
+    Ok(p.session_url.to_string())
+}
+
+/// Store a pasted API token for a `Token` provider and return its JMAP session URL.
+#[tauri::command]
+pub async fn store_api_token(provider_id: String, token: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || store_api_token_inner(&provider_id, &token))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -942,6 +1021,55 @@ mod tests {
         assert!(ensure_provider_origin("stalwart-dev", "https://localhost:8443/jmap").is_err());
         assert!(ensure_provider_origin("stalwart-dev", "not a url").is_err());
         assert!(ensure_provider_origin("unknown-provider", "https://localhost/").is_err());
+    }
+
+    #[test]
+    fn fastmail_token_is_a_token_provider() {
+        let p = provider("fastmail-token").expect("known provider");
+        assert!(matches!(p.kind, ProviderKind::Token));
+        // A token provider has no OAuth params and is fetched over a validated (non-loopback)
+        // origin, so its access token is returned verbatim with nothing to refresh.
+        assert!(p.oauth().is_err());
+        assert!(!is_loopback_url(p.session_url));
+    }
+
+    #[test]
+    fn oauth_provider_exposes_its_params() {
+        let p = provider("stalwart-dev").expect("known provider");
+        let (issuer, client_id, _scope) = p.oauth().expect("oauth provider");
+        assert_eq!(issuer, "https://localhost");
+        assert_eq!(client_id, "qelo-dev");
+    }
+
+    #[test]
+    fn store_api_token_rejects_oauth_provider() {
+        // Guard runs before any keychain write, so this is hermetic.
+        let err = store_api_token_inner("stalwart-dev", "tok").unwrap_err();
+        assert!(err.contains("does not accept"));
+    }
+
+    #[test]
+    fn store_api_token_rejects_blank_token() {
+        // Whitespace-only trims to empty and is rejected before touching the keychain.
+        let err = store_api_token_inner("fastmail-token", "   ").unwrap_err();
+        assert!(err.contains("empty"));
+    }
+
+    #[test]
+    fn store_api_token_rejects_unknown_provider() {
+        assert!(store_api_token_inner("nope", "tok").is_err());
+    }
+
+    #[test]
+    fn push_origin_pinned_for_token_provider() {
+        // Fastmail's eventSourceUrl shares the session origin; a foreign host is rejected so a
+        // compromised webview can't redirect the pasted token elsewhere.
+        assert!(ensure_provider_origin(
+            "fastmail-token",
+            "https://api.fastmail.com/jmap/event/abc"
+        )
+        .is_ok());
+        assert!(ensure_provider_origin("fastmail-token", "https://evil.com/jmap/event").is_err());
     }
 
     #[test]
