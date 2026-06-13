@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { MethodResponse } from "../types";
+import type { EmailSubmission, MethodResponse } from "../types";
 import {
   clearKeyword,
   DETAIL_PROPERTIES,
@@ -7,6 +7,8 @@ import {
   emailQuery,
   emailQueryChanges,
   emailSet,
+  emailSubmissionSet,
+  identityGet,
   idsFromQuery,
   JmapMethodError,
   keywordPatch,
@@ -187,6 +189,68 @@ describe("setResult", () => {
   it("throws a JmapMethodError on a method-level error (via methodResult)", () => {
     const responses: MethodResponse[] = [["error", { type: "accountNotFound" }, "set"]];
     expect(() => setResult(responses, "set")).toThrow(JmapMethodError);
+  });
+});
+
+describe("identityGet", () => {
+  it("defaults to all identities (ids: null)", () => {
+    expect(identityGet("acc", "i")).toEqual(["Identity/get", { accountId: "acc", ids: null }, "i"]);
+  });
+
+  it("forwards an explicit id list", () => {
+    const [, args] = identityGet("acc", "i", ["id1"]);
+    expect(args.ids).toEqual(["id1"]);
+  });
+});
+
+describe("emailSubmissionSet", () => {
+  it("creates a submission that references the draft creation id and files it on success", () => {
+    const [name, args, callId] = emailSubmissionSet("acc", "sub", {
+      create: { sub: { identityId: "id1", emailId: "#draft" } },
+      onSuccessUpdateEmail: {
+        "#sub": {
+          "keywords/$draft": null,
+          "keywords/$seen": true,
+          "mailboxIds/d": null,
+          "mailboxIds/s": true,
+        },
+      },
+    });
+    expect(name).toBe("EmailSubmission/set");
+    expect(callId).toBe("sub");
+    expect(args).toEqual({
+      accountId: "acc",
+      create: { sub: { identityId: "id1", emailId: "#draft" } },
+      onSuccessUpdateEmail: {
+        "#sub": {
+          "keywords/$draft": null,
+          "keywords/$seen": true,
+          "mailboxIds/d": null,
+          "mailboxIds/s": true,
+        },
+      },
+    });
+  });
+
+  it("omits absent optional sections", () => {
+    const [, args] = emailSubmissionSet("acc", "sub", {
+      create: { sub: { identityId: "id1", emailId: "#draft" } },
+    });
+    expect(args).not.toHaveProperty("onSuccessUpdateEmail");
+    expect(args).not.toHaveProperty("onSuccessDestroyEmail");
+  });
+
+  it("setResult parses an EmailSubmission/set response and matches the FIRST same-id response", () => {
+    // onSuccessUpdateEmail makes the server emit a second response (the implicit Email/set)
+    // under the SAME call id; setResult must surface the submission's maps, not the Email/set's.
+    const responses: MethodResponse[] = [
+      ["EmailSubmission/set", { newState: "s2", created: { sub: { id: "b" } } }, "sub"],
+      ["Email/set", { newState: "s3", updated: { e1: null } }, "sub"],
+    ];
+    const r = setResult<EmailSubmission>(responses, "sub");
+    expect(r.created.sub?.id).toBe("b");
+    expect(r.updated).toEqual({}); // not the trailing Email/set's `updated`
+    expect(r.notCreated).toEqual({});
   });
 });
 
