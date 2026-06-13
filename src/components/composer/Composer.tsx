@@ -54,9 +54,10 @@ export function Composer() {
   const canSend = createMemo(() => ready() && hasRecipient());
   const canSave = createMemo(() => ready());
 
-  // The native dialog fires "cancel" on Escape (and backdrop-dismiss). We own closing — discardDraft
-  // resets the store and unmounts the dialog — so always preventDefault; discard only when idle, so
-  // Escape can't yank the window out from under an in-flight send.
+  // The native dialog fires "cancel" on Escape. We own closing — discardDraft resets the store and
+  // unmounts the dialog — so preventDefault and discard only when idle, so Escape can't yank the
+  // window out from under an in-flight send. (Backdrop clicks are intentionally NOT dismissive: a
+  // stray click shouldn't drop a draft — closing is explicit via Discard / the ✕.)
   function onCancel(event: Event) {
     event.preventDefault();
     if (busy() === null) discardDraft();
