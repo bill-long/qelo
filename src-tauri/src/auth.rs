@@ -597,14 +597,20 @@ fn find_event_separator(buf: &[u8]) -> Option<(usize, usize)> {
 
 /// Drain every complete SSE event from `buf`, leaving any partial trailing event in place.
 /// Pure (no I/O) so the framing is unit-testable. Events with no `data:` field (comment
-/// pings) yield `None` and are dropped.
+/// pings) yield `None` and are dropped. SSE is UTF-8 by spec, so a block that isn't valid
+/// UTF-8 is a protocol violation and is skipped outright rather than lossily decoded (which
+/// would silently corrupt the JSON payload).
 fn drain_sse_frames(buf: &mut Vec<u8>) -> Vec<SseFrame> {
     let mut frames = Vec::new();
     while let Some((end, sep_len)) = find_event_separator(buf) {
-        // A complete event block (bytes before the separator) is valid UTF-8.
-        let block = String::from_utf8_lossy(&buf[..end]).into_owned();
+        // Parse before draining; the resulting frame owns its strings, so it doesn't borrow
+        // `buf`. (A complete block never splits a multi-byte char, since the `\n`/`\r`
+        // separators are ASCII and can't appear inside a UTF-8 sequence.)
+        let frame = std::str::from_utf8(&buf[..end])
+            .ok()
+            .and_then(parse_sse_block);
         buf.drain(..end + sep_len);
-        if let Some(frame) = parse_sse_block(&block) {
+        if let Some(frame) = frame {
             frames.push(frame);
         }
     }
@@ -834,6 +840,22 @@ mod tests {
     fn skips_comment_pings_without_data() {
         let mut buf = b": ping\n\n".to_vec();
         assert!(drain_sse_frames(&mut buf).is_empty());
+    }
+
+    #[test]
+    fn skips_non_utf8_block_but_keeps_draining() {
+        // A non-UTF-8 block (protocol violation) is dropped, not lossily decoded, and a
+        // following valid event still parses.
+        let mut buf = b"event: state\ndata: \xff\xfe\n\nevent: state\ndata: ok\n\n".to_vec();
+        let frames = drain_sse_frames(&mut buf);
+        assert_eq!(
+            frames,
+            vec![SseFrame {
+                event: "state".into(),
+                data: "ok".into(),
+            }]
+        );
+        assert!(buf.is_empty());
     }
 
     #[test]
