@@ -11,7 +11,7 @@ import type { OpenTransport } from "@/jmap/push";
 import { PROVIDER_ID } from "./account";
 
 /** Events forwarded by the Rust `open_push_stream` command (see src-tauri/src/auth.rs). */
-type PushEvent = { type: "open" } | { type: "state"; data: string };
+type PushEvent = { type: "open" } | { type: "state"; data: string } | { type: "unauthorized" };
 
 /**
  * Open the push stream via the Rust backend. The `open_push_stream` command stays pending
@@ -28,6 +28,10 @@ export const tauriChannelTransport: OpenTransport = (url, callbacks) => {
     if (closed) return;
     if (event.type === "open") callbacks.onOpen();
     else if (event.type === "state") callbacks.onState(event.data);
+    // Rust sends this just before the command fails when the stream couldn't be authenticated
+    // even after a forced refresh — surface it as a genuine auth failure (re-auth) rather than
+    // letting the impending `onError` (from the rejected invoke) treat it as a transient drop.
+    else if (event.type === "unauthorized") callbacks.onAuthError();
   };
 
   void invoke("open_push_stream", { providerId: PROVIDER_ID, streamId, url, onEvent: channel })

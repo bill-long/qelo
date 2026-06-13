@@ -127,20 +127,39 @@ export function adoptClient(injected: JmapClient | null): void {
 }
 
 /**
- * Route a caught error: if it's a {@link JmapAuthError} (a 401 whose token refresh
- * failed), tear down the live connection and flip back to the error/sign-in gate so the
- * user can re-authenticate, and return true. Non-auth errors are left for the caller to
- * handle locally (return false). This is the single place a mid-session auth failure —
- * from any store action — turns into a re-auth prompt.
+ * Tear down the live connection and flip to the error/sign-in gate with `message` so the
+ * user can re-authenticate: stop live updates, drop the client + stale session, and surface
+ * the reason. The single place a mid-session auth failure — from a request or the push
+ * stream — turns into a re-auth prompt.
  */
-export function handleAuthFailure(err: unknown): boolean {
-  if (!(err instanceof JmapAuthError)) return false;
+function enterReauthGate(message: string): void {
   stopSync(); // the session is dead, so live updates are too — stop the EventSource
   client = null;
   setSession(null); // drop the stale session behind the now-dead client
-  setConnectionError(err.message);
+  setConnectionError(message);
   setConnectionStatus("error");
+}
+
+/**
+ * Route a caught error: if it's a {@link JmapAuthError} (a 401 whose token refresh
+ * failed), raise the re-auth gate and return true. Non-auth errors are left for the caller
+ * to handle locally (return false).
+ */
+export function handleAuthFailure(err: unknown): boolean {
+  if (!(err instanceof JmapAuthError)) return false;
+  enterReauthGate(err.message);
   return true;
+}
+
+/**
+ * Raise the re-auth gate from the push stream. The desktop push transport (Rust) reports a
+ * genuine auth failure — the bearer is gone or still `401`s after a forced refresh — apart
+ * from a transient drop. Previously that only looped reconnects until the next regular
+ * request hit {@link JmapAuthError}; this surfaces it immediately, the same teardown a 401
+ * on a request triggers.
+ */
+export function handlePushAuthFailure(): void {
+  enterReauthGate("Push stream unauthorized; sign in again");
 }
 
 /**

@@ -320,4 +320,61 @@ describe("subscribeToChanges with an injected transport", () => {
     vi.advanceTimersByTime(60000);
     expect(transports).toHaveLength(1);
   });
+
+  it("raises onAuthFailure on a genuine auth error and stops reconnecting", () => {
+    const { transports, open, last } = makeOpener();
+    const onAuthFailure = vi.fn();
+    const statuses: PushStatus[] = [];
+    subscribeToChanges(
+      SESSION,
+      ["Email"],
+      { onChange: () => {}, onStatus: (s) => statuses.push(s), onAuthFailure },
+      open,
+    );
+    last().cbs.onOpen();
+    const t = last();
+
+    // A genuine auth failure: hand off to the re-auth gate and close the stream — no backoff.
+    t.cbs.onAuthError();
+    expect(onAuthFailure).toHaveBeenCalledTimes(1);
+    expect(t.closed).toBe(true);
+    expect(statuses).toEqual(["connecting", "live"]); // never went to "reconnecting"
+
+    // No reconnect is scheduled, and the now-impending drop callback can't revive one.
+    t.cbs.onError();
+    vi.advanceTimersByTime(60000);
+    expect(transports).toHaveLength(1);
+  });
+
+  it("cancels a pending reconnect if an auth error follows a drop", () => {
+    const { transports, open, last } = makeOpener();
+    const onAuthFailure = vi.fn();
+    subscribeToChanges(SESSION, ["Email"], { onChange: () => {}, onAuthFailure }, open);
+    const t = last();
+    t.cbs.onOpen();
+
+    // The drop schedules a reconnect; the auth error (e.g. the rejected invoke settling after
+    // the unauthorized signal) must cancel it rather than letting a doomed retry fire.
+    t.cbs.onError();
+    t.cbs.onAuthError();
+    expect(onAuthFailure).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(60000);
+    expect(transports).toHaveLength(1);
+  });
+
+  it("ignores onAuthError from a superseded transport", () => {
+    const { open, last } = makeOpener();
+    const onAuthFailure = vi.fn();
+    subscribeToChanges(SESSION, ["Email"], { onChange: () => {}, onAuthFailure }, open);
+    const t1 = last();
+    t1.cbs.onOpen();
+    t1.cbs.onError(); // drop → schedule reconnect
+    vi.advanceTimersByTime(1000); // reconnect → t2 is now active
+    const t2 = last();
+
+    // A late auth error from the superseded t1 must not raise the gate or close t2.
+    t1.cbs.onAuthError();
+    expect(onAuthFailure).not.toHaveBeenCalled();
+    expect(t2.closed).toBe(false);
+  });
 });

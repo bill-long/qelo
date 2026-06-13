@@ -28,6 +28,12 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 /// Cap on the unparsed push-stream buffer (one incomplete SSE event). JMAP StateChange
 /// payloads are tiny; this only guards against a server that never sends an event separator.
 const MAX_PUSH_BUFFER: usize = 1024 * 1024;
+/// Idle timeout for the push stream: if no bytes arrive within this window the connection is
+/// treated as a (half-open) drop and reported so the frontend reconnects. The stream requests
+/// `ping=30` (a server keep-alive comment every ~30s), so this is set to comfortably outlast
+/// two missed pings — a silently stalled socket trips it in ~70s instead of waiting for TCP
+/// to eventually error, while a healthy connection (pings + data) keeps resetting it.
+const PUSH_IDLE_TIMEOUT: Duration = Duration::from_secs(70);
 
 /// In-memory access-token cache, keyed by provider id. Avoids a keychain read on every
 /// JMAP request and — by holding the lock across refresh — serializes refreshes so
@@ -631,11 +637,16 @@ pub fn logout(provider_id: String) -> Result<(), String> {
 /// One event forwarded to the frontend channel. `Open` fires once the upstream responds
 /// `200` (maps to EventSource's `open`); `State` carries an SSE `state` event's `data`
 /// payload verbatim for the frontend to parse (the `state` event it already listens for).
+/// `Unauthorized` is sent (once, just before the command fails) when the stream couldn't be
+/// authenticated even after a forced token refresh — the push analogue of a JMAP `401` whose
+/// refresh failed, so the frontend can raise the re-auth gate directly instead of looping
+/// reconnects until the next regular request hits `JmapAuthError`.
 #[derive(Clone, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub(crate) enum PushEvent {
     Open,
     State { data: String },
+    Unauthorized,
 }
 
 /// Cancellation handles for in-flight push streams, keyed by the frontend-supplied stream
@@ -744,6 +755,16 @@ enum OpenError {
     Other(String),
 }
 
+/// Why a push stream ended. `Unauthorized` means the credential is gone/invalid and can't be
+/// refreshed (no sign-in, no refresh token, or still `401` after a forced refresh) — re-auth
+/// is required, mirroring the request path's `JmapAuthError`. `Transient` is every recoverable
+/// drop (network error, idle timeout, server close): reconnect with backoff. The frontend owns
+/// reconnection, so both still fail the command; only `Unauthorized` also emits a typed signal.
+enum PushError {
+    Unauthorized(String),
+    Transient(String),
+}
+
 async fn open_sse(
     client: &reqwest::Client,
     url: &str,
@@ -764,15 +785,13 @@ async fn open_sse(
 }
 
 /// Token reads/refreshes touch the keychain and use the blocking HTTP client, so run them
-/// off the async runtime.
-async fn blocking_access_token(provider_id: &str) -> Result<String, String> {
+/// off the async runtime. `Ok(None)` means no usable credential (re-auth); the caller turns
+/// that into a `PushError::Unauthorized`, distinct from an `Err` (transient keychain failure).
+async fn blocking_access_token(provider_id: &str) -> Result<Option<String>, String> {
     let pid = provider_id.to_string();
-    let token = tokio::task::spawn_blocking(move || access_token(&pid))
+    tokio::task::spawn_blocking(move || access_token(&pid))
         .await
-        .map_err(|e| e.to_string())??;
-    // No usable token means re-auth; for the push stream that surfaces as a failed open →
-    // reconnect, while the regular request path raises the JmapAuthError re-auth gate.
-    token.ok_or_else(|| "not signed in; sign in again".to_string())
+        .map_err(|e| e.to_string())?
 }
 
 async fn blocking_force_refresh(provider_id: &str, stale: &str) -> Result<Option<String>, String> {
@@ -785,23 +804,38 @@ async fn blocking_force_refresh(provider_id: &str, stale: &str) -> Result<Option
 
 /// Open the SSE stream with a valid bearer token, refreshing once on a `401` and retrying:
 /// a token can be valid by the clock yet revoked server-side, and the long-lived push stream
-/// is often the first place that surfaces.
+/// is often the first place that surfaces. A `401` that survives the forced refresh — or no
+/// usable credential at all — is a `PushError::Unauthorized` (re-auth); everything else is
+/// `Transient` (reconnect).
 async fn open_authenticated(
     client: &reqwest::Client,
     url: &str,
     provider_id: &str,
-) -> Result<reqwest::Response, String> {
-    let token = blocking_access_token(provider_id).await?;
+) -> Result<reqwest::Response, PushError> {
+    let token = match blocking_access_token(provider_id).await {
+        Ok(Some(token)) => token,
+        Ok(None) => {
+            return Err(PushError::Unauthorized(
+                "not signed in; sign in again".to_string(),
+            ))
+        }
+        Err(e) => return Err(PushError::Transient(e)),
+    };
     match open_sse(client, url, &token).await {
         Ok(resp) => Ok(resp),
-        Err(OpenError::Unauthorized) => match blocking_force_refresh(provider_id, &token).await? {
-            Some(fresh) => open_sse(client, url, &fresh).await.map_err(|e| match e {
-                OpenError::Unauthorized => "push stream unauthorized after refresh".to_string(),
-                OpenError::Other(msg) => msg,
+        Err(OpenError::Unauthorized) => match blocking_force_refresh(provider_id, &token).await {
+            Ok(Some(fresh)) => open_sse(client, url, &fresh).await.map_err(|e| match e {
+                OpenError::Unauthorized => {
+                    PushError::Unauthorized("push stream unauthorized after refresh".to_string())
+                }
+                OpenError::Other(msg) => PushError::Transient(msg),
             }),
-            None => Err("push stream unauthorized; sign in again".to_string()),
+            Ok(None) => Err(PushError::Unauthorized(
+                "push stream unauthorized; sign in again".to_string(),
+            )),
+            Err(e) => Err(PushError::Transient(e)),
         },
-        Err(OpenError::Other(msg)) => Err(msg),
+        Err(OpenError::Other(msg)) => Err(PushError::Transient(msg)),
     }
 }
 
@@ -827,35 +861,56 @@ async fn run_push_stream(
     provider_id: &str,
     url: &str,
     channel: &Channel<PushEvent>,
-) -> Result<(), String> {
+) -> Result<(), PushError> {
     // Validate the origin before touching the token (see ensure_provider_origin).
-    ensure_provider_origin(provider_id, url)?;
-    let client = async_http_client(url)?;
+    ensure_provider_origin(provider_id, url).map_err(PushError::Transient)?;
+    let client = async_http_client(url).map_err(PushError::Transient)?;
     let response = open_authenticated(&client, url, provider_id).await?;
-    channel.send(PushEvent::Open).map_err(|e| e.to_string())?;
+    channel
+        .send(PushEvent::Open)
+        .map_err(|e| PushError::Transient(e.to_string()))?;
 
     let mut stream = response.bytes_stream();
     let mut buf: Vec<u8> = Vec::new();
-    while let Some(chunk) = stream.next().await {
-        let bytes = chunk.map_err(|e| format!("push stream error: {e}"))?;
-        buf.extend_from_slice(&bytes);
+    loop {
+        // Bound each read so a half-open socket that stops sending bytes *and* pings is
+        // detected in ~PUSH_IDLE_TIMEOUT instead of hanging until TCP eventually errors. A
+        // healthy stream resets this on every chunk (data or a `ping=30` keep-alive comment).
+        let chunk = match tokio::time::timeout(PUSH_IDLE_TIMEOUT, stream.next()).await {
+            Ok(Some(chunk)) => {
+                chunk.map_err(|e| PushError::Transient(format!("push stream error: {e}")))?
+            }
+            Ok(None) => {
+                return Err(PushError::Transient(
+                    "push stream closed by server".to_string(),
+                ))
+            }
+            Err(_) => {
+                return Err(PushError::Transient(format!(
+                    "push stream idle for {}s (no data or ping)",
+                    PUSH_IDLE_TIMEOUT.as_secs()
+                )));
+            }
+        };
+        buf.extend_from_slice(&chunk);
         for frame in drain_sse_frames(&mut buf) {
             // Forward only `state` events (what the frontend listens for); pings carry no
             // data and were already dropped during parsing.
             if frame.event == "state" {
                 channel
                     .send(PushEvent::State { data: frame.data })
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| PushError::Transient(e.to_string()))?;
             }
         }
         // Cap the unparsed tail so a server that never sends an event separator (or a single
         // unbounded event) can't grow the buffer until OOM. Checked after draining, so a
         // legitimately large *complete* event isn't penalized.
         if buf.len() > MAX_PUSH_BUFFER {
-            return Err("push stream exceeded buffer limit".to_string());
+            return Err(PushError::Transient(
+                "push stream exceeded buffer limit".to_string(),
+            ));
         }
     }
-    Err("push stream closed by server".to_string())
 }
 
 /// Open the JMAP push (EventSource) stream for a provider, attaching the OAuth bearer token
@@ -876,9 +931,10 @@ pub async fn open_push_stream(
         prev.notify_one();
     }
     // Race the stream against cancellation so a `close_push_stream` interrupts *any* phase —
-    // including a connection-open that hangs after TCP connect (no read timeout is set). When
-    // cancel wins, `run_push_stream`'s future is dropped, which closes the upstream connection.
-    // `notify_one` stores a permit, so a cancel that arrives before this `select!` is honored.
+    // including a connection-open that hangs after TCP connect, or a read blocked on the idle
+    // timeout. When cancel wins, `run_push_stream`'s future is dropped, closing the upstream
+    // connection. `notify_one` stores a permit, so a cancel that arrives before this `select!`
+    // is honored.
     let result = tokio::select! {
         _ = cancel.notified() => Ok(()),
         outcome = run_push_stream(&provider_id, &url, &on_event) => outcome,
@@ -888,7 +944,20 @@ pub async fn open_push_stream(
     if reg.get(&stream_id).is_some_and(|h| Arc::ptr_eq(h, &cancel)) {
         reg.remove(&stream_id);
     }
-    result
+    drop(reg);
+
+    match result {
+        Ok(()) => Ok(()),
+        // A genuine auth failure (no refreshable credential, or still `401` after a forced
+        // refresh): emit a typed signal so the frontend raises the re-auth gate directly, then
+        // still fail the command. Best-effort send — if it fails, the frontend's reconnect plus
+        // the next regular request's `JmapAuthError` are the fallback (today's behavior).
+        Err(PushError::Unauthorized(msg)) => {
+            let _ = on_event.send(PushEvent::Unauthorized);
+            Err(msg)
+        }
+        Err(PushError::Transient(msg)) => Err(msg),
+    }
 }
 
 /// Stop a push stream started by `open_push_stream`, dropping its upstream connection. A
@@ -1070,6 +1139,34 @@ mod tests {
         )
         .is_ok());
         assert!(ensure_provider_origin("fastmail-token", "https://evil.com/jmap/event").is_err());
+    }
+
+    #[test]
+    fn push_events_serialize_to_their_wire_contract() {
+        // The desktop transport (src/stores/push-transport.ts) discriminates on `type`, so pin
+        // the exact JSON each variant produces — especially `unauthorized`, the new re-auth signal.
+        assert_eq!(
+            serde_json::to_string(&PushEvent::Open).unwrap(),
+            r#"{"type":"open"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&PushEvent::State {
+                data: "{\"x\":1}".to_string()
+            })
+            .unwrap(),
+            r#"{"type":"state","data":"{\"x\":1}"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&PushEvent::Unauthorized).unwrap(),
+            r#"{"type":"unauthorized"}"#
+        );
+    }
+
+    #[test]
+    fn push_idle_timeout_outlasts_two_pings() {
+        // The stream requests ping=30; the idle watchdog must allow at least two missed pings
+        // before tripping, so a momentary stall isn't mistaken for a dead socket.
+        assert!(PUSH_IDLE_TIMEOUT.as_secs() > 60);
     }
 
     #[test]
