@@ -1,6 +1,6 @@
 import { createSignal } from "solid-js";
 import { type PushHandlers, type PushStatus, subscribeToChanges } from "@/jmap/push";
-import { handleAuthFailure, isDesktop, jmap, session } from "./account";
+import { handleAuthFailure, handlePushAuthFailure, isDesktop, jmap, session } from "./account";
 import { syncEmails, syncThreadList } from "./emails";
 import { syncMailboxes } from "./mailboxes";
 import { tauriChannelTransport } from "./push-transport";
@@ -86,6 +86,9 @@ export function startSync(): void {
       runSync(syncMail);
       runSync(syncFolders);
     },
+    // A push auth failure that survived a forced refresh is a dead session — raise the
+    // re-auth gate now (which also stops sync) instead of waiting for the next request.
+    onAuthFailure: handlePushAuthFailure,
   };
   // subscribeToChanges emits "connecting" synchronously when it actually opens a stream
   // (and stays silent — pushStatus null — when EventSource is unavailable), so don't

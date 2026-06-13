@@ -31,6 +31,15 @@ export interface PushHandlers {
    * a full resync to catch up.
    */
   onReopen?: () => void;
+  /**
+   * Fired when the transport reports a *genuine* auth failure — the credential is gone or
+   * can't be refreshed (distinct from a transient drop, which just reconnects). The caller
+   * should raise the re-auth gate, the same as a `JmapAuthError` on a regular request. Only
+   * a transport that can tell auth failure apart from a drop calls this (the desktop Rust
+   * channel); the raw-`EventSource` transport never does, so the browser path is unaffected.
+   * After this fires the subscription is torn down locally (no further reconnects).
+   */
+  onAuthFailure?: () => void;
 }
 
 /**
@@ -42,6 +51,12 @@ export interface TransportCallbacks {
   onOpen: () => void;
   onState: (data: string) => void;
   onError: () => void;
+  /**
+   * The stream ended because of a genuine, unrecoverable auth failure (not a transient drop
+   * to retry). A transport that can't tell the two apart (a raw `EventSource`) simply never
+   * calls this and relies on `onError` + the next request's `JmapAuthError`.
+   */
+  onAuthError: () => void;
 }
 
 /** A live push transport. `close()` tears down its underlying stream. */
@@ -115,6 +130,7 @@ export function subscribeToChanges(
   let attempted = false; // has the first connect been kicked off (vs. a reconnect)?
   let everOpened = false; // gate onReopen so it fires on re-opens, not the first open
   let closed = false; // unsubscribed: stop reconnecting and ignore late events
+  let generation = 0; // bumped per connect(); identifies the latest attempt
 
   const connect = () => {
     if (closed) return;
@@ -123,10 +139,15 @@ export function subscribeToChanges(
     if (!attempted) handlers.onStatus?.("connecting");
     attempted = true;
 
+    const myGen = ++generation;
     let transport: PushTransport | null = null;
-    // Only the active transport reacts; a callback from a superseded or closed one is
-    // ignored so a stale event can't route changes or kick off an extra reconnect.
-    const active = () => !closed && source === transport;
+    // Not superseded: still the latest connect() attempt and not unsubscribed. (A scheduled
+    // reconnect bumps the generation only when it *fires*, so two callbacks from the same
+    // transport — e.g. onError then onAuthError — both still see the current generation.)
+    const current = () => !closed && myGen === generation;
+    // The active *open* stream: current and not already torn down (a drop nulls `source`).
+    // onOpen/onState/onError gate on this so a callback from a dropped stream is ignored.
+    const active = () => current() && source === transport;
 
     transport = openTransport(url, {
       onOpen: () => {
@@ -158,6 +179,23 @@ export function subscribeToChanges(
         transport?.close();
         source = null;
         scheduleReconnect();
+      },
+      onAuthError: () => {
+        // A genuine, unrecoverable auth failure (the bearer can't be refreshed). Reconnecting
+        // would just 401 again, so stop the brain — close this transport, cancel any pending
+        // reconnect — and hand off to the caller to raise the re-auth gate (which tears the
+        // subscription down via the returned unsubscribe). Mirrors a request-path JmapAuthError.
+        // Gate on `current()` not `active()`: this can arrive right after onError already
+        // nulled `source` (the auth signal and the dropped-stream error race), and it must
+        // still win — but a callback from a genuinely superseded transport is ignored.
+        if (!current()) return;
+        transport?.close();
+        source = null;
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        handlers.onAuthFailure?.();
       },
     });
     source = transport;
