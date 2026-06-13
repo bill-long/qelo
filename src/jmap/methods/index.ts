@@ -4,7 +4,7 @@
 //
 // Pure protocol — no SolidJS, no UI. Field names follow RFC 8620/8621 exactly.
 
-import type { Id, MethodCall, MethodResponse } from "../types";
+import type { Email, EmailSetResponse, Id, MethodCall, MethodResponse, SetError } from "../types";
 
 export const CAP_CORE = "urn:ietf:params:jmap:core";
 export const CAP_MAIL = "urn:ietf:params:jmap:mail";
@@ -183,6 +183,49 @@ export function emailChanges(
 }
 
 // ---------------------------------------------------------------------------
+// Email set (mutations)
+// ---------------------------------------------------------------------------
+
+/**
+ * A single record's patch for `Email/set update`. Keys are JSON pointers into the Email
+ * (RFC 8620 §5.3) — e.g. `"keywords/$seen"`, `"mailboxIds/<id>"` — set to the new value
+ * or `null` to remove that pointer. Build them with the typed helpers below rather than
+ * writing pointer strings by hand so a caller can't typo `keyword/` or `keywords$seen`.
+ */
+export type EmailPatch = Record<string, unknown>;
+
+export interface EmailSetOptions {
+  /** Creation-id → new-record map; the ids become `#creationId` back-references. */
+  create?: Record<string, Record<string, unknown>>;
+  /** Existing-id → patch map (JSON-pointer keys; see {@link EmailPatch}). */
+  update?: Record<Id, EmailPatch>;
+  destroy?: Id[];
+}
+
+export function emailSet(accountId: Id, callId: string, opts: EmailSetOptions): MethodCall {
+  const args: Record<string, unknown> = { accountId };
+  if (opts.create) args.create = opts.create;
+  if (opts.update) args.update = opts.update;
+  if (opts.destroy) args.destroy = opts.destroy;
+  return ["Email/set", args, callId];
+}
+
+/** Patch that sets a keyword, e.g. `setKeyword("$seen")` → `{"keywords/$seen": true}`. */
+export function setKeyword(keyword: string): EmailPatch {
+  return { [`keywords/${keyword}`]: true };
+}
+
+/** Patch that removes a keyword, e.g. `clearKeyword("$seen")` → `{"keywords/$seen": null}`. */
+export function clearKeyword(keyword: string): EmailPatch {
+  return { [`keywords/${keyword}`]: null };
+}
+
+/** Set or clear a keyword by boolean — the toggle form the keyword store actions use. */
+export function keywordPatch(keyword: string, on: boolean): EmailPatch {
+  return on ? setKeyword(keyword) : clearKeyword(keyword);
+}
+
+// ---------------------------------------------------------------------------
 // Thread
 // ---------------------------------------------------------------------------
 
@@ -229,4 +272,50 @@ export function methodResult(responses: MethodResponse[], callId: string): Recor
     throw new JmapMethodError(type, callId, args);
   }
   return found[1];
+}
+
+/**
+ * The per-record maps of an `Email/set` response, normalized so callers never null-check:
+ * each map defaults to `{}` and `destroyed` to `[]`. Where `methodResult` throws on a
+ * method-level error and otherwise hands back raw args, this surfaces the per-item failures
+ * (`notCreated`/`notUpdated`/`notDestroyed`) that ride on an *otherwise-successful* `/set`
+ * response — the maps a mutation must check to know which records the server actually refused.
+ */
+export interface SetResult {
+  oldState: string | null;
+  newState: string;
+  created: Record<Id, Partial<Email> | null>;
+  updated: Record<Id, Partial<Email> | null>;
+  destroyed: Id[];
+  notCreated: Record<Id, SetError>;
+  notUpdated: Record<Id, SetError>;
+  notDestroyed: Record<Id, SetError>;
+}
+
+/**
+ * Parse a `/set` (Email/set, and later Mailbox/EmailSubmission) response into a typed
+ * {@link SetResult}. Throws a {@link JmapMethodError} on a method-level error (via
+ * `methodResult`); the per-item `not*` maps are normalized to `{}` so a caller does
+ * `Object.keys(result.notUpdated)` without a guard.
+ */
+export function setResult(responses: MethodResponse[], callId: string): SetResult {
+  // The raw args are the EmailSetResponse wire shape (nullable maps); SetResult is its
+  // normalized form. methodResult has already thrown on a method-level error.
+  const args = methodResult(responses, callId) as unknown as EmailSetResponse;
+  // newState is a required cursor token on a successful /set (RFC 8620 §5.3). A missing/
+  // non-string one signals a malformed response — fail fast rather than hand back "" and let
+  // a caller persist an invalid cursor.
+  if (typeof args.newState !== "string") {
+    throw new Error(`/set response for "${callId}" has no string newState`);
+  }
+  return {
+    oldState: typeof args.oldState === "string" ? args.oldState : null,
+    newState: args.newState,
+    created: args.created ?? {},
+    updated: args.updated ?? {},
+    destroyed: args.destroyed ?? [],
+    notCreated: args.notCreated ?? {},
+    notUpdated: args.notUpdated ?? {},
+    notDestroyed: args.notDestroyed ?? {},
+  };
 }

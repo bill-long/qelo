@@ -2,20 +2,24 @@ import { createStore, produce } from "solid-js/store";
 import { drainChanges } from "@/jmap/changes";
 import {
   DETAIL_PROPERTIES,
+  type EmailPatch,
   type EmailQueryOptions,
   emailChanges,
   emailGet,
   emailQuery,
   emailQueryChanges,
+  emailSet,
   idsFromQuery,
   JmapMethodError,
   LIST_PROPERTIES,
   methodResult,
+  setResult,
   threadGet,
 } from "@/jmap/methods";
 import type { Email } from "@/jmap/types";
 import { handleAuthFailure, jmap } from "./account";
-import { setSelectedEmailId, setSelectedThreadId } from "./ui";
+import { selectedMailboxRights } from "./mailboxes";
+import { selectedThreadId, setSelectedEmailId, setSelectedThreadId } from "./ui";
 
 /** Cache of fetched Email objects, keyed by id. Shared by the list and (later) reading pane. */
 export const [emails, setEmails] = createStore<Record<string, Email>>({});
@@ -308,6 +312,10 @@ export async function loadThread(threadId: string): Promise<void> {
     if (thread.threadId !== threadId) return; // superseded by a newer selection
     const list = (threadResult.list ?? []) as Array<{ id: string; emailIds: string[] }>;
     setThread({ emailIds: list[0]?.emailIds ?? [], loading: false });
+    // D1: mark the conversation's shown-and-unread messages read now that it's open. Runs
+    // synchronously off the freshly-set thread state, so a manual "mark unread" can only come
+    // after (and thus win); the markSeen request itself is fire-and-forget.
+    autoMarkThreadRead(threadId);
   } catch (err) {
     if (handleAuthFailure(err)) return;
     if (thread.threadId !== threadId) return;
@@ -429,4 +437,181 @@ export async function syncEmails(): Promise<void> {
     cacheEmails((methodResult(got, "g").list ?? []) as Email[]);
   }
   emailState = result.newState;
+}
+
+// --- Mutations: optimistic Email/set ---------------------------------------
+
+// Both `keywords` and `mailboxIds` are presence maps (`Record<string, true>`: a key's
+// presence means set). Every keyword/mailbox mutation is therefore "set/clear one key" on
+// one of those maps, which `Email/set update` expresses as the JSON-pointer patch
+// `{"<map>/<key>": true | null}`. Modeling a mutation as a list of these makes one wrapper
+// (optimisticEmailUpdate) serve markSeen/setFlagged now and PR 2's move/trash later.
+type PresenceMap = "keywords" | "mailboxIds";
+interface PresencePatch {
+  map: PresenceMap;
+  key: string;
+  /** true → set the key (pointer = true); false → remove it (pointer = null). */
+  present: boolean;
+}
+
+function isPresent(email: Email, map: PresenceMap, key: string): boolean {
+  return email[map][key] === true;
+}
+
+function applyPresence(email: Email, p: PresencePatch): void {
+  if (p.present) email[p.map][p.key] = true;
+  else delete email[p.map][p.key];
+}
+
+/**
+ * Optimistically apply presence-map patches to the held emails, issue ONE batched
+ * Email/set update for every id, and roll back the rows the server refuses. Reused by every
+ * keyword/mailbox mutation.
+ *
+ * Stale-snapshot discipline (see qelo-review-checklist): a coalesced syncEmails can refetch
+ * and overwrite a row across our `await`. So we (a) capture only the *prior presence of the
+ * exact fields we touch* per row — never a wholesale snapshot — and (b) on rollback revert a
+ * field only if it still holds the value we optimistically wrote; if sync changed it to
+ * newer server truth in the meantime, we leave that truth alone. We never advance emailState
+ * from this /set — the push-driven drain owns that cursor.
+ *
+ * Resolves (never rejects) so callers can fire-and-forget: a transport/method failure rolls
+ * everything back and is logged; an auth failure raises the re-auth gate.
+ */
+async function optimisticEmailUpdate(ids: string[], patches: PresencePatch[]): Promise<void> {
+  if (ids.length === 0) return;
+  const held = ids.filter((id) => emails[id]);
+
+  // Capture pre-optimistic presence of each patched field, per held row, for a precise revert.
+  const prior = new Map<string, boolean[]>();
+  for (const id of held) {
+    const email = emails[id];
+    if (email)
+      prior.set(
+        id,
+        patches.map((p) => isPresent(email, p.map, p.key)),
+      );
+  }
+
+  setEmails(
+    produce((store) => {
+      for (const id of held) {
+        const email = store[id];
+        if (!email) continue;
+        for (const p of patches) applyPresence(email, p);
+      }
+    }),
+  );
+
+  // The patch object is identical for every id, so build it once.
+  const patchObj: EmailPatch = {};
+  for (const p of patches) patchObj[`${p.map}/${p.key}`] = p.present ? true : null;
+  const update: Record<string, EmailPatch> = {};
+  for (const id of ids) update[id] = patchObj;
+
+  let refused: string[];
+  try {
+    const client = jmap();
+    const responses = await client.request([emailSet(client.accountId, "set", { update })]);
+    refused = Object.keys(setResult(responses, "set").notUpdated);
+  } catch (err) {
+    // Unknown server outcome (transport/method-level error, or jmap() after sign-out): we can't
+    // refetch (the request itself failed), so revert every row we touched — guarded so we don't
+    // clobber a concurrent sync write — and let a later sync reconcile to truth.
+    rollbackPresence(held, patches, prior);
+    if (!handleAuthFailure(err)) {
+      console.error("Email/set update failed:", err);
+    }
+    return;
+  }
+  // Per-item refusals (e.g. forbidden / revoked rights): the server kept its own state, so it —
+  // not our pre-optimistic snapshot — is the truth. Refetch the refused ids and apply server
+  // truth rather than reverting to `prior`: this undoes our optimistic write AND reconciles a
+  // concurrent change race-free (the same-value race a local guard can't detect).
+  if (refused.length > 0) await reconcileRefused(refused, patches, prior);
+}
+
+/**
+ * Reconcile rows the server refused: refetch them and apply server truth (authoritative undo of
+ * our optimistic write that also absorbs any concurrent change). Ids the server no longer
+ * returns are destroyed — revert those to their pre-optimistic value (the destroy push will
+ * then prune them). On a refetch failure, fall back to the guarded local revert for all of them.
+ * Does NOT advance emailState — like syncEmails' follow-up /get, this is a partial fetch and the
+ * push-driven drain owns the cursor.
+ */
+async function reconcileRefused(
+  ids: string[],
+  patches: PresencePatch[],
+  prior: Map<string, boolean[]>,
+): Promise<void> {
+  let returned: Set<string>;
+  try {
+    const client = jmap();
+    const got = await client.request([
+      emailGet(client.accountId, "g", { ids, properties: LIST_PROPERTIES }),
+    ]);
+    const list = (methodResult(got, "g").list ?? []) as Email[];
+    cacheEmails(list); // merge overwrites the row's keywords/mailboxIds with server truth
+    returned = new Set(list.map((e) => e.id));
+  } catch (err) {
+    if (!handleAuthFailure(err)) rollbackPresence(ids, patches, prior);
+    return;
+  }
+  const destroyed = ids.filter((id) => !returned.has(id));
+  if (destroyed.length > 0) rollbackPresence(destroyed, patches, prior);
+}
+
+function rollbackPresence(
+  ids: string[],
+  patches: PresencePatch[],
+  prior: Map<string, boolean[]>,
+): void {
+  setEmails(
+    produce((store) => {
+      for (const id of ids) {
+        const email = store[id];
+        const before = prior.get(id);
+        if (!email || !before) continue; // row gone (destroyed by sync) or was never held
+        patches.forEach((p, i) => {
+          // Only revert if the field still holds the value we optimistically wrote. If a
+          // concurrent syncEmails refetched the row and changed it, that's newer server
+          // truth — don't clobber it with our stale pre-optimistic value.
+          if (isPresent(email, p.map, p.key) !== p.present) return;
+          const wasPresent = before[i] ?? false;
+          if (wasPresent) email[p.map][p.key] = true;
+          else delete email[p.map][p.key];
+        });
+      }
+    }),
+  );
+}
+
+/** Mark the given emails read/unread ($seen). Optimistic; rolls back any the server refuses. */
+export async function markSeen(ids: string[], seen: boolean): Promise<void> {
+  await optimisticEmailUpdate(ids, [{ map: "keywords", key: "$seen", present: seen }]);
+}
+
+/** Flag/unflag the given emails ($flagged). Optimistic; rolls back any the server refuses. */
+export async function setFlagged(ids: string[], flagged: boolean): Promise<void> {
+  await optimisticEmailUpdate(ids, [{ map: "keywords", key: "$flagged", present: flagged }]);
+}
+
+/**
+ * Auto-mark-read on open (D1): flip the just-opened conversation's shown-and-unread messages
+ * to $seen. Fires once per open (loadThread only re-runs when the selected thread changes),
+ * only for the still-current selection, only for messages we actually hold and that are
+ * actually unread, and only when the open folder grants maySetSeen. A later explicit "mark
+ * unread" is a separate user action that simply wins — nothing here re-triggers it.
+ */
+function autoMarkThreadRead(threadId: string): void {
+  // Gate on the live UI selection, not `thread.threadId`: navigating away (a mailbox switch
+  // clears selectedThreadId) doesn't reset the `thread` store, so `thread.threadId` can still
+  // equal `threadId` after the user has left — auto-marking a thread they no longer have open.
+  // selectedThreadId is the source of truth for "still showing this conversation".
+  if (selectedThreadId() !== threadId) return;
+  if (!selectedMailboxRights()?.maySetSeen) return;
+  const unread = thread.emailIds.filter((id) => emails[id] && !emails[id]?.keywords.$seen);
+  if (unread.length === 0) return;
+  // Fire-and-forget: markSeen is self-contained (optimistic + rollback) and never rejects.
+  void markSeen(unread, true);
 }

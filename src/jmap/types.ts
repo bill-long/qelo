@@ -114,6 +114,38 @@ export interface Thread {
   emailIds: Id[];
 }
 
+/**
+ * A per-record failure in a `/set` response (RFC 8620 §5.3). Rides on an otherwise-
+ * successful method response in the `notCreated`/`notUpdated`/`notDestroyed` maps, so a
+ * caller must inspect those maps itself — `methodResult` does not (see `setResult`). The
+ * `type` distinguishes e.g. `forbidden` (rights), `notFound`, `invalidProperties`,
+ * `stateMismatch`; `properties` names the offending fields for an `invalidProperties`.
+ */
+export interface SetError {
+  type: string;
+  description?: string | null;
+  properties?: string[] | null;
+}
+
+/**
+ * Response args of an `Email/set` (RFC 8620 §5.3, RFC 8621 §4.6). `created`/`updated`
+ * carry only the server-set properties (or `null` when the server set nothing beyond
+ * what was sent); `destroyed` lists the ids removed. The `not*` maps carry the per-record
+ * {@link SetError}s for records the server refused. `oldState`/`newState` are the cursor
+ * tokens — we do NOT advance our own `emailState` from them (the push-driven drain owns it).
+ */
+export interface EmailSetResponse {
+  accountId: Id;
+  oldState: string | null;
+  newState: string;
+  created: Record<Id, Partial<Email> | null> | null;
+  updated: Record<Id, Partial<Email> | null> | null;
+  destroyed: Id[] | null;
+  notCreated: Record<Id, SetError> | null;
+  notUpdated: Record<Id, SetError> | null;
+  notDestroyed: Record<Id, SetError> | null;
+}
+
 export type MethodCall = [string, Record<string, unknown>, string];
 export type MethodResponse = [string, Record<string, unknown>, string];
 

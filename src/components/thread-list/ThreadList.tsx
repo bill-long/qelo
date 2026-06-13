@@ -1,6 +1,7 @@
 import { createEffect, For, Show } from "solid-js";
 import { formatDate, senderName } from "@/lib/format";
-import { emails, loadMore, openMailbox, threadList } from "@/stores/emails";
+import { emails, loadMore, markSeen, openMailbox, setFlagged, threadList } from "@/stores/emails";
+import { selectedMailboxRights } from "@/stores/mailboxes";
 import {
   selectedEmailId,
   selectedMailboxId,
@@ -67,41 +68,74 @@ export function ThreadList() {
 function ThreadRow(props: { id: string }) {
   const email = () => emails[props.id];
   const isSelected = () => selectedEmailId() === props.id;
+  const rights = () => selectedMailboxRights();
+  const seen = () => Boolean(email()?.keywords.$seen);
+  const flagged = () => Boolean(email()?.keywords.$flagged);
 
   return (
     <Show when={email()}>
       {(mail) => (
-        <button
-          type="button"
+        <div
           class="thread-row"
           classList={{
             "is-selected": isSelected(),
-            "is-unread": !mail().keywords.$seen,
-          }}
-          onClick={() => {
-            setSelectedEmailId(mail().id);
-            setSelectedThreadId(mail().threadId);
+            "is-unread": !seen(),
           }}
         >
-          <div class="thread-row-head">
-            <span class="thread-sender">{senderName(mail().from)}</span>
-            <span class="thread-date">{formatDate(mail().receivedAt)}</span>
-          </div>
-          <div class="thread-subject">
-            <Show when={mail().keywords.$flagged}>
-              <span class="thread-flag" role="img" aria-label="Flagged">
+          <button
+            type="button"
+            class="thread-row-main"
+            onClick={() => {
+              setSelectedEmailId(mail().id);
+              setSelectedThreadId(mail().threadId);
+            }}
+          >
+            <div class="thread-row-head">
+              <span class="thread-sender">{senderName(mail().from)}</span>
+              <span class="thread-date">{formatDate(mail().receivedAt)}</span>
+            </div>
+            <div class="thread-subject">
+              <Show when={flagged()}>
+                <span class="thread-flag" role="img" aria-label="Flagged">
+                  ⚑
+                </span>
+              </Show>
+              <span class="thread-subject-text">{mail().subject || "(no subject)"}</span>
+              <Show when={mail().hasAttachment}>
+                <span class="thread-attach" role="img" aria-label="Has attachment">
+                  📎
+                </span>
+              </Show>
+            </div>
+            <div class="thread-preview">{mail().preview}</div>
+          </button>
+          <div class="thread-row-actions">
+            <Show when={rights()?.maySetKeywords}>
+              <button
+                type="button"
+                class="row-action"
+                aria-pressed={flagged()}
+                title={flagged() ? "Remove flag" : "Flag"}
+                aria-label={flagged() ? "Remove flag" : "Flag"}
+                onClick={() => void setFlagged([mail().id], !flagged())}
+              >
                 ⚑
-              </span>
+              </button>
             </Show>
-            <span class="thread-subject-text">{mail().subject || "(no subject)"}</span>
-            <Show when={mail().hasAttachment}>
-              <span class="thread-attach" role="img" aria-label="Has attachment">
-                📎
-              </span>
+            <Show when={rights()?.maySetSeen}>
+              <button
+                type="button"
+                class="row-action"
+                aria-pressed={seen()}
+                title={seen() ? "Mark unread" : "Mark read"}
+                aria-label={seen() ? "Mark unread" : "Mark read"}
+                onClick={() => void markSeen([mail().id], !seen())}
+              >
+                {seen() ? "○" : "●"}
+              </button>
             </Show>
           </div>
-          <div class="thread-preview">{mail().preview}</div>
-        </button>
+        </div>
       )}
     </Show>
   );

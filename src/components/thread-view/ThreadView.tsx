@@ -3,7 +3,8 @@ import { selectBody } from "@/lib/body";
 import { formatBytes, formatDateTime, recipientList, senderName } from "@/lib/format";
 import { emailSrcdoc, sanitizeHtml } from "@/lib/sanitize";
 import { prefersDark } from "@/lib/theme";
-import { emails, loadThread, thread } from "@/stores/emails";
+import { emails, loadThread, markSeen, setFlagged, thread } from "@/stores/emails";
+import { selectedMailboxRights } from "@/stores/mailboxes";
 import { openExternal } from "@/stores/open-external";
 import { selectedEmailId, selectedThreadId } from "@/stores/ui";
 
@@ -52,11 +53,15 @@ function Message(props: { id: string }) {
     if (isSelected()) el?.scrollIntoView({ block: "nearest" });
   });
 
+  const rights = () => selectedMailboxRights();
+
   return (
     <Show when={emails[props.id]}>
       {(mail) => {
         const body = () => selectBody(mail());
         const attachments = () => mail().attachments ?? [];
+        const seen = () => Boolean(mail().keywords.$seen);
+        const flagged = () => Boolean(mail().keywords.$flagged);
         return (
           <article ref={el} class="message" classList={{ "is-selected": isSelected() }}>
             <header class="message-head">
@@ -66,6 +71,30 @@ function Message(props: { id: string }) {
                 {(to) => <span class="message-to">to {to()}</span>}
               </Show>
               <h2 class="message-subject">{mail().subject || "(no subject)"}</h2>
+              <Show when={rights()?.maySetSeen || rights()?.maySetKeywords}>
+                <div class="message-actions">
+                  <Show when={rights()?.maySetKeywords}>
+                    <button
+                      type="button"
+                      class="message-action"
+                      aria-pressed={flagged()}
+                      onClick={() => void setFlagged([mail().id], !flagged())}
+                    >
+                      <span aria-hidden="true">⚑</span> {flagged() ? "Flagged" : "Flag"}
+                    </button>
+                  </Show>
+                  <Show when={rights()?.maySetSeen}>
+                    <button
+                      type="button"
+                      class="message-action"
+                      aria-pressed={seen()}
+                      onClick={() => void markSeen([mail().id], !seen())}
+                    >
+                      {seen() ? "Mark unread" : "Mark read"}
+                    </button>
+                  </Show>
+                </div>
+              </Show>
             </header>
 
             <Switch>
