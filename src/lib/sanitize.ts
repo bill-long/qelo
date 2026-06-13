@@ -1,4 +1,5 @@
 import DOMPurify from "dompurify";
+import { adaptHtmlForDark } from "@/lib/dark-html";
 
 // Force every link to a new browsing context. Combined with the iframe's sandbox
 // (no allow-popups / allow-top-navigation), this means a click can't navigate the
@@ -38,11 +39,12 @@ const EMAIL_CSP =
   "default-src 'none'; base-uri 'none'; form-action 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:";
 
 /**
- * Default frame styling for the given theme. `color-scheme` makes the UA render
- * default colors, scrollbars, and the email's own `@media (prefers-color-scheme)`
- * rules for that theme, and the explicit fg/bg make emails that ship no colors of
- * their own readable on either background. (Emails that hard-code light colors are a
- * separate, harder problem — see the deferred "dark-mode color remapping" note.)
+ * Default frame styling for the given theme. `color-scheme` makes the UA render its
+ * default colors, scrollbars, and form controls for that theme, and the explicit fg/bg
+ * make emails that ship no colors of their own readable on either background. (DOMPurify
+ * strips author `<style>` blocks, so an email's own `@media (prefers-color-scheme)` rules
+ * never reach here — emails that hard-code light colors are instead remapped at
+ * srcdoc-build time by adaptHtmlForDark; see lib/dark-html.ts.)
  */
 function frameStyle(theme: "light" | "dark"): string {
   const fg = theme === "dark" ? "#e8e8e8" : "#1a1a1a";
@@ -55,8 +57,10 @@ function frameStyle(theme: "light" | "dark"): string {
  * Wrap already-sanitized HTML in a minimal document for a sandboxed iframe. The CSP is
  * the privacy boundary (remote content blocked by default); DOMPurify is the script
  * boundary. Remote images stay in the markup but won't load until we add a
- * "load images" affordance later by relaxing the CSP.
+ * "load images" affordance later by relaxing the CSP. In dark mode, authored light colors
+ * are remapped first so hard-coded-light emails match the dark canvas (lib/dark-html.ts).
  */
 export function emailSrcdoc(sanitizedHtml: string, theme: "light" | "dark" = "light"): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${EMAIL_CSP}"><style>${frameStyle(theme)}</style></head><body>${sanitizedHtml}</body></html>`;
+  const body = theme === "dark" ? adaptHtmlForDark(sanitizedHtml) : sanitizedHtml;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${EMAIL_CSP}"><style>${frameStyle(theme)}</style></head><body>${body}</body></html>`;
 }

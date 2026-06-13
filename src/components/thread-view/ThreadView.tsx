@@ -1,4 +1,4 @@
-import { createEffect, For, Match, onCleanup, onMount, Show, Switch } from "solid-js";
+import { createEffect, createMemo, For, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { selectBody } from "@/lib/body";
 import { formatBytes, formatDateTime, recipientList, senderName } from "@/lib/format";
 import { emailSrcdoc, sanitizeHtml } from "@/lib/sanitize";
@@ -102,6 +102,11 @@ function Message(props: { id: string }) {
 function HtmlBody(props: { html: string }) {
   let frame: HTMLIFrameElement | undefined;
 
+  // Sanitization is theme-independent, so memoize it on the body alone — flipping the OS
+  // theme then only re-runs the (cheaper) dark-mode color remap inside emailSrcdoc, not a
+  // full DOMPurify pass.
+  const clean = createMemo(() => sanitizeHtml(props.html));
+
   // The iframe is same-origin (so we can size it to its content) but runs no scripts
   // (no allow-scripts) and blocks remote loads via the CSP in emailSrcdoc.
   function fitToContent() {
@@ -158,7 +163,7 @@ function HtmlBody(props: { html: string }) {
       class="message-html"
       title="Message content"
       sandbox="allow-same-origin"
-      srcdoc={emailSrcdoc(sanitizeHtml(props.html), prefersDark() ? "dark" : "light")}
+      srcdoc={emailSrcdoc(clean(), prefersDark() ? "dark" : "light")}
       onLoad={onLoad}
     />
   );
