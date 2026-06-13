@@ -639,28 +639,29 @@ body,
   outline-offset: 2px;
 }
 
-/* The composer is an overlay dialog over the whole shell. */
-.composer-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 20;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 2rem;
-  background: color-mix(in srgb, var(--ink) 38%, transparent);
-}
-
+/* The composer is a native modal <dialog> (opened with showModal): the UA centers it in the top
+   layer and renders ::backdrop as the dim, so no positioned overlay wrapper is needed. */
 .composer {
-  display: flex;
-  flex-direction: column;
-  width: min(640px, 100%);
-  max-height: 100%;
+  width: min(640px, calc(100vw - 4rem));
+  max-height: calc(100vh - 4rem);
+  padding: 0;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--raised);
+  color: var(--ink);
   box-shadow: 0 18px 48px color-mix(in srgb, var(--ink) 30%, transparent);
   overflow: hidden;
+}
+
+/* Only style the open dialog as a flex column — a closed <dialog> stays display:none (UA), so
+   there's no pre-showModal() flash of an unpositioned box. */
+.composer[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.composer::backdrop {
+  background: color-mix(in srgb, var(--ink) 38%, transparent);
 }
 
 .composer-head {
@@ -705,6 +706,8 @@ body,
 
 .composer-fields {
   display: flex;
+  flex: 1;
+  min-height: 0; /* let this region shrink + scroll instead of pushing the footer past max-height */
   flex-direction: column;
   gap: 0.5rem;
   padding: 0.9rem 1.1rem;

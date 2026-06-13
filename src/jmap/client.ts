@@ -83,6 +83,18 @@ export class JmapClient {
   }
 
   /**
+   * Whether the primary mail account advertises `capability` in its `accountCapabilities`.
+   * Email and EmailSubmission objects share one account (you submit an email by id, so the
+   * submission lives where the email does), so compose uses {@link accountId} for both and
+   * checks this before sending — surfacing a clear "can't send" rather than a confusing JMAP
+   * error when the account lacks submission scope (e.g. a read-only token).
+   */
+  accountHasCapability(capability: string): boolean {
+    const account = this.session.accounts[this.accountId];
+    return account ? capability in account.accountCapabilities : false;
+  }
+
+  /**
    * Issue one JMAP request containing one or more method calls, executed server-side
    * in order within a single round trip (later calls may reference earlier results).
    * Returns the raw method responses; callers match by call id (see `methodResult`)

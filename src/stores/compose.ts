@@ -275,6 +275,13 @@ export async function send(): Promise<boolean> {
     setComposeError("Add at least one recipient.");
     return false;
   }
+  // Fail fast if this account can't submit (e.g. a read-only token), rather than building a send
+  // the server will reject with a confusing error. Email/set + EmailSubmission/set share this one
+  // account by JMAP design, so the same accountId serves both.
+  if (!jmap().accountHasCapability(CAP_SUBMISSION)) {
+    setComposeError("This account can't send mail (no submission capability).");
+    return false;
+  }
   setBusy("send");
   setComposeError(null);
   try {
