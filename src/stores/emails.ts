@@ -515,16 +515,50 @@ async function optimisticEmailUpdate(ids: string[], patches: PresencePatch[]): P
     const responses = await client.request([emailSet(client.accountId, "set", { update })]);
     refused = Object.keys(setResult(responses, "set").notUpdated);
   } catch (err) {
-    // Unknown server outcome (transport/method-level error, or jmap() after sign-out): revert
-    // every row we touched and let a later sync reconcile to truth.
+    // Unknown server outcome (transport/method-level error, or jmap() after sign-out): we can't
+    // refetch (the request itself failed), so revert every row we touched — guarded so we don't
+    // clobber a concurrent sync write — and let a later sync reconcile to truth.
     rollbackPresence(held, patches, prior);
     if (!handleAuthFailure(err)) {
       console.error("Email/set update failed:", err);
     }
     return;
   }
-  // Per-item refusals (e.g. forbidden / revoked rights): roll back exactly those rows.
-  if (refused.length > 0) rollbackPresence(refused, patches, prior);
+  // Per-item refusals (e.g. forbidden / revoked rights): the server kept its own state, so it —
+  // not our pre-optimistic snapshot — is the truth. Refetch the refused ids and apply server
+  // truth rather than reverting to `prior`: this undoes our optimistic write AND reconciles a
+  // concurrent change race-free (the same-value race a local guard can't detect).
+  if (refused.length > 0) await reconcileRefused(refused, patches, prior);
+}
+
+/**
+ * Reconcile rows the server refused: refetch them and apply server truth (authoritative undo of
+ * our optimistic write that also absorbs any concurrent change). Ids the server no longer
+ * returns are destroyed — revert those to their pre-optimistic value (the destroy push will
+ * then prune them). On a refetch failure, fall back to the guarded local revert for all of them.
+ * Does NOT advance emailState — like syncEmails' follow-up /get, this is a partial fetch and the
+ * push-driven drain owns the cursor.
+ */
+async function reconcileRefused(
+  ids: string[],
+  patches: PresencePatch[],
+  prior: Map<string, boolean[]>,
+): Promise<void> {
+  let returned: Set<string>;
+  try {
+    const client = jmap();
+    const got = await client.request([
+      emailGet(client.accountId, "g", { ids, properties: LIST_PROPERTIES }),
+    ]);
+    const list = (methodResult(got, "g").list ?? []) as Email[];
+    cacheEmails(list); // merge overwrites the row's keywords/mailboxIds with server truth
+    returned = new Set(list.map((e) => e.id));
+  } catch (err) {
+    if (!handleAuthFailure(err)) rollbackPresence(ids, patches, prior);
+    return;
+  }
+  const destroyed = ids.filter((id) => !returned.has(id));
+  if (destroyed.length > 0) rollbackPresence(destroyed, patches, prior);
 }
 
 function rollbackPresence(
