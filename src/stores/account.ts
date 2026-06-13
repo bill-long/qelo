@@ -14,6 +14,20 @@ export const isDesktop = typeof window !== "undefined" && "__TAURI_INTERNALS__" 
 export const PROVIDER_ID = import.meta.env.VITE_JMAP_PROVIDER ?? "stalwart-dev";
 
 /**
+ * How the active provider authenticates, which decides the Connect-screen affordance:
+ * an `oauth` provider gets a "Sign in" button (browser consent via {@link signIn}); a
+ * `token` provider gets a paste field for a long-lived API token (via {@link submitApiToken}).
+ *
+ * This must stay in sync with the Rust provider registry (`provider()` in `src-tauri/src/auth.rs`):
+ * a provider listed here as a token provider must be `ProviderKind::Token` there, and vice versa.
+ */
+export type AuthKind = "oauth" | "token";
+const TOKEN_PROVIDERS = new Set(["fastmail-token"]);
+export function providerAuthKind(providerId: string = PROVIDER_ID): AuthKind {
+  return TOKEN_PROVIDERS.has(providerId) ? "token" : "oauth";
+}
+
+/**
  * On desktop, authenticate with OAuth bearer tokens minted by the Rust backend; in the
  * browser dev build (no backend), fall back to the Basic-auth shim.
  */
@@ -54,6 +68,17 @@ export async function signIn(): Promise<void> {
   const url = await invoke<string>("oauth_login", { providerId: PROVIDER_ID });
   // In DEV, route the session URL through the same-origin Vite proxy (same reason connect()
   // rewrites apiUrl/eventSourceUrl) so it avoids the dev server's self-signed cert.
+  desktopSessionUrl = import.meta.env.DEV ? new URL(url, window.location.origin).pathname : url;
+}
+
+/**
+ * Token-provider sign-in (desktop only): hand a user-pasted long-lived API token to the
+ * Rust backend, which stores it in the keychain and returns the provider's JMAP session URL.
+ * The bearer-auth analogue of {@link signIn} — no browser consent, nothing to refresh. After
+ * this resolves, connect() uses the captured session URL just like the OAuth path.
+ */
+export async function submitApiToken(token: string): Promise<void> {
+  const url = await invoke<string>("store_api_token", { providerId: PROVIDER_ID, token });
   desktopSessionUrl = import.meta.env.DEV ? new URL(url, window.location.origin).pathname : url;
 }
 

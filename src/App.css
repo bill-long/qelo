@@ -432,6 +432,54 @@ body,
   color: var(--ink);
 }
 
+.token-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  width: 100%;
+  max-width: 30rem;
+}
+
+.token-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  text-align: left;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+
+.token-label input {
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+}
+
+.token-label input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.token-form button {
+  align-self: flex-start;
+  cursor: pointer;
+  padding: 0.45rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+}
+
+.token-form button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .connect-actions {
   display: flex;
   gap: 0.5rem;
