@@ -117,9 +117,14 @@ function HtmlBody(props: { html: string }) {
   // document, so we (re)attach in onLoad; the listener dies with the old document.
   function onFrameClick(event: MouseEvent) {
     // event.target lives in the iframe's realm, so `instanceof Element` (parent realm) is
-    // cross-realm-false — duck-type via closest() and read .href, which are realm-agnostic.
+    // cross-realm-false — duck-type via closest()/.href, which are realm-agnostic. Mouse
+    // events target elements in practice, but guard `closest` so a non-Element target (e.g.
+    // a Text node) degrades to a no-op instead of throwing.
     const target = event.target as Element | null;
-    const anchor = target?.closest("a[href]") as HTMLAnchorElement | null;
+    const anchor =
+      typeof target?.closest === "function"
+        ? (target.closest("a[href]") as HTMLAnchorElement | null)
+        : null;
     if (!anchor) return;
     // Always swallow the click (no in-pane navigation, ever); only http(s) is opened out.
     event.preventDefault();
