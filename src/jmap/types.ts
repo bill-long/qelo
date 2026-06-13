@@ -146,6 +146,54 @@ export interface EmailSetResponse {
   notDestroyed: Record<Id, SetError> | null;
 }
 
+/**
+ * A sending identity (RFC 8621 §6): the `from` an EmailSubmission may use. The seeded
+ * account exposes one (`Test One <test@example.test>`); a real account may expose several
+ * (aliases), so compose lets the user pick. Field names follow the RFC exactly.
+ */
+export interface Identity {
+  id: Id;
+  name: string;
+  email: string;
+  replyTo: EmailAddress[] | null;
+  bcc: EmailAddress[] | null;
+  textSignature: string;
+  htmlSignature: string;
+  mayDelete: boolean;
+}
+
+/**
+ * One SMTP envelope address (RFC 8621 §7.1): the `email` plus any ESMTP `parameters`. The
+ * envelope is optional on an `EmailSubmission` — when omitted the server derives it from the
+ * message's `from`/`to`/`cc`/`bcc` (which is what Qelo relies on), so this is here to type the
+ * `EmailSubmission.envelope` field rather than because compose sets it.
+ */
+export interface EmailSubmissionAddress {
+  email: string;
+  parameters: Record<string, string | null> | null;
+}
+
+/** The SMTP envelope of an EmailSubmission (RFC 8621 §7.1): a mail-from and the rcpt-tos. */
+export interface Envelope {
+  mailFrom: EmailSubmissionAddress;
+  rcptTo: EmailSubmissionAddress[];
+}
+
+/**
+ * An email send request (RFC 8621 §7). Created with `{ identityId, emailId }` referencing
+ * the draft (here by a `#creationId` back-reference in the same batch); the server fills in
+ * `threadId`/`envelope`/`sendAt`/`undoStatus`. Qelo only needs the subset it reads back.
+ */
+export interface EmailSubmission {
+  id: Id;
+  identityId: Id;
+  emailId: Id;
+  threadId: Id;
+  envelope: Envelope | null;
+  sendAt: UtcDate;
+  undoStatus: "pending" | "final" | "canceled";
+}
+
 export type MethodCall = [string, Record<string, unknown>, string];
 export type MethodResponse = [string, Record<string, unknown>, string];
 

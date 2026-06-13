@@ -1,7 +1,10 @@
+import { Show } from "solid-js";
+import { Composer } from "@/components/composer/Composer";
 import { SyncStatus } from "@/components/layout/SyncStatus";
 import { MailboxList } from "@/components/mailbox/MailboxList";
 import { ThreadList } from "@/components/thread-list/ThreadList";
 import { ThreadView } from "@/components/thread-view/ThreadView";
+import { composeOpen, openComposer } from "@/stores/compose";
 
 /** The three-pane mail layout: folders | conversation list | reading pane. */
 export function Shell() {
@@ -11,6 +14,9 @@ export function Shell() {
           landmark, so nesting two navigation regions is avoided. */}
       <aside class="shell-folders">
         <div class="brand">Qelo</div>
+        <button type="button" class="compose-button" onClick={() => openComposer()}>
+          <span aria-hidden="true">✎</span> Compose
+        </button>
         <MailboxList />
         <SyncStatus />
       </aside>
@@ -20,6 +26,9 @@ export function Shell() {
       <section class="shell-view">
         <ThreadView />
       </section>
+      <Show when={composeOpen()}>
+        <Composer />
+      </Show>
     </div>
   );
 }
