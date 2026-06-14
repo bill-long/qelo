@@ -1,3 +1,4 @@
+import { reconcile } from "solid-js/store";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Mailbox, MailboxRights } from "@/jmap/types";
 import {
@@ -46,12 +47,14 @@ function mb(id: string, myRights: MailboxRights): Mailbox {
 function setup(open: string | null, ...list: Mailbox[]): void {
   const byId: Record<string, Mailbox> = {};
   for (const m of list) byId[m.id] = m;
-  setMailboxes(byId);
+  // reconcile so the store is REPLACED, not merged — a bare setMailboxes(byId) leaves keys from a
+  // prior test behind (Solid's createStore merges at the root), leaking mailboxes between cases.
+  setMailboxes(reconcile(byId));
   setThreadList({ mailboxId: open });
 }
 
 afterEach(() => {
-  setMailboxes({});
+  setMailboxes(reconcile({}));
   setThreadList({ mailboxId: null, ids: [] });
   endDrag();
 });

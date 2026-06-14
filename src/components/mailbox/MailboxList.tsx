@@ -33,7 +33,13 @@ function MailboxRow(props: { node: MailboxNode; depth: number }) {
   // leaves the browser's not-allowed cursor as the cue. Re-checked live so a folder switch / rights
   // revision mid-drag is honored. dataTransfer can be null on synthetic events.
   function onDragOver(event: DragEvent) {
-    if (draggingEmailId() === null || !canDropOnMailbox(mailbox())) return;
+    if (draggingEmailId() === null || !canDropOnMailbox(mailbox())) {
+      // No longer (or never) a valid target. If a rights revision / source-folder change flipped
+      // this row from valid to invalid mid-hover, clear the highlight we set on an earlier frame
+      // instead of leaving it lit until the next dragleave.
+      if (dropTargetMailboxId() === mailbox().id) setDropTargetMailboxId(null);
+      return;
+    }
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
     setDropTargetMailboxId(mailbox().id);
