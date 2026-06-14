@@ -4,6 +4,7 @@ import { selectBody } from "@/lib/body";
 import { formatBytes, formatDateTime, recipientList, senderName } from "@/lib/format";
 import { emailSrcdoc, sanitizeHtml } from "@/lib/sanitize";
 import { prefersDark } from "@/lib/theme";
+import { startForward, startReply } from "@/stores/compose";
 import { emails, loadThread, markSeen, setFlagged, thread } from "@/stores/emails";
 import { selectedMailboxRights } from "@/stores/mailboxes";
 import { openExternal } from "@/stores/open-external";
@@ -74,6 +75,19 @@ function Message(props: { id: string }) {
               <h2 class="message-subject">{mail().subject || "(no subject)"}</h2>
               <Show when={rights()}>
                 <div class="message-actions">
+                  <button type="button" class="message-action" onClick={() => startReply(mail())}>
+                    Reply
+                  </button>
+                  <button
+                    type="button"
+                    class="message-action"
+                    onClick={() => startReply(mail(), { all: true })}
+                  >
+                    Reply all
+                  </button>
+                  <button type="button" class="message-action" onClick={() => startForward(mail())}>
+                    Forward
+                  </button>
                   <Show when={rights()?.maySetKeywords}>
                     <button
                       type="button"

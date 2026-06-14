@@ -11,8 +11,16 @@ import {
   methodResult,
   setResult,
 } from "@/jmap/methods";
-import type { EmailAddress, EmailSubmission, Identity } from "@/jmap/types";
+import type { Email, EmailAddress, EmailSubmission, Identity } from "@/jmap/types";
 import { invalidRecipients, parseRecipients } from "@/lib/addresses";
+import {
+  forwardQuote,
+  forwardSubject,
+  replyQuote,
+  replyRecipients,
+  replySubject,
+  threadingHeaders,
+} from "@/lib/reply";
 import { handleAuthFailure, jmap } from "./account";
 import { mailboxIdByRole } from "./mailboxes";
 
@@ -125,12 +133,61 @@ function closeAndReset(): void {
   setComposeError(null);
 }
 
-/** Open the composer on a fresh blank message, loading identities on first use. */
-export function openComposer(): void {
-  setDraft({ ...EMPTY_DRAFT });
+// Open the composer on a specific initial draft, loading identities on first use. Every entry
+// point (blank compose, reply, forward) funnels through here so the EMPTY_DRAFT reset can't clobber
+// a prefill — the caller hands the fully-formed draft in, it isn't reset then patched.
+function openWith(initial: DraftState): void {
+  setDraft(initial);
   setComposeError(null);
   setComposeOpen(true);
   if (identities().length === 0) void loadIdentities();
+}
+
+/** Open the composer on a fresh blank message, loading identities on first use. */
+export function openComposer(): void {
+  openWith({ ...EMPTY_DRAFT });
+}
+
+// The user's own identity addresses (lowercased by replyRecipients), used to keep reply-all from
+// Cc'ing the sender themselves. Shell eager-loads identities on mount so this is normally populated
+// before the first reply; in the rare window before that resolves, self-exclusion is a no-op and
+// the user can drop their own address from the (visible, editable) Cc — we don't block the snappy
+// open on the async Identity/get.
+function selfAddresses(): string[] {
+  return identities().map((i) => i.email);
+}
+
+/**
+ * Open the composer as a reply to `email`: To = its Reply-To/From (plus, for `all`, the other
+ * recipients minus the user's own addresses), subject "Re: …" (no double-prefix), a quoted body,
+ * and the threading headers (inReplyTo/references) that keep the reply in the same thread. The
+ * draft create already passes those headers through (buildDraftEmail), so send() needs no change.
+ */
+export function startReply(email: Email, opts: { all?: boolean } = {}): void {
+  const { to, cc } = replyRecipients(email, { all: opts.all ?? false, self: selfAddresses() });
+  const headers = threadingHeaders(email);
+  openWith({
+    ...EMPTY_DRAFT,
+    to: to.join(", "),
+    cc: cc.join(", "),
+    subject: replySubject(email.subject),
+    body: replyQuote(email),
+    inReplyTo: headers.inReplyTo,
+    references: headers.references,
+  });
+}
+
+/**
+ * Open the composer to forward `email`: recipients are left empty (the user picks them), subject
+ * is "Fwd: …" (no double-prefix), and the body carries a forwarded-message header block + the
+ * original text. A forward starts a NEW thread, so no threading headers are set.
+ */
+export function startForward(email: Email): void {
+  openWith({
+    ...EMPTY_DRAFT,
+    subject: forwardSubject(email.subject),
+    body: forwardQuote(email),
+  });
 }
 
 /** Discard the in-progress message and close the composer. */
