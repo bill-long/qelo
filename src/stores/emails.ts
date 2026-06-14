@@ -810,7 +810,8 @@ async function conversationEmailIds(repId: string): Promise<string[]> {
   const threadId = emails[repId]?.threadId;
   if (!threadId) return [repId];
   // The open conversation is already fully loaded (Thread/get + detail Email/get in loadThread).
-  if (thread.threadId === threadId && thread.emailIds.length > 0) return thread.emailIds;
+  // Copy it: thread.emailIds is the reactive store array — never hand a caller a live reference.
+  if (thread.threadId === threadId && thread.emailIds.length > 0) return [...thread.emailIds];
   try {
     const client = jmap();
     const responses = await client.request([
@@ -834,13 +835,19 @@ async function conversationEmailIds(repId: string): Promise<string[]> {
   }
 }
 
-/** The conversation's email ids that are currently in the open folder (move/delete scope). */
+/**
+ * The conversation's email ids currently in the open folder — the move/delete scope. The
+ * representative is, by construction, a row from the open folder's collapsed query and is cached
+ * with its mailboxIds, so it's in this set in every normal case (and is the only member when the
+ * expand fell back to `[repId]` on a fetch failure). An EMPTY result therefore means every thread
+ * member — including the representative — left the open folder across the expand await (a concurrent
+ * move): the right answer is then to do NOTHING. We deliberately do not fall back to `[repId]` here,
+ * which would re-add a message to the move/destroy target it no longer belonged to in `fromId` — the
+ * exact wrong-add the scope note above guards against. optimisticMove/deleteForever no-op on `[]`.
+ */
 async function conversationIdsInOpenFolder(repId: string, fromId: string): Promise<string[]> {
   const ids = await conversationEmailIds(repId);
-  const inFolder = ids.filter((id) => emails[id]?.mailboxIds[fromId] === true);
-  // The representative came from the open folder's collapsed query and is always cached, so it's a
-  // safe fallback if membership can't otherwise be resolved (e.g. the expand fell back to [repId]).
-  return inFolder.length > 0 ? inFolder : [repId];
+  return ids.filter((id) => emails[id]?.mailboxIds[fromId] === true);
 }
 
 /** Mark every message in the representative's conversation read/unread ($seen). Optimistic. */
