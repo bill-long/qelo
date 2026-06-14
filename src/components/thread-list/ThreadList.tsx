@@ -103,9 +103,11 @@ function ThreadRow(props: { id: string }) {
             setDraggingEmailId(mail().id);
             if (event.dataTransfer) {
               event.dataTransfer.effectAllowed = "move";
-              // Firefox refuses to start a drag unless some data is set; the move reads the id
-              // back from the draggingEmailId signal, not this payload.
-              event.dataTransfer.setData("text/plain", mail().id);
+              // Firefox refuses to start a drag unless some data is set, but the move reads the id
+              // back from the draggingEmailId signal — never from here. So set only a constant
+              // marker, NOT the email id: dragging the row out into another app/window would
+              // otherwise leak (and paste) an internal JMAP id.
+              event.dataTransfer.setData("text/plain", "qelo:thread");
             }
           }}
         >
