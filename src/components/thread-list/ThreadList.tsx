@@ -2,7 +2,14 @@ import { createEffect, For, Show } from "solid-js";
 import { MailboxActions } from "@/components/mailbox/MailboxActions";
 import { formatDate, senderName } from "@/lib/format";
 import { draggingEmailId, endDrag, setDraggingEmailId } from "@/stores/drag";
-import { emails, loadMore, markSeen, openMailbox, setFlagged, threadList } from "@/stores/emails";
+import {
+  emails,
+  loadMore,
+  markConversationSeen,
+  openMailbox,
+  setConversationFlagged,
+  threadList,
+} from "@/stores/emails";
 import { selectedMailboxRights } from "@/stores/mailboxes";
 import {
   selectedEmailId,
@@ -146,7 +153,7 @@ function ThreadRow(props: { id: string }) {
                 aria-pressed={flagged()}
                 title={flagged() ? "Remove flag" : "Flag"}
                 aria-label={flagged() ? "Remove flag" : "Flag"}
-                onClick={() => void setFlagged([mail().id], !flagged())}
+                onClick={() => void setConversationFlagged(mail().id, !flagged())}
               >
                 ⚑
               </button>
@@ -158,12 +165,12 @@ function ThreadRow(props: { id: string }) {
                 aria-pressed={seen()}
                 title={seen() ? "Mark unread" : "Mark read"}
                 aria-label={seen() ? "Mark unread" : "Mark read"}
-                onClick={() => void markSeen([mail().id], !seen())}
+                onClick={() => void markConversationSeen(mail().id, !seen())}
               >
                 {seen() ? "○" : "●"}
               </button>
             </Show>
-            <MailboxActions ids={() => [mail().id]} variant="row" />
+            <MailboxActions variant="row" repId={() => mail().id} />
           </div>
         </div>
       )}

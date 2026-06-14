@@ -1,5 +1,13 @@
 import { For, Show } from "solid-js";
-import { archive, deleteForever, moveEmails, trash } from "@/stores/emails";
+import {
+  archive,
+  archiveConversation,
+  deleteConversationForever,
+  deleteForever,
+  moveEmails,
+  trash,
+  trashConversation,
+} from "@/stores/emails";
 import {
   canMoveInto,
   mailboxes,
@@ -10,22 +18,38 @@ import {
 import { selectedMailboxId } from "@/stores/ui";
 
 /**
- * Move / archive / trash / delete affordances for one or more emails, shared by the reading
- * pane (`variant="message"`, labelled buttons) and a conversation row (`variant="row"`,
- * icon-only). `ids` is an accessor so the set is read at click time, never captured stale.
+ * Move / archive / trash / delete affordances, shared by the reading pane (`variant="message"`,
+ * labelled buttons) and a collapsed conversation row (`variant="row"`, icon-only).
  *
- * Every affordance is myRights-gated (CLAUDE.md / D2): archive and trash need `mayRemoveItems`
- * on the open folder AND a role target that grants `mayAddItems` (resolved by
- * `moveTargetByRole`); "delete forever" is a hard destroy offered only from within Trash, gated
- * on `mayRemoveItems` (the right that governs removing/destroying an email). The store actions
- * are the real enforcement (server `notUpdated`/`notDestroyed`); these gates just avoid offering
- * an action the server would reject.
+ * The two variants differ in SCOPE, not just looks. The reading pane acts per-message, so it takes
+ * an `ids` accessor (read at click time, never captured stale) and calls the id-set actions. A row
+ * acts on the whole CONVERSATION, so it takes the row's representative id (`repId`) and calls the
+ * conversation actions, which expand it to the thread and scope the move/destroy to the open folder
+ * (matching OWA/Gmail/Apple Mail — see emails.ts). The generic "Move to…" picker is reading-pane
+ * only; a row reaches an arbitrary folder via drag-and-drop.
  *
- * For a conversation row the `ids` are the collapsed thread's representative email only (the same
- * scope as PR 1's per-row keyword toggles), so a multi-message thread is acted on one message at
- * a time and the rest reconcile via the push-driven list sync.
+ * Every affordance is myRights-gated (CLAUDE.md / D2): archive and trash need `mayRemoveItems` on
+ * the open folder AND a role target that grants `mayAddItems` (resolved by `moveTargetByRole`);
+ * "delete forever" is a hard destroy offered only from within Trash, gated on `mayRemoveItems` (the
+ * right that governs removing/destroying an email). The store actions are the real enforcement
+ * (server `notUpdated`/`notDestroyed`); these gates just avoid offering an action the server rejects.
  */
-export function MailboxActions(props: { ids: () => string[]; variant: "message" | "row" }) {
+type MailboxActionsProps =
+  | { variant: "message"; ids: () => string[] }
+  | { variant: "row"; repId: () => string };
+
+export function MailboxActions(props: MailboxActionsProps) {
+  // Dispatch the per-message id-set action (reading pane) or its whole-conversation equivalent
+  // (row), keyed off the discriminated variant. Conversation actions take the row's representative.
+  const onArchive = () =>
+    props.variant === "row" ? void archiveConversation(props.repId()) : void archive(props.ids());
+  const onTrash = () =>
+    props.variant === "row" ? void trashConversation(props.repId()) : void trash(props.ids());
+  const onDeleteForever = () =>
+    props.variant === "row"
+      ? void deleteConversationForever(props.repId())
+      : void deleteForever(props.ids());
+
   const rights = () => selectedMailboxRights();
   const canRemove = () => Boolean(rights()?.mayRemoveItems);
   const archiveTarget = () => moveTargetByRole("archive");
@@ -57,7 +81,8 @@ export function MailboxActions(props: { ids: () => string[]; variant: "message" 
             const to = event.currentTarget.value;
             // Reset to the placeholder so the same destination can be chosen again later.
             event.currentTarget.selectedIndex = 0;
-            if (to) void moveEmails(props.ids(), to);
+            // The picker is message-variant only (guarded by the enclosing Show), so `ids` exists.
+            if (to && props.variant === "message") void moveEmails(props.ids(), to);
           }}
         >
           <option value="">Move to…</option>
@@ -66,21 +91,11 @@ export function MailboxActions(props: { ids: () => string[]; variant: "message" 
       </Show>
 
       <Show when={canRemove() && archiveTarget()}>
-        <ActionButton
-          variant={props.variant}
-          icon="🗄"
-          label="Archive"
-          onClick={() => void archive(props.ids())}
-        />
+        <ActionButton variant={props.variant} icon="🗄" label="Archive" onClick={onArchive} />
       </Show>
 
       <Show when={canRemove() && trashTarget()}>
-        <ActionButton
-          variant={props.variant}
-          icon="🗑"
-          label="Trash"
-          onClick={() => void trash(props.ids())}
-        />
+        <ActionButton variant={props.variant} icon="🗑" label="Trash" onClick={onTrash} />
       </Show>
 
       <Show when={canDeleteForever()}>
@@ -89,7 +104,7 @@ export function MailboxActions(props: { ids: () => string[]; variant: "message" 
           icon="✕"
           label="Delete forever"
           danger
-          onClick={() => void deleteForever(props.ids())}
+          onClick={onDeleteForever}
         />
       </Show>
     </>

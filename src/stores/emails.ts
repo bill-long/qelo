@@ -779,6 +779,122 @@ export async function deleteForever(ids: string[]): Promise<void> {
   if (survived.size > 0) restorePrunedRows(survived);
 }
 
+// --- Whole-conversation mutations ------------------------------------------
+//
+// A collapsed list row / dragged conversation is identified by its REPRESENTATIVE email id (the
+// one Email/query returns for the thread). The keyword + mailbox primitives above already act on
+// any id set, so a whole-conversation action is just "expand the representative into the thread's
+// ids, then call the same primitive." Scope (decided with Bill, matching OWA/Gmail/Apple Mail):
+//   - keywords (read/unread, flag): the WHOLE conversation — every message in the thread, across
+//     every folder.
+//   - mailbox ops (move/archive/trash/delete): only the conversation's messages in the OPEN folder
+//     — messages already filed elsewhere stay put. This also keeps the optimistic mailboxIds patch
+//     correct (patching `mailboxIds/<fromId>: null` on a message not in fromId is a no-op, while
+//     `mailboxIds/<toId>: true` would WRONGLY add it to the target).
+// The reading pane keeps per-message actions (it shows individual messages), so those still call
+// the id-set primitives directly with a single message id.
+
+/**
+ * Expand a collapsed thread's representative id into every Email id in its conversation. Prefers
+ * the open reading-pane thread (already fully loaded by loadThread — no round trip); otherwise
+ * resolves the representative's cached threadId and fetches the thread's email ids together with
+ * their list properties (incl. mailboxIds, needed to scope a move to the open folder) in ONE
+ * batched request, caching them so the optimistic primitives find them held.
+ *
+ * Does NOT advance emailState — a partial fetch; the push-driven drain owns that cursor. Falls back
+ * to `[repId]` if the conversation can't be resolved (rep not cached, no threadId, or the fetch
+ * returns nothing) so the action still hits at least the representative; returns `[]` only on an
+ * auth failure (the re-auth gate is raised) so the caller no-ops.
+ */
+async function conversationEmailIds(repId: string): Promise<string[]> {
+  const threadId = emails[repId]?.threadId;
+  if (!threadId) return [repId];
+  // The open conversation is already fully loaded (Thread/get + detail Email/get in loadThread).
+  // Copy it: thread.emailIds is the reactive store array — never hand a caller a live reference.
+  if (thread.threadId === threadId && thread.emailIds.length > 0) return [...thread.emailIds];
+  try {
+    const client = jmap();
+    const responses = await client.request([
+      threadGet(client.accountId, "t", { ids: [threadId] }),
+      emailGet(client.accountId, "g", {
+        idsRef: { resultOf: "t", name: "Thread/get", path: "/list/*/emailIds" },
+        properties: LIST_PROPERTIES,
+      }),
+    ]);
+    cacheEmails((methodResult(responses, "g").list ?? []) as Email[]);
+    const list = (methodResult(responses, "t").list ?? []) as Array<{
+      id: string;
+      emailIds: string[];
+    }>;
+    const ids = list[0]?.emailIds ?? [];
+    return ids.length > 0 ? ids : [repId];
+  } catch (err) {
+    if (handleAuthFailure(err)) return [];
+    // Any transport/method failure: act on the representative alone rather than nothing.
+    return [repId];
+  }
+}
+
+/**
+ * The conversation's email ids currently in the open folder — the move/delete scope. The
+ * representative is, by construction, a row from the open folder's collapsed query and is cached
+ * with its mailboxIds, so it's in this set in every normal case (and is the only member when the
+ * expand fell back to `[repId]` on a fetch failure). An EMPTY result therefore means every thread
+ * member — including the representative — left the open folder across the expand await (a concurrent
+ * move): the right answer is then to do NOTHING. We deliberately do not fall back to `[repId]` here,
+ * which would re-add a message to the move/destroy target it no longer belonged to in `fromId` — the
+ * exact wrong-add the scope note above guards against. optimisticMove/deleteForever no-op on `[]`.
+ */
+async function conversationIdsInOpenFolder(repId: string, fromId: string): Promise<string[]> {
+  const ids = await conversationEmailIds(repId);
+  return ids.filter((id) => emails[id]?.mailboxIds[fromId] === true);
+}
+
+/** Mark every message in the representative's conversation read/unread ($seen). Optimistic. */
+export async function markConversationSeen(repId: string, seen: boolean): Promise<void> {
+  await markSeen(await conversationEmailIds(repId), seen);
+}
+
+/** Flag/unflag every message in the representative's conversation ($flagged). Optimistic. */
+export async function setConversationFlagged(repId: string, flagged: boolean): Promise<void> {
+  await setFlagged(await conversationEmailIds(repId), flagged);
+}
+
+/**
+ * Move the representative's conversation out of the open folder into `toMailboxId`. Only the
+ * conversation's messages currently in the open folder are moved (see scope note above). Captures
+ * the open folder synchronously (before the expand await) so a folder switch mid-expand can't
+ * retarget the move; optimisticMove then owns the optimistic prune + reconcile.
+ */
+export async function moveConversation(repId: string, toMailboxId: string): Promise<void> {
+  const fromId = threadList.mailboxId;
+  if (!fromId) return;
+  await optimisticMove(await conversationIdsInOpenFolder(repId, fromId), fromId, toMailboxId);
+}
+
+/** Archive the representative's conversation (open folder → archive-role mailbox). */
+export async function archiveConversation(repId: string): Promise<void> {
+  const to = mailboxIdByRole("archive");
+  if (to) await moveConversation(repId, to);
+}
+
+/** Trash the representative's conversation (open folder → trash-role mailbox). */
+export async function trashConversation(repId: string): Promise<void> {
+  const to = mailboxIdByRole("trash");
+  if (to) await moveConversation(repId, to);
+}
+
+/**
+ * Delete forever every message of the conversation that's in the open (Trash) folder. Like
+ * deleteForever, a hard Email/set destroy — scoped to the open folder per Bill's decision, so a
+ * message that also lives in another folder isn't destroyed from under it.
+ */
+export async function deleteConversationForever(repId: string): Promise<void> {
+  const fromId = threadList.mailboxId;
+  if (!fromId) return;
+  await deleteForever(await conversationIdsInOpenFolder(repId, fromId));
+}
+
 /**
  * Auto-mark-read on open (D1): flip the just-opened conversation's shown-and-unread messages
  * to $seen. Fires once per open (loadThread only re-runs when the selected thread changes),
