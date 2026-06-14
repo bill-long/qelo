@@ -1,6 +1,14 @@
 import process from "node:process";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { CAP_CORE, CAP_MAIL, emailGet, emailQuery, emailSet, methodResult } from "@/jmap/methods";
+import {
+  CAP_CORE,
+  CAP_MAIL,
+  DETAIL_PROPERTIES,
+  emailGet,
+  emailQuery,
+  emailSet,
+  methodResult,
+} from "@/jmap/methods";
 import type { Email, Id } from "@/jmap/types";
 import {
   composeError,
@@ -10,10 +18,17 @@ import {
   saveDraft,
   selectedIdentity,
   send,
+  startReply,
   updateDraft,
 } from "@/stores/compose";
 import { loadMailboxes, mailboxIdByRole } from "@/stores/mailboxes";
-import { connectTestClient, disconnectTestClient, resetStores, testClient } from "./harness";
+import {
+  connectTestClient,
+  createMessages,
+  disconnectTestClient,
+  resetStores,
+  testClient,
+} from "./harness";
 
 // PR 3 — compose foundation (identities, drafts, send). Drives the real compose store actions
 // against a live Stalwart (CLAUDE.md forbids mocking), then reads the server back to prove the
@@ -107,6 +122,18 @@ describe("compose", () => {
     return email;
   }
 
+  /** Read one email with the full reading-pane property set (threadId, headers, body). */
+  async function serverEmailDetail(id: Id): Promise<Email> {
+    const client = testClient();
+    const resp = await client.request(
+      [emailGet(client.accountId, "g", { ids: [id], properties: [...DETAIL_PROPERTIES] })],
+      [CAP_CORE, CAP_MAIL],
+    );
+    const email = ((methodResult(resp, "g").list ?? []) as Email[])[0];
+    if (!email) throw new Error(`Email/get returned nothing for ${id}`);
+    return email;
+  }
+
   it("Identity/get returns at least one sending identity, defaulting the selection", async () => {
     await loadIdentities();
     expect(identities().length).toBeGreaterThanOrEqual(1);
@@ -182,5 +209,36 @@ describe("compose", () => {
     const inboxIds = await waitForSubject(inboxId, subject);
     const inboxEmail = await serverEmail(inboxIds[0] as Id);
     expect(inboxEmail.mailboxIds[inboxId]).toBe(true);
+  });
+
+  it("startReply → send carries inReplyTo/references and stays in the source's thread", async () => {
+    await loadMailboxes();
+    await loadIdentities();
+    const inboxId = mailboxIdByRole("inbox") as Id;
+    const sentId = mailboxIdByRole("sent") as Id;
+    expect(inboxId, "Inbox mailbox").toBeDefined();
+    expect(sentId, "Sent mailbox").toBeDefined();
+
+    // Seed a source message FROM our own address, so the reply (To = its From) loops straight
+    // back to us and the whole exchange threads under one account.
+    const subject = freshSubject("reply");
+    const [src] = await createMessages(inboxId, [
+      { subject, from: { name: "Test User", email: ACCOUNT_EMAIL }, text: "Original body." },
+    ]);
+    const source = await serverEmailDetail((src as { id: Id }).id);
+
+    // Prefill the reply off the real (server-read) source, then send it as the one batch.
+    startReply(source);
+    expect(await send()).toBe(true);
+
+    // The Sent copy is the only "Re: <subject>" in Sent (the source lives in Inbox).
+    const sentIds = await waitForSubject(sentId, subject);
+    const reply = await serverEmailDetail(sentIds[0] as Id);
+    expect(reply.subject).toBe(`Re: ${subject}`);
+    // Threading headers: inReplyTo = the source's Message-ID; references ends with it.
+    expect(reply.inReplyTo).toEqual(source.messageId);
+    expect(reply.references?.[reply.references.length - 1]).toBe(source.messageId?.[0]);
+    // And the payoff: the reply lands in the SAME thread as the source.
+    expect(reply.threadId).toBe(source.threadId);
   });
 });
