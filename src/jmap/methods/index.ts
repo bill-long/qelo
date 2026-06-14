@@ -8,6 +8,9 @@ import type { Email, EmailSetResponse, Id, MethodCall, MethodResponse, SetError 
 
 export const CAP_CORE = "urn:ietf:params:jmap:core";
 export const CAP_MAIL = "urn:ietf:params:jmap:mail";
+// Identity and EmailSubmission both live under the submission capability, so any request
+// touching them must add this to `using` (the default `request()` `using` is [core, mail]).
+export const CAP_SUBMISSION = "urn:ietf:params:jmap:submission";
 
 /** Properties needed to render a row in the conversation list. */
 export const LIST_PROPERTIES = [
@@ -237,6 +240,46 @@ export function movePatch(fromId: Id, toId: Id): EmailPatch {
 }
 
 // ---------------------------------------------------------------------------
+// Identity (RFC 8621 §6) — the sending addresses compose can pick from
+// ---------------------------------------------------------------------------
+
+/** Fetch the account's sending identities; `ids: null` (the default) returns them all. */
+export function identityGet(accountId: Id, callId: string, ids: Id[] | null = null): MethodCall {
+  return ["Identity/get", { accountId, ids }, callId];
+}
+
+// ---------------------------------------------------------------------------
+// EmailSubmission (RFC 8621 §7) — the send itself
+// ---------------------------------------------------------------------------
+
+export interface EmailSubmissionSetOptions {
+  /** Creation-id → submission map, e.g. `{ sub: { identityId, emailId: "#draft" } }`. */
+  create?: Record<string, Record<string, unknown>>;
+  /**
+   * Per just-created submission, a patch to apply to its email iff the submission succeeds
+   * (RFC 8621 §7.5) — keyed by the submission's `#creationId`. The headline use: atomically
+   * clear `$draft`, set `$seen`, and move the message Drafts→Sent the instant the send lands,
+   * in the same round trip. The server runs it as an implicit `Email/set` whose response rides
+   * under this method's call id.
+   */
+  onSuccessUpdateEmail?: Record<string, EmailPatch>;
+  /** Per just-created submission, destroy its email on success instead (we keep the Sent copy). */
+  onSuccessDestroyEmail?: string[];
+}
+
+export function emailSubmissionSet(
+  accountId: Id,
+  callId: string,
+  opts: EmailSubmissionSetOptions,
+): MethodCall {
+  const args: Record<string, unknown> = { accountId };
+  if (opts.create) args.create = opts.create;
+  if (opts.onSuccessUpdateEmail) args.onSuccessUpdateEmail = opts.onSuccessUpdateEmail;
+  if (opts.onSuccessDestroyEmail) args.onSuccessDestroyEmail = opts.onSuccessDestroyEmail;
+  return ["EmailSubmission/set", args, callId];
+}
+
+// ---------------------------------------------------------------------------
 // Thread
 // ---------------------------------------------------------------------------
 
@@ -292,11 +335,11 @@ export function methodResult(responses: MethodResponse[], callId: string): Recor
  * (`notCreated`/`notUpdated`/`notDestroyed`) that ride on an *otherwise-successful* `/set`
  * response — the maps a mutation must check to know which records the server actually refused.
  */
-export interface SetResult {
+export interface SetResult<T = Email> {
   oldState: string | null;
   newState: string;
-  created: Record<Id, Partial<Email> | null>;
-  updated: Record<Id, Partial<Email> | null>;
+  created: Record<Id, Partial<T> | null>;
+  updated: Record<Id, Partial<T> | null>;
   destroyed: Id[];
   notCreated: Record<Id, SetError>;
   notUpdated: Record<Id, SetError>;
@@ -304,14 +347,19 @@ export interface SetResult {
 }
 
 /**
- * Parse a `/set` (Email/set, and later Mailbox/EmailSubmission) response into a typed
- * {@link SetResult}. Throws a {@link JmapMethodError} on a method-level error (via
- * `methodResult`); the per-item `not*` maps are normalized to `{}` so a caller does
- * `Object.keys(result.notUpdated)` without a guard.
+ * Parse a `/set` response into a typed {@link SetResult}. Generic over the record type so the
+ * same helper serves `Email/set` (the default) and `EmailSubmission/set` — the wire shape is
+ * identical (RFC 8620 §5.3); only the `created`/`updated` value type differs. Throws a
+ * {@link JmapMethodError} on a method-level error (via `methodResult`); the per-item `not*`
+ * maps are normalized to `{}` so a caller does `Object.keys(result.notUpdated)` without a guard.
+ *
+ * NOTE on `EmailSubmission/set` + `onSuccessUpdateEmail`: the server emits a SECOND response
+ * (the implicit `Email/set`) under the SAME call id. `methodResult` matches the FIRST, i.e. the
+ * EmailSubmission/set itself — exactly the result a caller wants to inspect for `notCreated`.
  */
-export function setResult(responses: MethodResponse[], callId: string): SetResult {
-  // The raw args are the EmailSetResponse wire shape (nullable maps); SetResult is its
-  // normalized form. methodResult has already thrown on a method-level error.
+export function setResult<T = Email>(responses: MethodResponse[], callId: string): SetResult<T> {
+  // The raw args are the (Email|EmailSubmission)SetResponse wire shape (nullable maps);
+  // SetResult is its normalized form. methodResult has already thrown on a method-level error.
   const args = methodResult(responses, callId) as unknown as EmailSetResponse;
   // newState is a required cursor token on a successful /set (RFC 8620 §5.3). A missing/
   // non-string one signals a malformed response — fail fast rather than hand back "" and let
@@ -322,8 +370,8 @@ export function setResult(responses: MethodResponse[], callId: string): SetResul
   return {
     oldState: typeof args.oldState === "string" ? args.oldState : null,
     newState: args.newState,
-    created: args.created ?? {},
-    updated: args.updated ?? {},
+    created: (args.created ?? {}) as Record<Id, Partial<T> | null>,
+    updated: (args.updated ?? {}) as Record<Id, Partial<T> | null>,
     destroyed: args.destroyed ?? [],
     notCreated: args.notCreated ?? {},
     notUpdated: args.notUpdated ?? {},
