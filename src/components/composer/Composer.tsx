@@ -23,6 +23,17 @@ function identityLabel(name: string, email: string): string {
   return name ? `${name} <${email}>` : email;
 }
 
+// Platform-aware label for the Cmd/Ctrl+Enter send shortcut. Detected once at module load: the OS
+// doesn't change mid-session. `navigator.platform` is deprecated but still the most reliable Mac
+// signal in the Tauri webviews; fall back to the user agent.
+const isMac =
+  typeof navigator !== "undefined" &&
+  /Mac|iP(hone|ad|od)/.test(navigator.platform || navigator.userAgent);
+/** Short visual hint shown beside Send, e.g. "⌘↵" on macOS, "Ctrl+↵" elsewhere. */
+const SEND_SHORTCUT = isMac ? "⌘↵" : "Ctrl+↵";
+/** Spelled-out form for the Send button's title/tooltip. */
+const SEND_SHORTCUT_TITLE = isMac ? "Send (⌘ Return)" : "Send (Ctrl+Enter)";
+
 /**
  * The compose window (D3: plain-text, new message). A native modal `<dialog>` over the three-pane
  * shell, mounted only while `composeOpen()`. Using the platform dialog (opened with `showModal()`)
@@ -86,8 +97,24 @@ export function Composer() {
     if (busy() === null) discardDraft();
   }
 
+  // Cmd/Ctrl+Enter sends (when sendable) from anywhere in the dialog — including the body textarea,
+  // where a bare Enter inserts a newline and the modifier combo is otherwise inert. Escape→discard
+  // is handled natively by the dialog's `cancel` event (onCancel above), so it's not duplicated here.
+  function onKeyDown(event: KeyboardEvent) {
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      event.preventDefault();
+      if (canSend()) void send();
+    }
+  }
+
   return (
-    <dialog ref={dialog} class="composer" aria-labelledby="composer-title" onCancel={onCancel}>
+    <dialog
+      ref={dialog}
+      class="composer"
+      aria-labelledby="composer-title"
+      onCancel={onCancel}
+      onKeyDown={onKeyDown}
+    >
       <header class="composer-head">
         <h2 id="composer-title" class="composer-title">
           New message
@@ -259,10 +286,20 @@ export function Composer() {
         <button
           type="button"
           class="composer-send"
+          title={SEND_SHORTCUT_TITLE}
+          // Expose the shortcut to AT reliably (title alone is unreliably surfaced). Both modifiers
+          // are listed since the handler accepts either Ctrl or Cmd regardless of platform.
+          aria-keyshortcuts="Control+Enter Meta+Enter"
           disabled={!canSend()}
           onClick={() => void send()}
         >
           {busy() === "send" ? "Sending…" : "Send"}
+          {/* Decorative shortcut hint — the spelled-out combo is on the button's title for AT. */}
+          <Show when={busy() !== "send"}>
+            <span class="composer-shortcut" aria-hidden="true">
+              {SEND_SHORTCUT}
+            </span>
+          </Show>
         </button>
         <button
           type="button"

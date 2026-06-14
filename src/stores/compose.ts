@@ -23,6 +23,7 @@ import {
 } from "@/lib/reply";
 import { handleAuthFailure, jmap } from "./account";
 import { mailboxIdByRole } from "./mailboxes";
+import { notify } from "./toasts";
 
 // Compose v1 (D3): plain-text body only, new message only. The headline JMAP payoff lives in
 // send(): one batched Email/set{create #draft} + EmailSubmission/set{create, onSuccessUpdateEmail}
@@ -425,6 +426,7 @@ export async function saveDraft(): Promise<boolean> {
       setComposeError(`Couldn't save draft: ${failure.description ?? failure.type}`);
       return false;
     }
+    notify("Draft saved");
     closeAndReset();
     return true;
   } catch (err) {
@@ -510,6 +512,7 @@ export async function send(): Promise<boolean> {
       );
       return false;
     }
+    notify("Message sent");
     closeAndReset();
     return true;
   } catch (err) {
