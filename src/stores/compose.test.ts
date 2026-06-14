@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildDraftEmail, type DraftEmailInput, sentFilePatch } from "./compose";
+import {
+  attachmentParts,
+  buildDraftEmail,
+  type DraftAttachment,
+  type DraftEmailInput,
+  sentFilePatch,
+} from "./compose";
 
 const baseInput: DraftEmailInput = {
   draftsMailboxId: "drafts1",
@@ -43,6 +49,36 @@ describe("buildDraftEmail", () => {
     expect(create.bcc).toEqual([{ name: null, email: "b@x.io" }]);
     expect(create.inReplyTo).toEqual(["<parent@x.io>"]);
     expect(create.references).toEqual(["<root@x.io>", "<parent@x.io>"]);
+  });
+
+  it("omits attachments when absent or empty", () => {
+    expect(buildDraftEmail(baseInput)).not.toHaveProperty("attachments");
+    expect(buildDraftEmail({ ...baseInput, attachments: [] })).not.toHaveProperty("attachments");
+  });
+
+  it("includes shaped attachment parts when provided", () => {
+    const create = buildDraftEmail({
+      ...baseInput,
+      attachments: [{ blobId: "B1", type: "image/png", name: "logo.png", size: 1234 }],
+    });
+    expect(create.attachments).toEqual([
+      { blobId: "B1", type: "image/png", name: "logo.png", disposition: "attachment", size: 1234 },
+    ]);
+  });
+});
+
+describe("attachmentParts", () => {
+  const att: DraftAttachment = { blobId: "B1", type: "text/plain", name: "note.txt", size: 42 };
+
+  it("returns undefined for no attachments (so the field is omitted entirely)", () => {
+    expect(attachmentParts([])).toBeUndefined();
+  });
+
+  it("shapes each attachment into an EmailBodyPart with disposition 'attachment'", () => {
+    expect(attachmentParts([att, { ...att, blobId: "B2", name: "two.txt" }])).toEqual([
+      { blobId: "B1", type: "text/plain", name: "note.txt", disposition: "attachment", size: 42 },
+      { blobId: "B2", type: "text/plain", name: "two.txt", disposition: "attachment", size: 42 },
+    ]);
   });
 });
 

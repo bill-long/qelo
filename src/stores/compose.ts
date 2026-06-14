@@ -32,6 +32,19 @@ import { mailboxIdByRole } from "./mailboxes";
 
 // --- Pure builders (unit-tested) -------------------------------------------
 
+/**
+ * An attachment already uploaded to the blob store (its bytes POSTed via `JmapClient.upload`),
+ * carrying the server-assigned `blobId` an `Email/set` create references plus the `type`/`size`
+ * the server recorded and the local file `name`. The draft holds these; send/saveDraft just let
+ * the blobIds ride the existing create — no extra round trip beyond the one-per-file upload.
+ */
+export interface DraftAttachment {
+  blobId: string;
+  type: string;
+  name: string;
+  size: number;
+}
+
 export interface DraftEmailInput {
   draftsMailboxId: string;
   from: EmailAddress;
@@ -44,6 +57,27 @@ export interface DraftEmailInput {
   // Threading headers — reserved for PR 4 (reply/forward); always null in v1.
   inReplyTo?: string[] | null;
   references?: string[] | null;
+  /** Uploaded attachments to reference by blobId; omitted/empty → no `attachments` field. */
+  attachments?: DraftAttachment[];
+}
+
+/**
+ * Shape uploaded attachments into the `attachments` EmailBodyPart[] an `Email/set` create carries
+ * (RFC 8621 §4.1.4): each part references its uploaded `blobId` with `disposition: "attachment"`,
+ * and reuses the server-recorded `type`/`size` plus the file `name`. Returns `undefined` when there
+ * are none so {@link buildDraftEmail} can omit the field entirely rather than send an empty array.
+ */
+export function attachmentParts(
+  attachments: DraftAttachment[],
+): Array<Record<string, unknown>> | undefined {
+  if (attachments.length === 0) return undefined;
+  return attachments.map((a) => ({
+    blobId: a.blobId,
+    type: a.type,
+    name: a.name,
+    disposition: "attachment",
+    size: a.size,
+  }));
 }
 
 /**
@@ -66,6 +100,8 @@ export function buildDraftEmail(input: DraftEmailInput): Record<string, unknown>
   if (input.bcc) create.bcc = input.bcc;
   if (input.inReplyTo) create.inReplyTo = input.inReplyTo;
   if (input.references) create.references = input.references;
+  const attachments = attachmentParts(input.attachments ?? []);
+  if (attachments) create.attachments = attachments;
   return create;
 }
 
@@ -95,25 +131,42 @@ export interface DraftState {
   // Reserved for PR 4 (reply threading); always null in v1.
   inReplyTo: string[] | null;
   references: string[] | null;
+  /** Already-uploaded attachments (see {@link attachFiles}); ride the create as blobId refs. */
+  attachments: DraftAttachment[];
 }
 
-const EMPTY_DRAFT: DraftState = {
-  to: "",
-  cc: "",
-  bcc: "",
-  subject: "",
-  body: "",
-  inReplyTo: null,
-  references: null,
-};
+// A fresh blank draft. A factory (not a shared const) so each reset gets its own `attachments`
+// array — every entry point spreads this, and a shared array could otherwise be aliased across
+// drafts. The reactive store reconciles per field, so spreading the factory result resets cleanly.
+function emptyDraft(): DraftState {
+  return {
+    to: "",
+    cc: "",
+    bcc: "",
+    subject: "",
+    body: "",
+    inReplyTo: null,
+    references: null,
+    attachments: [],
+  };
+}
 
-export const [draft, setDraft] = createStore<DraftState>({ ...EMPTY_DRAFT });
+export const [draft, setDraft] = createStore<DraftState>(emptyDraft());
 export const [identities, setIdentities] = createSignal<Identity[]>([]);
 export const [selectedIdentityId, setSelectedIdentityId] = createSignal<string | null>(null);
 export const [composeOpen, setComposeOpen] = createSignal(false);
 /** Which submit is in flight (gates the buttons + drives their labels), or null when idle. */
 export const [busy, setBusy] = createSignal<null | "send" | "save">(null);
+/** True while one or more attachment uploads are in flight (gates send/save). */
+export const [uploading, setUploading] = createSignal(false);
 export const [composeError, setComposeError] = createSignal<string | null>(null);
+
+// Bumped every time the draft is opened or reset. An in-flight attachFiles captures the value at
+// the start and only appends/clears state while it still matches — so an upload that resolves after
+// the user discarded (or reopened) the composer can't graft a stale attachment onto a different
+// draft. We can't abort the network upload (no AbortController), but this keeps a late resolution
+// harmless, which is what lets discard stay available during an upload instead of trapping the user.
+let draftGeneration = 0;
 
 /** The chosen sending identity, defaulting to the first the account exposes. */
 export function selectedIdentity(): Identity | undefined {
@@ -128,16 +181,22 @@ export function updateDraft<K extends keyof DraftState>(field: K, value: DraftSt
 }
 
 function closeAndReset(): void {
+  draftGeneration += 1; // supersede any in-flight upload so it can't append to the next draft
   setComposeOpen(false);
-  setDraft({ ...EMPTY_DRAFT });
+  setDraft(emptyDraft());
+  setUploading(false);
   setComposeError(null);
 }
 
 // Open the composer on a specific initial draft, loading identities on first use. Every entry
-// point (blank compose, reply, forward) funnels through here so the EMPTY_DRAFT reset can't clobber
-// a prefill — the caller hands the fully-formed draft in, it isn't reset then patched.
+// point (blank compose, reply, forward) funnels through here so the emptyDraft() reset can't clobber
+// a prefill — the caller hands the fully-formed draft in, it isn't reset then patched. Bumping the
+// generation supersedes any upload still in flight from a previous open, so it can't append onto
+// this fresh draft.
 function openWith(initial: DraftState): void {
+  draftGeneration += 1;
   setDraft(initial);
+  setUploading(false);
   setComposeError(null);
   setComposeOpen(true);
   if (identities().length === 0) void loadIdentities();
@@ -145,7 +204,7 @@ function openWith(initial: DraftState): void {
 
 /** Open the composer on a fresh blank message, loading identities on first use. */
 export function openComposer(): void {
-  openWith({ ...EMPTY_DRAFT });
+  openWith(emptyDraft());
 }
 
 // The user's own identity addresses (lowercased by replyRecipients), used to keep reply-all from
@@ -167,7 +226,7 @@ export function startReply(email: Email, opts: { all?: boolean } = {}): void {
   const { to, cc } = replyRecipients(email, { all: opts.all ?? false, self: selfAddresses() });
   const headers = threadingHeaders(email);
   openWith({
-    ...EMPTY_DRAFT,
+    ...emptyDraft(),
     to: to.join(", "),
     cc: cc.join(", "),
     subject: replySubject(email.subject),
@@ -180,11 +239,13 @@ export function startReply(email: Email, opts: { all?: boolean } = {}): void {
 /**
  * Open the composer to forward `email`: recipients are left empty (the user picks them), subject
  * is "Fwd: …" (no double-prefix), and the body carries a forwarded-message header block + the
- * original text. A forward starts a NEW thread, so no threading headers are set.
+ * original text. A forward starts a NEW thread, so no threading headers are set. Attachments reset
+ * to empty: re-attaching the source's parts (by referencing their existing blobIds — a copy, not a
+ * re-upload) is a deferred follow-up, so a forward currently carries the quoted text only.
  */
 export function startForward(email: Email): void {
   openWith({
-    ...EMPTY_DRAFT,
+    ...emptyDraft(),
     subject: forwardSubject(email.subject),
     body: forwardQuote(email),
   });
@@ -197,11 +258,13 @@ export function discardDraft(): void {
 
 /** Reset all compose state — a test seam; app flow goes through open/discard. */
 export function resetCompose(): void {
-  setDraft({ ...EMPTY_DRAFT });
+  draftGeneration += 1;
+  setDraft(emptyDraft());
   setIdentities([]);
   setSelectedIdentityId(null);
   setComposeOpen(false);
   setBusy(null);
+  setUploading(false);
   setComposeError(null);
 }
 
@@ -260,7 +323,67 @@ function currentDraftCreate(draftsId: string, identity: Identity): Record<string
     body: draft.body,
     inReplyTo: draft.inReplyTo,
     references: draft.references,
+    // Spread to a plain array: buildDraftEmail/attachmentParts are pure (no store proxy in).
+    attachments: [...draft.attachments],
   });
+}
+
+/**
+ * Upload each picked file to the blob store and append it to the draft on success (so its blobId
+ * rides the existing create — send/saveDraft need no extra round trip). Uploads run sequentially
+ * and each is independent: a failed file is collected and reported by name without aborting the
+ * rest, and a successful one is appended the instant it lands. {@link uploading} gates the submit
+ * controls + the attach button for the duration (NOT discard — the generation guard makes a late
+ * upload harmless, so the user isn't trapped). An auth failure raises the global re-auth gate.
+ */
+export async function attachFiles(files: File[]): Promise<void> {
+  if (files.length === 0 || uploading()) return;
+  const generation = draftGeneration;
+  setUploading(true);
+  setComposeError(null);
+  const failed: string[] = [];
+  try {
+    const client = jmap();
+    for (const file of files) {
+      try {
+        const result = await client.upload(file, file.type || "application/octet-stream");
+        // The draft was discarded/reopened mid-upload — don't graft this onto a different draft.
+        if (draftGeneration !== generation) return;
+        // Content-addressed blob stores dedupe identical bytes to one blobId, so attaching the same
+        // file twice would yield two chips with the same blobId — and removeAttachment(blobId) would
+        // then drop both. Skip a blobId already attached; the bytes are present either way. The
+        // functional update reads the live array, so a chip lands as each upload resolves, and the
+        // server-recorded type/size are authoritative over the client-side File metadata.
+        const { blobId, type, size } = result;
+        setDraft("attachments", (prev) =>
+          prev.some((a) => a.blobId === blobId)
+            ? prev
+            : [...prev, { blobId, type, name: file.name, size }],
+        );
+      } catch (err) {
+        if (handleAuthFailure(err)) return;
+        failed.push(file.name);
+      }
+    }
+    if (failed.length > 0) {
+      setComposeError(`Couldn't attach: ${failed.join(", ")}`);
+    }
+  } catch (err) {
+    // jmap() can throw (e.g. disconnected after sign-out). This is a fire-and-forget call from the
+    // UI, so surface the failure rather than leaving an unhandled rejection.
+    if (!handleAuthFailure(err)) {
+      setComposeError(err instanceof Error ? err.message : String(err));
+    }
+  } finally {
+    // Only this invocation's own draft generation may clear the flag — a stale invocation (whose
+    // draft was already superseded) must not stomp a newer attachFiles' uploading state.
+    if (draftGeneration === generation) setUploading(false);
+  }
+}
+
+/** Drop an uploaded attachment from the draft by its blobId (the chip's remove control). */
+export function removeAttachment(blobId: string): void {
+  setDraft("attachments", (prev) => prev.filter((a) => a.blobId !== blobId));
 }
 
 /**
@@ -269,7 +392,9 @@ function currentDraftCreate(draftsId: string, identity: Identity): Record<string
  * refusal/failure, which is surfaced via {@link composeError}. Never rejects.
  */
 export async function saveDraft(): Promise<boolean> {
-  if (busy()) return false;
+  // Refuse while a submit is in flight or an upload is still resolving — saving mid-upload would
+  // race the attachment append and persist a draft missing a blobId. The UI also gates the button.
+  if (busy() || uploading()) return false;
   const draftsId = mailboxIdByRole("drafts");
   if (!draftsId) {
     setComposeError("No Drafts folder to save into.");
@@ -320,7 +445,8 @@ export async function saveDraft(): Promise<boolean> {
  * false on a validation/refusal/failure surfaced via {@link composeError}. Never rejects.
  */
 export async function send(): Promise<boolean> {
-  if (busy()) return false;
+  // As with saveDraft: don't send mid-upload (would submit a message missing an attachment blob).
+  if (busy() || uploading()) return false;
   const draftsId = mailboxIdByRole("drafts");
   if (!draftsId) {
     setComposeError("No Drafts folder to send from.");

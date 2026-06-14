@@ -1,17 +1,21 @@
 import { createMemo, For, onMount, Show } from "solid-js";
 import { invalidRecipients, parseRecipients } from "@/lib/addresses";
+import { formatBytes } from "@/lib/format";
 import {
+  attachFiles,
   busy,
   composeError,
   discardDraft,
   draft,
   identities,
+  removeAttachment,
   saveDraft,
   selectedIdentity,
   selectedIdentityId,
   send,
   setSelectedIdentityId,
   updateDraft,
+  uploading,
 } from "@/stores/compose";
 
 /** Render an identity as "Name <email>" (or bare email when it has no display name). */
@@ -48,11 +52,30 @@ export function Composer() {
     () => invalidTo().length > 0 || invalidCc().length > 0 || invalidBcc().length > 0,
   );
   // Both submits need a resolved identity (so they aren't briefly enabled before loadIdentities()
-  // resolves) and no invalid tokens (the store rejects those rather than drop them silently). Send
+  // resolves) and no invalid tokens (the store rejects those rather than drop them silently), and
+  // must wait out any in-flight upload so a blobId can't be dropped from the create. Send
   // additionally needs ≥1 recipient; a draft may be recipient-less, so Save does not.
-  const ready = createMemo(() => !hasInvalid() && Boolean(selectedIdentity()) && busy() === null);
+  const ready = createMemo(
+    () => !hasInvalid() && Boolean(selectedIdentity()) && busy() === null && !uploading(),
+  );
   const canSend = createMemo(() => ready() && hasRecipient());
   const canSave = createMemo(() => ready());
+  // Gates BOTH attach and remove controls: blocked during a submit and during an in-flight upload.
+  // A fresh pick is ignored mid-upload, so don't invite one; and removing a chip mid-batch is unsafe
+  // because a later same-batch file that dedupes to a removed blobId would re-append it (attachFiles
+  // only checks the *current* draft). Discard/✕/Escape are NOT blocked by an upload — the store's
+  // draft-generation guard makes a late-resolving upload harmless, so the user is never trapped
+  // waiting on a slow upload; those are blocked only during an actual send/save submit.
+  const attachLocked = createMemo(() => busy() !== null || uploading());
+
+  // Pull the selected files off the input, hand them to the store to upload, then clear the input's
+  // value so re-picking the same file fires another change event.
+  function onPickFiles(event: { currentTarget: HTMLInputElement }) {
+    const input = event.currentTarget;
+    const files = input.files ? Array.from(input.files) : [];
+    input.value = "";
+    if (files.length > 0) void attachFiles(files);
+  }
 
   // The native dialog fires "cancel" on Escape. We own closing — discardDraft resets the store and
   // unmounts the dialog — so preventDefault and discard only when idle, so Escape can't yank the
@@ -179,6 +202,49 @@ export function Composer() {
           value={draft.body}
           onInput={(event) => updateDraft("body", event.currentTarget.value)}
         />
+
+        <div class="composer-attach">
+          {/* A real <label> wrapping the input names it for AT; the input is visually hidden and
+              the styled span is the visible affordance. Picking is disabled during a submit and
+              while an upload is in flight (a fresh pick is ignored mid-upload, so don't invite it). */}
+          <label class="composer-attach-label" classList={{ "is-disabled": attachLocked() }}>
+            <span aria-hidden="true">📎</span> Attach files
+            <input
+              type="file"
+              class="composer-attach-input"
+              multiple
+              disabled={attachLocked()}
+              onChange={onPickFiles}
+            />
+          </label>
+          <Show when={uploading()}>
+            <span class="composer-uploading" role="status">
+              Uploading…
+            </span>
+          </Show>
+        </div>
+
+        <Show when={draft.attachments.length > 0}>
+          <ul class="composer-attachments">
+            <For each={draft.attachments}>
+              {(att) => (
+                <li class="composer-attachment">
+                  <span class="composer-attachment-name">{att.name}</span>
+                  <span class="composer-attachment-size">{formatBytes(att.size)}</span>
+                  <button
+                    type="button"
+                    class="composer-attachment-remove"
+                    aria-label={`Remove attachment ${att.name}`}
+                    disabled={attachLocked()}
+                    onClick={() => removeAttachment(att.blobId)}
+                  >
+                    <span aria-hidden="true">✕</span>
+                  </button>
+                </li>
+              )}
+            </For>
+          </ul>
+        </Show>
       </div>
 
       <Show when={composeError()}>

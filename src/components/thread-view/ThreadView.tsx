@@ -4,6 +4,7 @@ import { selectBody } from "@/lib/body";
 import { formatBytes, formatDateTime, recipientList, senderName } from "@/lib/format";
 import { emailSrcdoc, sanitizeHtml } from "@/lib/sanitize";
 import { prefersDark } from "@/lib/theme";
+import { downloadAttachment, downloadErrorFor, isDownloading } from "@/stores/attachments";
 import { startForward, startReply } from "@/stores/compose";
 import { emails, loadThread, markSeen, setFlagged, thread } from "@/stores/emails";
 import { selectedMailboxRights } from "@/stores/mailboxes";
@@ -129,9 +130,32 @@ function Message(props: { id: string }) {
               <ul class="message-attachments">
                 <For each={attachments()}>
                   {(part) => (
-                    <li>
+                    <li class="message-attachment">
                       <span class="attachment-name">{part.name ?? "attachment"}</span>
                       <span class="attachment-size">{formatBytes(part.size)}</span>
+                      {/* Only a part with a blobId can be fetched; render a download control for
+                          it (inline parts without one — extremely rare for attachments — show no
+                          button rather than a broken one). */}
+                      <Show when={part.blobId}>
+                        {(blobId) => (
+                          <button
+                            type="button"
+                            class="attachment-download"
+                            aria-label={`Download ${part.name ?? "attachment"}`}
+                            disabled={isDownloading(blobId())}
+                            onClick={() => void downloadAttachment(part)}
+                          >
+                            {isDownloading(blobId()) ? "Downloading…" : "Download"}
+                          </button>
+                        )}
+                      </Show>
+                      <Show when={part.blobId && downloadErrorFor(part.blobId)}>
+                        {(message) => (
+                          <span class="attachment-error" role="alert">
+                            {message()}
+                          </span>
+                        )}
+                      </Show>
                     </li>
                   )}
                 </For>

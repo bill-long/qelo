@@ -503,7 +503,7 @@ body,
 
 .message-attachments li {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
   gap: 0.75rem;
   padding: 0.4rem 0.6rem;
   border: 1px solid var(--line);
@@ -512,8 +512,52 @@ body,
   font-size: 0.85rem;
 }
 
+/* Let a long filename ellipsize rather than push the size + download control out of the row.
+   flex:1 + min-width:0 lets the name shrink below its content width so the ellipsis engages. */
+.attachment-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .attachment-size {
+  flex: none;
   color: var(--ink-soft);
+}
+
+/* Push the download control (and any error) to the trailing edge, keeping name + size left. */
+.attachment-download {
+  margin-left: auto;
+  padding: 0.2rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.attachment-download:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.attachment-download:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.attachment-download:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.attachment-error {
+  color: var(--danger);
+  font-size: 0.78rem;
 }
 
 /* ---- Connection / sign-in states ----------------------------------------- */
@@ -776,6 +820,121 @@ body,
 .composer-body:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* ---- Composer attachments -------------------------------------------------- */
+
+.composer-attach {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.4rem;
+}
+
+/* The native file input is visually hidden; this label is the styled, clickable affordance.
+   It stays keyboard-reachable because the input inside it still receives focus. */
+.composer-attach-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.composer-attach-label:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.composer-attach-label:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.composer-attach-label.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* Visually hide the input but keep it focusable (not display:none / visibility:hidden). */
+.composer-attach-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.composer-uploading {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+}
+
+.composer-attachments {
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.composer-attachment {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  margin-top: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.composer-attachment-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-attachment-size {
+  flex: none;
+  color: var(--ink-soft);
+}
+
+.composer-attachment-remove {
+  flex: none;
+  margin-left: auto;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.composer-attachment-remove:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.composer-attachment-remove:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.composer-attachment-remove:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .composer-error {
