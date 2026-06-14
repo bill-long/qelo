@@ -46,6 +46,19 @@ export function moveTargetByRole(role: MailboxRole): string | undefined {
   return mailboxes[id]?.myRights.mayAddItems ? id : undefined;
 }
 
+/**
+ * Whether the contents of the folder `sourceId` may be moved INTO `target`: the two must differ
+ * (no self-move), `target` must grant `mayAddItems`, and the source folder must grant
+ * `mayRemoveItems`. The single predicate behind BOTH the "Move to…" picker's destination filter
+ * (MailboxActions) and drag-and-drop's drop gate ({@link canDropOnMailbox}), so the two can't
+ * drift — change the move rule here and both honor it. These mirror the server's own
+ * `notUpdated` checks; they just avoid offering a move the server would reject.
+ */
+export function canMoveInto(target: Mailbox, sourceId: string): boolean {
+  if (target.id === sourceId || !target.myRights.mayAddItems) return false;
+  return Boolean(mailboxes[sourceId]?.myRights.mayRemoveItems);
+}
+
 // Mailbox state token (from /get and /changes responses), used as the `sinceState` for
 // Mailbox/changes. Plain module state — it's a sync cursor, not reactive UI state.
 let mailboxState = "";

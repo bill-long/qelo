@@ -1,6 +1,7 @@
 import { For, Show } from "solid-js";
 import { archive, deleteForever, moveEmails, trash } from "@/stores/emails";
 import {
+  canMoveInto,
   mailboxes,
   moveTargetByRole,
   selectedMailboxRights,
@@ -39,9 +40,10 @@ export function MailboxActions(props: { ids: () => string[]; variant: "message" 
   // destination is never offered twice.
   const moveTargets = () => {
     const current = selectedMailboxId();
+    if (!current) return [];
     const dedicated = new Set([archiveTarget(), trashTarget()].filter(Boolean));
     return Object.values(mailboxes)
-      .filter((m) => m.id !== current && m.myRights.mayAddItems && !dedicated.has(m.id))
+      .filter((m) => canMoveInto(m, current) && !dedicated.has(m.id))
       .sort((a, b) => a.name.localeCompare(b.name));
   };
 

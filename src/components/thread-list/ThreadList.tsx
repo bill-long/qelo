@@ -1,6 +1,7 @@
 import { createEffect, For, Show } from "solid-js";
 import { MailboxActions } from "@/components/mailbox/MailboxActions";
 import { formatDate, senderName } from "@/lib/format";
+import { draggingEmailId, endDrag, setDraggingEmailId } from "@/stores/drag";
 import { emails, loadMore, markSeen, openMailbox, setFlagged, threadList } from "@/stores/emails";
 import { selectedMailboxRights } from "@/stores/mailboxes";
 import {
@@ -28,7 +29,13 @@ export function ThreadList() {
   }
 
   return (
-    <div class="thread-list" onScroll={onScroll}>
+    // dragend is handled here on the stable container, not on the row, because drag events
+    // bubble and a row can unmount mid-drag (a coalesced sync pruning the dragged id) — a
+    // handler on the row would then never fire, stranding draggingEmailId non-null. The
+    // container outlives any single row, so endDrag reliably clears the drag state (source-fade +
+    // drop-target highlight) on drop / Escape / drop-outside, even if the dragged row unmounted.
+    // biome-ignore lint/a11y/noStaticElementInteractions: dragend here is drag-state cleanup, not an interaction affordance
+    <div class="thread-list" onScroll={onScroll} onDragEnd={endDrag}>
       <Show when={selectedMailboxId()} fallback={<p class="thread-list-note">Select a folder</p>}>
         <Show
           when={!threadList.error}
@@ -76,11 +83,32 @@ function ThreadRow(props: { id: string }) {
   return (
     <Show when={email()}>
       {(mail) => (
+        // Drag-to-move is a deliberately pointer-only convenience (HTML5 DnD has no keyboard/AT
+        // equivalent). It adds NO capability — the accessible route to the same outcome is
+        // unchanged: archive/trash on the row, and for an arbitrary folder the reading-pane
+        // "Move to…" picker (open the conversation — keyboard-reachable — then MailboxActions'
+        // message variant). dragend is bound on the .thread-list container, not here.
+        // biome-ignore lint/a11y/noStaticElementInteractions: pointer-only DnD; the reading-pane "Move to…" picker is the a11y path
         <div
           class="thread-row"
           classList={{
             "is-selected": isSelected(),
             "is-unread": !seen(),
+            "is-dragging": draggingEmailId() === mail().id,
+          }}
+          // Only offered when the open folder grants mayRemoveItems — the same right canMoveInto
+          // gates on; the drop re-checks it and the target live via canDropOnMailbox.
+          draggable={Boolean(rights()?.mayRemoveItems)}
+          onDragStart={(event) => {
+            setDraggingEmailId(mail().id);
+            if (event.dataTransfer) {
+              event.dataTransfer.effectAllowed = "move";
+              // Firefox refuses to start a drag unless some data is set, but the move reads the id
+              // back from the draggingEmailId signal — never from here. So set only a constant
+              // marker, NOT the email id: dragging the row out into another app/window would
+              // otherwise leak (and paste) an internal JMAP id.
+              event.dataTransfer.setData("text/plain", "qelo:thread");
+            }
           }}
         >
           <button
