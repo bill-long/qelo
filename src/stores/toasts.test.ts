@@ -74,7 +74,22 @@ describe("toasts", () => {
     // "one"'s timer was cleared on eviction; advancing past it must not remove a current toast.
     vi.advanceTimersByTime(DISMISS_AT_LEAST);
     expect(toasts().map((t) => t.id)).not.toContain(one);
-    expect(toasts()).toHaveLength(0); // all four timers eventually fire, none double-removes
+    // The three surviving toasts' timers all fire; "one"'s eviction-cleared timer never does.
+    expect(toasts()).toHaveLength(0);
+  });
+
+  it("does not schedule a timer for a toast added while paused", () => {
+    notify("hovered");
+    pauseAutoDismiss();
+    // A second confirmation arrives while the user is hovering/focusing the stack — it must NOT
+    // get a live timer and disappear mid-interaction.
+    notify("arrived while paused");
+    vi.advanceTimersByTime(10000);
+    expect(toasts().map((t) => t.message)).toEqual(["hovered", "arrived while paused"]);
+    // On resume, both start a fresh countdown and expire together.
+    resumeAutoDismiss();
+    vi.advanceTimersByTime(DISMISS_AT_LEAST);
+    expect(toasts()).toHaveLength(0);
   });
 
   it("pauses auto-dismiss and resumes the countdown afresh", () => {

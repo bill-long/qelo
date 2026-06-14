@@ -22,12 +22,17 @@ let nextId = 0;
 // Live auto-dismiss timers keyed by toast id, so a toast can be removed early (clearing its timer)
 // and so the whole set can be paused/resumed while the user hovers or focuses the stack.
 const timers = new Map<number, ReturnType<typeof setTimeout>>();
+// True while the user is hovering/focusing the stack. Tracked (not just "clear the timers") so a
+// toast that arrives DURING the pause doesn't get a live timer and slip away mid-interaction —
+// scheduleDismiss is a no-op while paused, and resumeAutoDismiss schedules everything afresh.
+let paused = false;
 
 export { toasts };
 
 function scheduleDismiss(id: number): void {
-  // Guard for non-DOM/test environments without a timer; tests drive timing via fake timers.
-  if (typeof setTimeout === "undefined") return;
+  // No timer while paused (a toast created mid-hover/focus waits for resume), and none in a
+  // non-DOM/test environment without setTimeout (tests drive timing via fake timers).
+  if (paused || typeof setTimeout === "undefined") return;
   timers.set(
     id,
     setTimeout(() => dismissToast(id), DISMISS_MS),
@@ -76,12 +81,14 @@ export function dismissToast(id: number): void {
  * {@link resumeAutoDismiss} restarts the countdown when they leave.
  */
 export function pauseAutoDismiss(): void {
+  paused = true;
   for (const handle of timers.values()) clearTimeout(handle);
   timers.clear();
 }
 
-/** Restart the auto-dismiss countdown for any toast without a live timer (after a pause). */
+/** Restart the auto-dismiss countdown for every toast (after a pause), including any added while paused. */
 export function resumeAutoDismiss(): void {
+  paused = false;
   for (const toast of toasts()) {
     if (!timers.has(toast.id)) scheduleDismiss(toast.id);
   }
@@ -89,6 +96,7 @@ export function resumeAutoDismiss(): void {
 
 /** Clear all toasts (and their timers) — a test seam; app flow lets them expire or be dismissed. */
 export function clearToasts(): void {
+  paused = false;
   for (const handle of timers.values()) clearTimeout(handle);
   timers.clear();
   setToasts([]);
