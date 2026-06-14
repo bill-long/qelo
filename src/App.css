@@ -512,7 +512,18 @@ body,
   font-size: 0.85rem;
 }
 
+/* Let a long filename ellipsize rather than push the size + download control out of the row.
+   flex:1 + min-width:0 lets the name shrink below its content width so the ellipsis engages. */
+.attachment-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .attachment-size {
+  flex: none;
   color: var(--ink-soft);
 }
 
@@ -886,6 +897,8 @@ body,
 }
 
 .composer-attachment-name {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

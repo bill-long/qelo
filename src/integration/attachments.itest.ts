@@ -113,6 +113,11 @@ describe("attachments", () => {
     expect(attached?.name).toBe("note.txt");
     expect(attached?.size).toBe(byteSize);
 
+    // Re-attaching identical bytes dedupes to the same server blobId, so it stays one chip (else
+    // removeAttachment(blobId) would later drop both). Confirm against the real content-addressed store.
+    await attachFiles([new File([content], "note.txt", { type: "text/plain" })]);
+    expect(draft.attachments).toHaveLength(1);
+
     const subject = freshSubject("draft");
     updateDraft("to", ACCOUNT_EMAIL);
     updateDraft("subject", subject);

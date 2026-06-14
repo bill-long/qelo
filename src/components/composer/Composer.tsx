@@ -60,9 +60,11 @@ export function Composer() {
   );
   const canSend = createMemo(() => ready() && hasRecipient());
   const canSave = createMemo(() => ready());
-  // Discarding (and Escape/✕) is blocked during a submit AND during an upload, so a late upload
-  // can't append a chip onto an already-reset draft.
-  const locked = createMemo(() => busy() !== null || uploading());
+  // Gates the attach control: blocked during a submit and during an in-flight upload (a fresh pick
+  // is ignored mid-upload, so don't invite one). Discard/✕/Escape are NOT blocked by an upload — the
+  // store's draft-generation guard makes a late-resolving upload harmless, so the user is never
+  // trapped waiting on a slow upload; they're blocked only during an actual send/save submit.
+  const attachLocked = createMemo(() => busy() !== null || uploading());
 
   // Pull the selected files off the input, hand them to the store to upload, then clear the input's
   // value so re-picking the same file fires another change event.
@@ -79,7 +81,7 @@ export function Composer() {
   // stray click shouldn't drop a draft — closing is explicit via Discard / the ✕.)
   function onCancel(event: Event) {
     event.preventDefault();
-    if (!locked()) discardDraft();
+    if (busy() === null) discardDraft();
   }
 
   return (
@@ -92,7 +94,7 @@ export function Composer() {
           type="button"
           class="composer-close"
           aria-label="Discard and close"
-          disabled={locked()}
+          disabled={busy() !== null}
           onClick={() => discardDraft()}
         >
           <span aria-hidden="true">✕</span>
@@ -203,13 +205,13 @@ export function Composer() {
           {/* A real <label> wrapping the input names it for AT; the input is visually hidden and
               the styled span is the visible affordance. Picking is disabled during a submit and
               while an upload is in flight (a fresh pick is ignored mid-upload, so don't invite it). */}
-          <label class="composer-attach-label" classList={{ "is-disabled": locked() }}>
+          <label class="composer-attach-label" classList={{ "is-disabled": attachLocked() }}>
             <span aria-hidden="true">📎</span> Attach files
             <input
               type="file"
               class="composer-attach-input"
               multiple
-              disabled={locked()}
+              disabled={attachLocked()}
               onChange={onPickFiles}
             />
           </label>
@@ -231,7 +233,7 @@ export function Composer() {
                     type="button"
                     class="composer-attachment-remove"
                     aria-label={`Remove attachment ${att.name}`}
-                    disabled={locked()}
+                    disabled={busy() !== null}
                     onClick={() => removeAttachment(att.blobId)}
                   >
                     <span aria-hidden="true">✕</span>
@@ -271,7 +273,7 @@ export function Composer() {
         <button
           type="button"
           class="composer-discard"
-          disabled={locked()}
+          disabled={busy() !== null}
           onClick={() => discardDraft()}
         >
           Discard

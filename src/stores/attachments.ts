@@ -47,10 +47,15 @@ function endDownload(blobId: string): void {
   });
 }
 
+// Hold the object URL alive briefly after the click so an engine that reads the blob asynchronously
+// when starting the download (notably WebKit/WKWebView, the macOS desktop webview) still has a valid
+// URL; revoking synchronously can truncate or abort a large save. A short delay frees the blob soon
+// after without pinning it indefinitely.
+const REVOKE_DELAY_MS = 10_000;
+
 /**
- * Save a fetched Blob to disk via a transient download anchor. The object URL is revoked on the
- * next tick (not synchronously after click) so engines that fetch the blob asynchronously during
- * the download still have a live URL — then it's freed so the blob isn't pinned in memory.
+ * Save a fetched Blob to disk via a transient download anchor, then free the object URL after a
+ * short delay (see {@link REVOKE_DELAY_MS}) so the blob isn't pinned in memory.
  */
 function saveBlob(blob: Blob, name: string): void {
   const url = URL.createObjectURL(blob);
@@ -61,7 +66,7 @@ function saveBlob(blob: Blob, name: string): void {
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
+  setTimeout(() => URL.revokeObjectURL(url), REVOKE_DELAY_MS);
 }
 
 /**

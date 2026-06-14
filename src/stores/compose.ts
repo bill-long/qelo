@@ -157,9 +157,16 @@ export const [selectedIdentityId, setSelectedIdentityId] = createSignal<string |
 export const [composeOpen, setComposeOpen] = createSignal(false);
 /** Which submit is in flight (gates the buttons + drives their labels), or null when idle. */
 export const [busy, setBusy] = createSignal<null | "send" | "save">(null);
-/** True while one or more attachment uploads are in flight (gates send/save + discard). */
+/** True while one or more attachment uploads are in flight (gates send/save). */
 export const [uploading, setUploading] = createSignal(false);
 export const [composeError, setComposeError] = createSignal<string | null>(null);
+
+// Bumped every time the draft is opened or reset. An in-flight attachFiles captures the value at
+// the start and only appends/clears state while it still matches — so an upload that resolves after
+// the user discarded (or reopened) the composer can't graft a stale attachment onto a different
+// draft. We can't abort the network upload (no AbortController), but this keeps a late resolution
+// harmless, which is what lets discard stay available during an upload instead of trapping the user.
+let draftGeneration = 0;
 
 /** The chosen sending identity, defaulting to the first the account exposes. */
 export function selectedIdentity(): Identity | undefined {
@@ -174,16 +181,21 @@ export function updateDraft<K extends keyof DraftState>(field: K, value: DraftSt
 }
 
 function closeAndReset(): void {
+  draftGeneration += 1; // supersede any in-flight upload so it can't append to the next draft
   setComposeOpen(false);
   setDraft(emptyDraft());
+  setUploading(false);
   setComposeError(null);
 }
 
 // Open the composer on a specific initial draft, loading identities on first use. Every entry
-// point (blank compose, reply, forward) funnels through here so the EMPTY_DRAFT reset can't clobber
-// a prefill — the caller hands the fully-formed draft in, it isn't reset then patched.
+// point (blank compose, reply, forward) funnels through here so the emptyDraft() reset can't clobber
+// a prefill — the caller hands the fully-formed draft in, it isn't reset then patched. Bumping the
+// generation makes any upload still in flight from a previous open supersede onto this fresh draft.
 function openWith(initial: DraftState): void {
+  draftGeneration += 1;
   setDraft(initial);
+  setUploading(false);
   setComposeError(null);
   setComposeOpen(true);
   if (identities().length === 0) void loadIdentities();
@@ -245,6 +257,7 @@ export function discardDraft(): void {
 
 /** Reset all compose state — a test seam; app flow goes through open/discard. */
 export function resetCompose(): void {
+  draftGeneration += 1;
   setDraft(emptyDraft());
   setIdentities([]);
   setSelectedIdentityId(null);
@@ -323,6 +336,7 @@ function currentDraftCreate(draftsId: string, identity: Identity): Record<string
  */
 export async function attachFiles(files: File[]): Promise<void> {
   if (files.length === 0 || uploading()) return;
+  const generation = draftGeneration;
   setUploading(true);
   setComposeError(null);
   const failed: string[] = [];
@@ -331,12 +345,19 @@ export async function attachFiles(files: File[]): Promise<void> {
     for (const file of files) {
       try {
         const result = await client.upload(file, file.type || "application/octet-stream");
-        // Functional update reads the live array, so a chip lands as each upload resolves; the
+        // The draft was discarded/reopened mid-upload — don't graft this onto a different draft.
+        if (draftGeneration !== generation) return;
+        // Content-addressed blob stores dedupe identical bytes to one blobId, so attaching the same
+        // file twice would yield two chips with the same blobId — and removeAttachment(blobId) would
+        // then drop both. Skip a blobId already attached; the bytes are present either way. The
+        // functional update reads the live array, so a chip lands as each upload resolves, and the
         // server-recorded type/size are authoritative over the client-side File metadata.
-        setDraft("attachments", (prev) => [
-          ...prev,
-          { blobId: result.blobId, type: result.type, name: file.name, size: result.size },
-        ]);
+        const { blobId, type, size } = result;
+        setDraft("attachments", (prev) =>
+          prev.some((a) => a.blobId === blobId)
+            ? prev
+            : [...prev, { blobId, type, name: file.name, size }],
+        );
       } catch (err) {
         if (handleAuthFailure(err)) return;
         failed.push(file.name);
@@ -352,7 +373,9 @@ export async function attachFiles(files: File[]): Promise<void> {
       setComposeError(err instanceof Error ? err.message : String(err));
     }
   } finally {
-    setUploading(false);
+    // Only this invocation's own draft generation may clear the flag — a stale invocation (whose
+    // draft was already superseded) must not stomp a newer attachFiles' uploading state.
+    if (draftGeneration === generation) setUploading(false);
   }
 }
 

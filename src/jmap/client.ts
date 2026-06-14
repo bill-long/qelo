@@ -127,8 +127,11 @@ export class JmapClient {
    * file's MIME type, or a generic `application/octet-stream` when the platform gives none.
    */
   async upload(blob: Blob, type: string): Promise<UploadResponse> {
-    // uploadUrl is a URI template with a single `{accountId}` placeholder (RFC 8620 §6.1).
-    const url = this.session.uploadUrl.replace("{accountId}", encodeURIComponent(this.accountId));
+    // uploadUrl is a URI template with an `{accountId}` placeholder (RFC 8620 §6.1).
+    const url = this.session.uploadUrl.replaceAll(
+      "{accountId}",
+      encodeURIComponent(this.accountId),
+    );
     const res = await this.#fetch(url, {
       method: "POST",
       headers: { "Content-Type": type },
@@ -153,13 +156,14 @@ export class JmapClient {
    */
   async download(blobId: Id, type: string, name: string): Promise<Blob> {
     // downloadUrl is a URI template with `{accountId}`/`{blobId}`/`{type}`/`{name}` placeholders
-    // (RFC 8620 §6.2). encodeURIComponent never emits `$`, so none of these substitutions can be
-    // mis-read as a String.replace `$&`/`$1` pattern.
+    // (RFC 8620 §6.2). replaceAll because a server may legitimately repeat one (e.g. {name} in both
+    // the path and a filename query). encodeURIComponent never emits `$`, so none of these
+    // substitutions can be mis-read as a String.replace `$&`/`$1` pattern.
     const url = this.session.downloadUrl
-      .replace("{accountId}", encodeURIComponent(this.accountId))
-      .replace("{blobId}", encodeURIComponent(blobId))
-      .replace("{type}", encodeURIComponent(type))
-      .replace("{name}", encodeURIComponent(name));
+      .replaceAll("{accountId}", encodeURIComponent(this.accountId))
+      .replaceAll("{blobId}", encodeURIComponent(blobId))
+      .replaceAll("{type}", encodeURIComponent(type))
+      .replaceAll("{name}", encodeURIComponent(name));
     const res = await this.#fetch(url);
     if (!res.ok) {
       throw new Error(`JMAP download failed: ${res.status} ${await res.text()}`);
