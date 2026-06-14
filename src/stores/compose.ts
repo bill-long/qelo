@@ -332,7 +332,8 @@ function currentDraftCreate(draftsId: string, identity: Identity): Record<string
  * rides the existing create — send/saveDraft need no extra round trip). Uploads run sequentially
  * and each is independent: a failed file is collected and reported by name without aborting the
  * rest, and a successful one is appended the instant it lands. {@link uploading} gates the submit
- * + discard controls for the duration. An auth failure raises the global re-auth gate (and stops).
+ * controls + the attach button for the duration (NOT discard — the generation guard makes a late
+ * upload harmless, so the user isn't trapped). An auth failure raises the global re-auth gate.
  */
 export async function attachFiles(files: File[]): Promise<void> {
   if (files.length === 0 || uploading()) return;

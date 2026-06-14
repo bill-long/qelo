@@ -16,8 +16,10 @@ import { createSignal } from "solid-js";
 import type { EmailBodyPart } from "@/jmap/types";
 import { handleAuthFailure, jmap } from "./account";
 
+// Keyed by blobId (a server-supplied string). Both use real collections rather than a plain object
+// so an exotic key (e.g. "__proto__") is just an ordinary entry — no prototype-pollution footgun.
 const [downloading, setDownloading] = createSignal<ReadonlySet<string>>(new Set());
-const [errors, setErrors] = createSignal<Record<string, string>>({});
+const [errors, setErrors] = createSignal<ReadonlyMap<string, string>>(new Map());
 
 /** True while the attachment with this blobId is being fetched (gates + labels its button). */
 export function isDownloading(blobId: string): boolean {
@@ -26,16 +28,17 @@ export function isDownloading(blobId: string): boolean {
 
 /** The last download error for this blobId, or undefined — surfaced beside its row. */
 export function downloadErrorFor(blobId: string): string | undefined {
-  return errors()[blobId];
+  return errors().get(blobId);
 }
 
 function startDownload(blobId: string): void {
   setDownloading((prev) => new Set(prev).add(blobId));
   // Clear any prior error for this blob so a retry doesn't show a stale message.
   setErrors((prev) => {
-    if (!(blobId in prev)) return prev;
-    const { [blobId]: _removed, ...rest } = prev;
-    return rest;
+    if (!prev.has(blobId)) return prev;
+    const next = new Map(prev);
+    next.delete(blobId);
+    return next;
   });
 }
 
@@ -86,7 +89,8 @@ export async function downloadAttachment(part: EmailBodyPart): Promise<void> {
     saveBlob(blob, name);
   } catch (err) {
     if (handleAuthFailure(err)) return;
-    setErrors((prev) => ({ ...prev, [blobId]: err instanceof Error ? err.message : String(err) }));
+    const message = err instanceof Error ? err.message : String(err);
+    setErrors((prev) => new Map(prev).set(blobId, message));
   } finally {
     endDownload(blobId);
   }
