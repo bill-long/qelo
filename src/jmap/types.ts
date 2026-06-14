@@ -194,6 +194,20 @@ export interface EmailSubmission {
   undoStatus: "pending" | "final" | "canceled";
 }
 
+/**
+ * Response of a blob upload to the session's `uploadUrl` (RFC 8620 §6.1). The server-assigned
+ * `blobId` is what an `Email/set` create references in an attachment {@link EmailBodyPart}; `type`
+ * and `size` are the values the server actually recorded for the stored blob (Qelo carries them
+ * onto the attachment part rather than trusting the client-side file metadata). `accountId` echoes
+ * the upload target. Upload rides the existing bearer transport — it is not a `/set` method call.
+ */
+export interface UploadResponse {
+  accountId: Id;
+  blobId: Id;
+  type: string;
+  size: number;
+}
+
 export type MethodCall = [string, Record<string, unknown>, string];
 export type MethodResponse = [string, Record<string, unknown>, string];
 

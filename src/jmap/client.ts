@@ -1,6 +1,6 @@
 import type { AuthProvider } from "./auth";
 import { CAP_CORE, CAP_MAIL } from "./methods";
-import type { Id, MethodCall, MethodResponse, Session } from "./types";
+import type { Id, MethodCall, MethodResponse, Session, UploadResponse } from "./types";
 
 /**
  * Thrown when a request is rejected for authentication reasons and the credentials
@@ -114,5 +114,56 @@ export class JmapClient {
     }
     const body = (await res.json()) as { methodResponses: MethodResponse[] };
     return body.methodResponses;
+  }
+
+  /**
+   * Upload a blob (an attachment's bytes) to the account's `uploadUrl` (RFC 8620 §6.1) and return
+   * the server-assigned {@link UploadResponse}. This is binary transport, not a `/set` method call,
+   * so it does NOT go through `request()` — but it still rides {@link #fetch}, inheriting the same
+   * 401→refresh→retry auth path every JMAP call uses. The caller then references the returned
+   * `blobId` in an `Email/set` attachment part; the upload itself creates no email.
+   *
+   * `type` becomes the upload's `Content-Type` (the server records it as the blob's type); pass the
+   * file's MIME type, or a generic `application/octet-stream` when the platform gives none.
+   */
+  async upload(blob: Blob, type: string): Promise<UploadResponse> {
+    // uploadUrl is a URI template with a single `{accountId}` placeholder (RFC 8620 §6.1).
+    const url = this.session.uploadUrl.replace("{accountId}", encodeURIComponent(this.accountId));
+    const res = await this.#fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": type },
+      body: blob,
+    });
+    if (!res.ok) {
+      throw new Error(`JMAP upload failed: ${res.status} ${await res.text()}`);
+    }
+    return (await res.json()) as UploadResponse;
+  }
+
+  /**
+   * Download a blob (an attachment's bytes) from the account's `downloadUrl` (RFC 8620 §6.2) and
+   * return it as a {@link Blob}. Mirrors {@link upload}: pure authenticated transport over
+   * {@link #fetch} (so a download also benefits from the 401→refresh→retry path), NOT a `/set`. A
+   * plain anchor can't be used because the download endpoint requires the bearer header — hence the
+   * fetch-then-Blob round trip; the store layer turns the Blob into a save.
+   *
+   * `type`/`name` fill the template's `{type}`/`{name}` placeholders (the server uses them for the
+   * response `Content-Type` and download filename); every substituted value is percent-encoded so a
+   * name with spaces or `/`, or a `type` with its `/`, can't break out of its path/query slot.
+   */
+  async download(blobId: Id, type: string, name: string): Promise<Blob> {
+    // downloadUrl is a URI template with `{accountId}`/`{blobId}`/`{type}`/`{name}` placeholders
+    // (RFC 8620 §6.2). encodeURIComponent never emits `$`, so none of these substitutions can be
+    // mis-read as a String.replace `$&`/`$1` pattern.
+    const url = this.session.downloadUrl
+      .replace("{accountId}", encodeURIComponent(this.accountId))
+      .replace("{blobId}", encodeURIComponent(blobId))
+      .replace("{type}", encodeURIComponent(type))
+      .replace("{name}", encodeURIComponent(name));
+    const res = await this.#fetch(url);
+    if (!res.ok) {
+      throw new Error(`JMAP download failed: ${res.status} ${await res.text()}`);
+    }
+    return res.blob();
   }
 }

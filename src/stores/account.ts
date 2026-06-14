@@ -183,6 +183,13 @@ export async function connect(): Promise<void> {
       // same-origin paths so requests go through the Vite dev proxy and never hit the
       // dev server's self-signed certificate. (No-op in production builds.)
       s.apiUrl = new URL(s.apiUrl, window.location.origin).pathname;
+      // The blob upload/download endpoints are also absolute (https://localhost/jmap/...) and
+      // carry URI-template placeholders ({accountId}/{blobId}/{type}/{name}) + a query string, so
+      // strip only the origin (like eventSourceUrl below) rather than parsing them as a URL —
+      // new URL() would mangle the `{...}` placeholders and drop downloadUrl's `?accept=` query.
+      // This routes attachment transfers through the same Vite proxy as apiUrl in the dev build.
+      s.uploadUrl = s.uploadUrl.replace(/^https?:\/\/[^/]+/, "");
+      s.downloadUrl = s.downloadUrl.replace(/^https?:\/\/[^/]+/, "");
       // The push stream is opened by EventSource in the browser (must be same-origin to use
       // the Vite proxy that injects credentials) but by the Rust backend on desktop, which
       // connects to the provider directly and trusts the loopback cert itself — so leave the
