@@ -60,10 +60,12 @@ export function Composer() {
   );
   const canSend = createMemo(() => ready() && hasRecipient());
   const canSave = createMemo(() => ready());
-  // Gates the attach control: blocked during a submit and during an in-flight upload (a fresh pick
-  // is ignored mid-upload, so don't invite one). Discard/✕/Escape are NOT blocked by an upload — the
-  // store's draft-generation guard makes a late-resolving upload harmless, so the user is never
-  // trapped waiting on a slow upload; they're blocked only during an actual send/save submit.
+  // Gates BOTH attach and remove controls: blocked during a submit and during an in-flight upload.
+  // A fresh pick is ignored mid-upload, so don't invite one; and removing a chip mid-batch is unsafe
+  // because a later same-batch file that dedupes to a removed blobId would re-append it (attachFiles
+  // only checks the *current* draft). Discard/✕/Escape are NOT blocked by an upload — the store's
+  // draft-generation guard makes a late-resolving upload harmless, so the user is never trapped
+  // waiting on a slow upload; those are blocked only during an actual send/save submit.
   const attachLocked = createMemo(() => busy() !== null || uploading());
 
   // Pull the selected files off the input, hand them to the store to upload, then clear the input's
@@ -233,7 +235,7 @@ export function Composer() {
                     type="button"
                     class="composer-attachment-remove"
                     aria-label={`Remove attachment ${att.name}`}
-                    disabled={busy() !== null}
+                    disabled={attachLocked()}
                     onClick={() => removeAttachment(att.blobId)}
                   >
                     <span aria-hidden="true">✕</span>
