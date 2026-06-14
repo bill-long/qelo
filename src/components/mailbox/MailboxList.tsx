@@ -6,7 +6,7 @@ import {
   endDrag,
   setDropTargetMailboxId,
 } from "@/stores/drag";
-import { moveEmails, threadList } from "@/stores/emails";
+import { moveConversation, threadList } from "@/stores/emails";
 import { buildMailboxTree, type MailboxNode, mailboxes } from "@/stores/mailboxes";
 import { selectedMailboxId, setSelectedMailboxId } from "@/stores/ui";
 
@@ -67,10 +67,11 @@ function MailboxRow(props: { node: MailboxNode; depth: number }) {
     // qelo-review-checklist): the drag captured the representative id at dragstart, but a coalesced
     // syncThreadList may have moved/removed that row, switched the open folder, or rights may have
     // been revised in the interim. Bail unless the drop is still permitted AND the dragged
-    // representative is still shown in the open folder; moveEmails then owns the optimistic move +
-    // server reconcile from the (live) open folder it reads as threadList.mailboxId.
+    // representative is still shown in the open folder; moveConversation then owns expanding the
+    // representative to its whole conversation (open-folder-scoped) plus the optimistic move +
+    // server reconcile, from the (live) open folder it reads as threadList.mailboxId.
     if (id === null || !canDropOnMailbox(target) || !threadList.ids.includes(id)) return;
-    void moveEmails([id], target.id);
+    void moveConversation(id, target.id);
   }
 
   return (
