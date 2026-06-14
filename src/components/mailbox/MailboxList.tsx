@@ -50,9 +50,11 @@ function MailboxRow(props: { node: MailboxNode; depth: number }) {
     // spans); ignore those so the highlight doesn't flicker — only clear on a real exit. Clear
     // only if WE are still the lit target: when moving straight onto an adjacent row, its
     // dragover may have already claimed the signal, and we must not wipe its highlight.
-    const related = event.relatedTarget as Node | null;
+    const related = event.relatedTarget;
     const row = event.currentTarget as HTMLElement | null;
-    if (related && row?.contains(related)) return;
+    // relatedTarget is EventTarget | null and isn't guaranteed to be a Node — guard with
+    // `instanceof Node` before contains() (same pattern as ToastHost) so it can't throw.
+    if (related instanceof Node && row?.contains(related)) return;
     if (dropTargetMailboxId() === mailbox().id) setDropTargetMailboxId(null);
   }
 
