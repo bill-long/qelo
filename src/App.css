@@ -120,6 +120,15 @@ body,
   font-weight: 600;
 }
 
+/* A thread is being dragged over this folder and may be dropped here (drag-to-move). The
+   accent ring + wash reuse the selection tokens so the drop target reads as "this is where it
+   lands" — no animation, so prefers-reduced-motion needs no special-casing. */
+.mailbox-row.is-drop-target {
+  background: var(--selection);
+  box-shadow: inset 0 0 0 2px var(--accent);
+  color: var(--accent);
+}
+
 .mailbox-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -236,6 +245,12 @@ body,
 .thread-row.is-selected {
   background: var(--selection);
   box-shadow: inset 3px 0 0 var(--accent);
+}
+
+/* The source row while it's being dragged to a folder — faded so the drag image (the row's
+   default snapshot, taken before this class applies) reads as the thing in motion. */
+.thread-row.is-dragging {
+  opacity: 0.45;
 }
 
 /* Per-row keyword actions (flag / read-toggle), gated on myRights in the markup. */
