@@ -806,7 +806,9 @@ body,
 .composer-body {
   min-height: 12rem;
   margin-top: 0.4rem;
-  padding: 0.6rem 0;
+  /* Horizontal padding so the text isn't flush against the edge — the field inputs get their left
+     margin from the label column, but the labelless full-width body has none of its own otherwise. */
+  padding: 0.6rem 0.75rem;
   border: none;
   background: transparent;
   color: var(--ink);
