@@ -191,7 +191,8 @@ function closeAndReset(): void {
 // Open the composer on a specific initial draft, loading identities on first use. Every entry
 // point (blank compose, reply, forward) funnels through here so the emptyDraft() reset can't clobber
 // a prefill — the caller hands the fully-formed draft in, it isn't reset then patched. Bumping the
-// generation makes any upload still in flight from a previous open supersede onto this fresh draft.
+// generation supersedes any upload still in flight from a previous open, so it can't append onto
+// this fresh draft.
 function openWith(initial: DraftState): void {
   draftGeneration += 1;
   setDraft(initial);
