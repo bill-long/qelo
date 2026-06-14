@@ -987,6 +987,98 @@ body,
   opacity: 0.55;
 }
 
+/* Keyboard-shortcut hint riding inside the Send button. Decorative (aria-hidden); the spelled-out
+   combo is on the button's title for AT. A translucent wash reads against the accent fill. */
+.composer-shortcut {
+  margin-left: 0.5rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 5px;
+  background: color-mix(in srgb, #fff 22%, transparent);
+  color: inherit;
+  font-family: var(--font-sans);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+/* ---- Toasts -------------------------------------------------------------- */
+
+/* A polite live region pinned bottom-right. The host is click-through so it never blocks the UI
+   beneath it; each toast re-enables pointer events for its dismiss control. Fixed positioning
+   escapes the shell's overflow:hidden. */
+.toast-host {
+  position: fixed;
+  right: 1.1rem;
+  bottom: 1.1rem;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  max-width: min(22rem, calc(100vw - 2.2rem));
+  padding: 0.6rem 0.75rem 0.6rem 0.9rem;
+  border: 1px solid var(--line);
+  /* A terracotta edge marks a positive confirmation without an icon dependency. */
+  border-left: 3px solid var(--accent);
+  border-radius: 9px;
+  background: var(--raised);
+  color: var(--ink);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--ink) 22%, transparent);
+  font-size: 0.88rem;
+  pointer-events: auto;
+  animation: toast-in 0.18s ease-out;
+}
+
+.toast-message {
+  flex: 1;
+  min-width: 0;
+}
+
+.toast-dismiss {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.toast-dismiss:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.toast-dismiss:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation: none;
+  }
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --paper: #1b1916;

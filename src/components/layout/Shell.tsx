@@ -1,6 +1,7 @@
 import { onMount, Show } from "solid-js";
 import { Composer } from "@/components/composer/Composer";
 import { SyncStatus } from "@/components/layout/SyncStatus";
+import { ToastHost } from "@/components/layout/ToastHost";
 import { MailboxList } from "@/components/mailbox/MailboxList";
 import { ThreadList } from "@/components/thread-list/ThreadList";
 import { ThreadView } from "@/components/thread-view/ThreadView";
@@ -35,6 +36,7 @@ export function Shell() {
       <Show when={composeOpen()}>
         <Composer />
       </Show>
+      <ToastHost />
     </div>
   );
 }
