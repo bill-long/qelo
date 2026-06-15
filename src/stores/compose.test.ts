@@ -216,6 +216,18 @@ describe("referencedInlineImages", () => {
     expect(referencedInlineImages([img], "<div>see attachment cid:c1@x</div>")).toEqual([]);
     expect(referencedInlineImages([img], '<a href="cid:c1@x">link</a>')).toEqual([]);
   });
+
+  it("excludes a clearly-non-image cid'd part (e.g. application/pdf), even if an <img> references it", () => {
+    const pdf = part({ blobId: "P1", type: "application/pdf", cid: "c1@x", name: "doc.pdf" });
+    expect(referencedInlineImages([pdf], '<img src="cid:c1@x">')).toEqual([]);
+  });
+
+  it("treats a blank / octet-stream type as a possible image (missing server metadata)", () => {
+    const blank = part({ blobId: "B1", type: "", cid: "c1@x", name: "x" });
+    const octet = part({ blobId: "B2", type: "application/octet-stream", cid: "c2@x", name: "y" });
+    expect(referencedInlineImages([blank], '<img src="cid:c1@x">')).toHaveLength(1);
+    expect(referencedInlineImages([octet], '<img src="cid:c2@x">')).toHaveLength(1);
+  });
 });
 
 describe("splitForwardParts", () => {
@@ -312,6 +324,19 @@ describe("splitForwardParts", () => {
       { cid: "c1@x", blobId: "S1", type: "image/png", name: "pic.png", size: 100 },
     ]);
     expect(attachments).toEqual([]);
+  });
+
+  it("surfaces a non-image cid'd part as a chip (not hidden as an un-renderable inline part)", () => {
+    // A malformed/hostile source references a PDF via <img src="cid:…">. It must not be hidden from
+    // the chips — it stays a regular attachment.
+    const { attachments, inlineImages } = splitForwardParts(
+      [part({ blobId: "D1", type: "application/pdf", name: "doc.pdf", cid: "c1@x" })],
+      '<img src="cid:c1@x">',
+    );
+    expect(inlineImages).toEqual([]);
+    expect(attachments).toEqual([
+      { blobId: "D1", type: "application/pdf", name: "doc.pdf", size: 100 },
+    ]);
   });
 
   it("keeps a same-cid-but-different-blob part as a chip (no data loss; chip dedupe is by blobId)", () => {

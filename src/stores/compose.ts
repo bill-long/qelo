@@ -125,6 +125,18 @@ function cidsReferencedIn(html: string): Set<string> {
 }
 
 /**
+ * Whether a part's MIME type is eligible to ride as an inline image. Only `image/*` qualifies, plus
+ * an unknown/generic type (blank or `application/octet-stream`) where the server simply didn't record
+ * one — a missing type on a cid-referenced part is most likely an image with absent metadata. A
+ * clearly-non-image type (`application/pdf`, `text/*`, …) is excluded so it can't be hidden from the
+ * forward attachment chips or carried as an un-renderable inline part on reply.
+ */
+function isInlineImageType(type: string): boolean {
+  const t = type.toLowerCase();
+  return t === "" || t === "application/octet-stream" || t.startsWith("image/");
+}
+
+/**
  * The source parts that are inline images *actually referenced* by a `cid:` in `html` — i.e. the
  * ones a reply/forward should keep truly inline by re-referencing their existing `blobId`s (a
  * server-side copy, NOT a re-upload). A part qualifies only with both a `cid` and a `blobId` AND a
@@ -140,6 +152,9 @@ export function referencedInlineImages(parts: EmailBodyPart[], html: string): In
     const { cid, blobId } = part;
     if (!cid || !blobId || seen.has(cid)) continue;
     if (!refs.has(cid)) continue;
+    // A cid-referenced part that's clearly not an image (e.g. application/pdf) stays a regular
+    // attachment chip rather than being hidden as an un-renderable inline part.
+    if (!isInlineImageType(part.type)) continue;
     seen.add(cid);
     out.push({
       cid,
