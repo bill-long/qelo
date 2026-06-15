@@ -11,7 +11,7 @@ import {
   methodResult,
   setResult,
 } from "@/jmap/methods";
-import type { Email, EmailAddress, EmailSubmission, Identity } from "@/jmap/types";
+import type { Email, EmailAddress, EmailBodyPart, EmailSubmission, Identity } from "@/jmap/types";
 import { invalidRecipients, parseRecipients } from "@/lib/addresses";
 import {
   forwardQuote,
@@ -79,6 +79,35 @@ export function attachmentParts(
     disposition: "attachment",
     size: a.size,
   }));
+}
+
+/**
+ * Map a forwarded email's parts to {@link DraftAttachment}s that re-reference the *source* message's
+ * existing `blobId`s in the new draft — a server-side blob copy, NOT a re-upload (no bytes leave the
+ * server). A part without a `blobId` can't be referenced, so it's skipped. Identical blobs (a
+ * content-addressed store returns one `blobId` for byte-identical parts) collapse to a single chip,
+ * matching {@link attachFiles}, so `removeAttachment(blobId)` can't be left dropping a duplicate. The
+ * server-recorded `type`/`size` ride through; a missing `name`/`type` falls back the same way the
+ * reading pane + download path do. Inline parts (`image/*` referenced by `cid` in the original HTML)
+ * are re-attached too: compose v1 is plain-text, so they surface as ordinary attachment chips rather
+ * than staying inline — intended (carry every binary part forward) over silently dropping them.
+ */
+export function forwardAttachments(parts: EmailBodyPart[]): DraftAttachment[] {
+  const out: DraftAttachment[] = [];
+  // A real Set (not an object) so an exotic blobId like "__proto__" is just an ordinary key.
+  const seen = new Set<string>();
+  for (const part of parts) {
+    const blobId = part.blobId;
+    if (!blobId || seen.has(blobId)) continue;
+    seen.add(blobId);
+    out.push({
+      blobId,
+      type: part.type || "application/octet-stream",
+      name: part.name ?? "attachment",
+      size: part.size,
+    });
+  }
+  return out;
 }
 
 /**
@@ -240,15 +269,16 @@ export function startReply(email: Email, opts: { all?: boolean } = {}): void {
 /**
  * Open the composer to forward `email`: recipients are left empty (the user picks them), subject
  * is "Fwd: …" (no double-prefix), and the body carries a forwarded-message header block + the
- * original text. A forward starts a NEW thread, so no threading headers are set. Attachments reset
- * to empty: re-attaching the source's parts (by referencing their existing blobIds — a copy, not a
- * re-upload) is a deferred follow-up, so a forward currently carries the quoted text only.
+ * original text. A forward starts a NEW thread, so no threading headers are set. The source's
+ * binary parts are re-attached by referencing their existing `blobId`s (a server-side copy, not a
+ * re-upload — see {@link forwardAttachments}); the quoted text lives in the body as before.
  */
 export function startForward(email: Email): void {
   openWith({
     ...emptyDraft(),
     subject: forwardSubject(email.subject),
     body: forwardQuote(email),
+    attachments: forwardAttachments(email.attachments ?? []),
   });
 }
 

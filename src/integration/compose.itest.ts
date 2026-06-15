@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import process from "node:process";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -12,12 +13,14 @@ import {
 import type { Email, Id } from "@/jmap/types";
 import {
   composeError,
+  draft,
   identities,
   loadIdentities,
   resetCompose,
   saveDraft,
   selectedIdentity,
   send,
+  startForward,
   startReply,
   updateDraft,
 } from "@/stores/compose";
@@ -240,5 +243,89 @@ describe("compose", () => {
     expect(reply.references?.[reply.references.length - 1]).toBe(source.messageId?.[0]);
     // And the payoff: the reply lands in the SAME thread as the source.
     expect(reply.threadId).toBe(source.threadId);
+  });
+
+  it("startForward re-attaches the source's parts by blobId (a copy, not a re-upload), and send carries them", async () => {
+    await loadMailboxes();
+    await loadIdentities();
+    const inboxId = mailboxIdByRole("inbox") as Id;
+    const sentId = mailboxIdByRole("sent") as Id;
+    expect(inboxId, "Inbox mailbox").toBeDefined();
+    expect(sentId, "Sent mailbox").toBeDefined();
+
+    // Seed a source message that actually carries an attachment: upload the bytes through the real
+    // blob transport, then create an Inbox message referencing that blobId as an attachment part.
+    const content = "Forward me — these bytes must survive the blob reference.\n";
+    const byteSize = Buffer.byteLength(content, "utf8");
+    const upload = await testClient().upload(
+      new File([content], "doc.txt", { type: "text/plain" }),
+      "text/plain",
+    );
+    const subject = freshSubject("forward");
+    const client = testClient();
+    const createResp = await client.request(
+      [
+        emailSet(client.accountId, "src-set", {
+          create: {
+            src: {
+              mailboxIds: { [inboxId]: true },
+              from: [{ name: "Test User", email: ACCOUNT_EMAIL }],
+              to: [{ name: "Test User", email: ACCOUNT_EMAIL }],
+              subject,
+              bodyValues: { b: { value: "Original with an attachment.", isTruncated: false } },
+              textBody: [{ partId: "b", type: "text/plain" }],
+              attachments: [
+                {
+                  blobId: upload.blobId,
+                  type: "text/plain",
+                  name: "doc.txt",
+                  disposition: "attachment",
+                  size: upload.size,
+                },
+              ],
+            },
+          },
+        }),
+      ],
+      [CAP_CORE, CAP_MAIL],
+    );
+    const created = (methodResult(createResp, "src-set").created ?? {}) as Record<
+      string,
+      { id: Id }
+    >;
+    const srcId = created.src?.id as Id;
+    expect(srcId, "the source message was created").toBeDefined();
+
+    // Read it back the way the reading pane would (with attachments), then forward it. Note the
+    // stored part's blobId is NOT the upload blobId: Stalwart re-keys the blob once it's embedded in
+    // a message, so a forward must reference the part's stored blobId (what the reading pane holds),
+    // which is exactly what forwardAttachments carries — never the transient upload id.
+    const source = await serverEmailDetail(srcId);
+    const sourcePart = (source.attachments ?? [])[0];
+    expect(sourcePart, "the source message carries one attachment part").toBeDefined();
+    startForward(source);
+
+    // The composer prefilled the source's attachment by referencing its existing (stored) blobId —
+    // no re-upload (the chip carries the SAME server blobId the source part held).
+    expect(draft.attachments).toHaveLength(1);
+    expect(draft.attachments[0]?.blobId).toBe(sourcePart?.blobId);
+    expect(draft.attachments[0]?.name).toBe("doc.txt");
+    expect(draft.attachments[0]?.size).toBe(byteSize);
+
+    // Forward to ourselves so the sent copy is reachable; send is the one batch.
+    updateDraft("to", ACCOUNT_EMAIL);
+    expect(await send()).toBe(true);
+
+    // The Sent "Fwd: …" copy carries the attachment part, and its bytes round-trip unchanged —
+    // proving the server resolved the referenced blob into the new message without a re-upload.
+    const sentIds = await waitForSubject(sentId, subject);
+    const sent = await serverEmailDetail(sentIds[0] as Id);
+    expect(sent.subject).toBe(`Fwd: ${subject}`);
+    const part = (sent.attachments ?? [])[0];
+    expect(part, "the forwarded message carries one attachment part").toBeDefined();
+    expect(part?.name).toBe("doc.txt");
+    expect(part?.size).toBe(byteSize);
+    const blob = await testClient().download(part?.blobId as Id, part?.type as string, "doc.txt");
+    expect(await blob.text()).toBe(content);
   });
 });
