@@ -31,8 +31,8 @@ export function RichTextEditor(props: {
   // The selection captured when the link form opens — focus moves to the URL input, so we restore
   // this range before applying the link rather than letting Squire link an empty cursor.
   let savedLinkRange: Range | undefined;
-  // Likewise for the insert-image button: the file picker steals focus, so capture the caret to
-  // drop the image back at on return.
+  // Likewise for the insert-image button: the file picker steals focus, so capture the caret here
+  // and restore it before inserting the uploaded image on return.
   let savedImageRange: Range | undefined;
 
   const [bold, setBold] = createSignal(false);
@@ -223,13 +223,16 @@ export function RichTextEditor(props: {
 
   function onDrop(event: DragEvent): void {
     if (props.disabled) return;
-    const files = imageFilesFrom(event.dataTransfer?.files);
-    if (files.length === 0) return;
-    // Stop the browser navigating to the dropped file (and Squire's capture-phase handler, which
-    // ignores file drops anyway). The image lands at the current caret.
+    // A text/within-editor drag → leave it to Squire's own drop handling.
+    if (!event.dataTransfer?.types.includes("Files")) return;
+    // onDragOver already claimed ALL file drags, so we must preventDefault every file drop here —
+    // otherwise dropping a non-image file (e.g. a PDF) falls through to the browser's default
+    // "open file / navigate away", which would lose the draft. Stops Squire's capture-phase handler
+    // too (it ignores file drops anyway). Only image files are inserted; other files are a no-op.
     event.preventDefault();
     event.stopPropagation();
-    void insertImageFiles(files, squire?.getSelection());
+    const files = imageFilesFrom(event.dataTransfer.files);
+    if (files.length > 0) void insertImageFiles(files, squire?.getSelection());
   }
 
   function openImagePicker(): void {

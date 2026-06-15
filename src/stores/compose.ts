@@ -109,14 +109,15 @@ export function attachmentParts(
  * The set of `cid` tokens an `<img src="cid:…">` in `html` actually references. Extracted by pulling
  * each `cid:` URL out to its delimiter (quote/whitespace/`>`/`)`) rather than a bare `includes`
  * substring scan — so a part whose cid is a *prefix* of another's (e.g. `image001` vs the body's
- * `image001@host`) isn't a false positive. The scheme is matched case-insensitively (the outbound
- * sanitizer keeps a `CID:` <img>), but the token is captured verbatim, matching the `cid` the part
- * carries. Used by both the carry-forward filter and the send-time orphan filter so they share one
- * matching rule.
+ * `image001@host`) isn't a false positive. The scheme must sit at a left boundary (start, quote,
+ * `=`, `(`, `>`, or whitespace) so a `cid:` buried mid-URL (e.g. `https://host/cid:foo`) is NOT
+ * matched. The scheme is matched case-insensitively (the outbound sanitizer keeps a `CID:` <img>),
+ * but the token is captured verbatim, matching the `cid` the part carries. Used by both the
+ * carry-forward filter and the send-time orphan filter so they share one matching rule.
  */
 function cidsReferencedIn(html: string): Set<string> {
   const refs = new Set<string>();
-  for (const match of html.matchAll(/cid:([^"'\s)>]+)/gi)) {
+  for (const match of html.matchAll(/(?:^|[\s"'=(>])cid:([^"'\s)>]+)/gi)) {
     if (match[1]) refs.add(match[1]);
   }
   return refs;
