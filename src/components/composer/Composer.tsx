@@ -1,4 +1,5 @@
 import { createMemo, For, onMount, Show } from "solid-js";
+import { RecipientField } from "@/components/composer/RecipientField";
 import { RichTextEditor } from "@/components/composer/RichTextEditor";
 import { invalidRecipients, parseRecipients } from "@/lib/addresses";
 import { formatBytes } from "@/lib/format";
@@ -160,55 +161,60 @@ export function Composer() {
           </label>
         </Show>
 
-        <label class="composer-field">
-          <span class="composer-label">To</span>
-          <input
-            ref={toInput}
-            class="composer-input"
-            type="text"
-            autocomplete="off"
-            aria-invalid={invalidTo().length > 0}
-            aria-describedby={invalidTo().length > 0 ? "composer-to-error" : undefined}
+        {/* Recipient rows are comboboxes (past-recipient autocomplete). The label is associated by
+            `for`/`id` rather than wrapping, so the popup listbox can be a sibling of the input
+            instead of interactive content inside a <label>. */}
+        <div class="composer-field">
+          <label class="composer-label" for="composer-to">
+            To
+          </label>
+          <RecipientField
+            id="composer-to"
+            inputRef={(el) => {
+              toInput = el;
+            }}
             value={draft.to}
-            onInput={(event) => updateDraft("to", event.currentTarget.value)}
+            invalid={invalidTo().length > 0}
+            errorId={invalidTo().length > 0 ? "composer-to-error" : undefined}
+            onInput={(value) => updateDraft("to", value)}
           />
-        </label>
+        </div>
         <Show when={invalidTo().length > 0}>
           <p id="composer-to-error" class="composer-invalid">
             Not a valid address: {invalidTo().join(", ")}
           </p>
         </Show>
 
-        <label class="composer-field">
-          <span class="composer-label">Cc</span>
-          <input
-            class="composer-input"
-            type="text"
-            autocomplete="off"
-            aria-invalid={invalidCc().length > 0}
-            aria-describedby={invalidCc().length > 0 ? "composer-cc-error" : undefined}
+        <div class="composer-field">
+          <label class="composer-label" for="composer-cc">
+            Cc
+          </label>
+          <RecipientField
+            id="composer-cc"
             value={draft.cc}
-            onInput={(event) => updateDraft("cc", event.currentTarget.value)}
+            invalid={invalidCc().length > 0}
+            errorId={invalidCc().length > 0 ? "composer-cc-error" : undefined}
+            onInput={(value) => updateDraft("cc", value)}
           />
-        </label>
+        </div>
         <Show when={invalidCc().length > 0}>
           <p id="composer-cc-error" class="composer-invalid">
             Not a valid address: {invalidCc().join(", ")}
           </p>
         </Show>
 
-        <label class="composer-field">
-          <span class="composer-label">Bcc</span>
-          <input
-            class="composer-input"
-            type="text"
-            autocomplete="off"
-            aria-invalid={invalidBcc().length > 0}
-            aria-describedby={invalidBcc().length > 0 ? "composer-bcc-error" : undefined}
+        <div class="composer-field">
+          <label class="composer-label" for="composer-bcc">
+            Bcc
+          </label>
+          <RecipientField
+            id="composer-bcc"
             value={draft.bcc}
-            onInput={(event) => updateDraft("bcc", event.currentTarget.value)}
+            invalid={invalidBcc().length > 0}
+            errorId={invalidBcc().length > 0 ? "composer-bcc-error" : undefined}
+            onInput={(value) => updateDraft("bcc", value)}
           />
-        </label>
+        </div>
         <Show when={invalidBcc().length > 0}>
           <p id="composer-bcc-error" class="composer-invalid">
             Not a valid address: {invalidBcc().join(", ")}

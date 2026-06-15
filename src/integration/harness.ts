@@ -19,6 +19,7 @@ import type { Id, MethodCall } from "@/jmap/types";
 import { adoptClient } from "@/stores/account";
 import { emails, setEmails, setPageSize, setThread, setThreadList } from "@/stores/emails";
 import { mailboxes, setMailboxes } from "@/stores/mailboxes";
+import { resetRecipients } from "@/stores/recipients";
 import { setSelectedEmailId, setSelectedMailboxId, setSelectedThreadId } from "@/stores/ui";
 
 export const JMAP_BASE = (process.env.QELO_JMAP_BASE ?? "https://localhost").replace(/\/$/, "");
@@ -107,6 +108,9 @@ export function resetStores(): void {
   setSelectedThreadId(null);
   setSelectedEmailId(null);
   setPageSize(50);
+  // Recipient autocomplete keeps a module-level load-once guard + index that otherwise leak across
+  // tests in the shared worker (openWith fires loadRecipientSuggestions), so reset it here too.
+  resetRecipients();
 }
 
 // --- Server-side fixtures --------------------------------------------------
