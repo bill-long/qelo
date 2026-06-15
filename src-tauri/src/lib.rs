@@ -1,9 +1,11 @@
 mod auth;
+mod download;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             auth::oauth_login,
             auth::store_api_token,
@@ -11,7 +13,8 @@ pub fn run() {
             auth::refresh_access_token,
             auth::logout,
             auth::open_push_stream,
-            auth::close_push_stream
+            auth::close_push_stream,
+            download::save_attachment
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

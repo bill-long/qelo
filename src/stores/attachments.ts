@@ -1,20 +1,28 @@
 // Download an existing message attachment to the user's machine.
 //
 // The blob download endpoint requires the JMAP bearer header, so a plain <a href> pointed at the
-// downloadUrl wouldn't authenticate (and the email iframe is sandboxed anyway). Instead we fetch
-// the bytes through the authenticated client (JmapClient.download → Blob) and then save that Blob
-// via a transient object-URL download anchor — the same mechanism for the desktop webview
-// (WebView2/WKWebView honor a `download` anchor) and the browser/PWA build. A native Tauri
-// save-dialog on desktop is a possible later refinement; it isn't worth a new Rust capability here.
+// downloadUrl wouldn't authenticate (and the email iframe is sandboxed anyway). The save path
+// diverges by build target:
+//
+//   - Desktop: the Rust `save_attachment` command opens a native Save dialog, fetches the blob with
+//     the keychain bearer token, and streams it straight to the chosen path — so the user picks the
+//     destination, there's no silent rename-on-conflict, and we get the real final path for a
+//     "Saved to …" toast. The frontend only builds the (authenticated) download URL; the bytes
+//     never pass through JS. See src-tauri/src/download.rs.
+//   - Browser/PWA: no native dialog, so fetch the bytes through the authenticated client
+//     (JmapClient.download → Blob) and save via a transient object-URL <a download> anchor. The
+//     browser owns the download location and UI here.
 //
 // Living in the store layer (like open-external.ts) keeps the transport call + DOM save out of the
 // pure jmap/ and lib/ layers, and lets the reading pane dispatch a store action rather than reach
 // for JmapClient directly. Per-blobId in-flight + error state lets each attachment row reflect its
 // own download independently.
 
+import { invoke } from "@tauri-apps/api/core";
 import { createSignal } from "solid-js";
 import type { EmailBodyPart } from "@/jmap/types";
-import { handleAuthFailure, jmap } from "./account";
+import { handleAuthFailure, isDesktop, jmap, PROVIDER_ID } from "./account";
+import { notify } from "./toasts";
 
 // Keyed by blobId (a server-supplied string). Both use real collections rather than a plain object
 // so an exotic key (e.g. "__proto__") is just an ordinary entry — no prototype-pollution footgun.
@@ -74,9 +82,11 @@ function saveBlob(blob: Blob, name: string): void {
 
 /**
  * Download one attachment and save it. No-op for a part without a `blobId` (it can't be fetched) or
- * one already downloading. Fetches the bytes through the authenticated client, then saves the Blob;
- * an auth failure raises the global re-auth gate, any other error is surfaced for the row via
- * {@link downloadErrorFor}. Never rejects.
+ * one already downloading. On desktop, the Rust backend prompts for a destination and streams the
+ * blob there (a cancelled dialog is a silent no-op, a successful save shows a "Saved to …" toast);
+ * in the browser/PWA build, the bytes are fetched here and saved via a download anchor. An auth
+ * failure on the browser path raises the global re-auth gate; any other error is surfaced for the
+ * row via {@link downloadErrorFor}. Never rejects.
  */
 export async function downloadAttachment(part: EmailBodyPart): Promise<void> {
   const blobId = part.blobId;
@@ -85,8 +95,19 @@ export async function downloadAttachment(part: EmailBodyPart): Promise<void> {
   const type = part.type || "application/octet-stream";
   startDownload(blobId);
   try {
-    const blob = await jmap().download(blobId, type, name);
-    saveBlob(blob, name);
+    if (isDesktop) {
+      // The bytes never enter JS: Rust fetches the URL (built here) with the keychain bearer token
+      // and streams it to the user's chosen path. `null` => the user cancelled the Save dialog.
+      const savedPath = await invoke<string | null>("save_attachment", {
+        providerId: PROVIDER_ID,
+        downloadUrl: jmap().downloadUrlFor(blobId, type, name),
+        suggestedName: name,
+      });
+      if (savedPath) notify(`Saved to ${savedPath}`);
+    } else {
+      const blob = await jmap().download(blobId, type, name);
+      saveBlob(blob, name);
+    }
   } catch (err) {
     if (handleAuthFailure(err)) return;
     const message = err instanceof Error ? err.message : String(err);

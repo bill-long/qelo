@@ -151,23 +151,33 @@ export class JmapClient {
    * fetch-then-Blob round trip; the store layer turns the Blob into a save.
    *
    * `type`/`name` fill the template's `{type}`/`{name}` placeholders (the server uses them for the
-   * response `Content-Type` and download filename); every substituted value is percent-encoded so a
-   * name with spaces or `/`, or a `type` with its `/`, can't break out of its path/query slot.
+   * response `Content-Type` and download filename) — see {@link downloadUrlFor} for the encoding.
    */
   async download(blobId: Id, type: string, name: string): Promise<Blob> {
-    // downloadUrl is a URI template with `{accountId}`/`{blobId}`/`{type}`/`{name}` placeholders
-    // (RFC 8620 §6.2). replaceAll because a server may legitimately repeat one (e.g. {name} in both
-    // the path and a filename query). encodeURIComponent never emits `$`, so none of these
-    // substitutions can be mis-read as a String.replace `$&`/`$1` pattern.
-    const url = this.session.downloadUrl
-      .replaceAll("{accountId}", encodeURIComponent(this.accountId))
-      .replaceAll("{blobId}", encodeURIComponent(blobId))
-      .replaceAll("{type}", encodeURIComponent(type))
-      .replaceAll("{name}", encodeURIComponent(name));
-    const res = await this.#fetch(url);
+    const res = await this.#fetch(this.downloadUrlFor(blobId, type, name));
     if (!res.ok) {
       throw new Error(`JMAP download failed: ${res.status} ${await res.text()}`);
     }
     return res.blob();
+  }
+
+  /**
+   * Resolve the account's `downloadUrl` template (RFC 8620 §6.2) into the absolute URL for one
+   * blob. Split out from {@link download} so the desktop native-save path can hand the URL to the
+   * Rust backend to fetch and stream to disk (the bearer header is attached there), while the
+   * browser/PWA build still fetches it here via {@link download}.
+   *
+   * `downloadUrl` is a URI template with `{accountId}`/`{blobId}`/`{type}`/`{name}` placeholders;
+   * `replaceAll` because a server may legitimately repeat one (e.g. `{name}` in both the path and a
+   * filename query). Every substituted value is percent-encoded so a name with spaces or `/`, or a
+   * `type` with its `/`, can't break out of its path/query slot; `encodeURIComponent` never emits
+   * `$`, so none of these can be mis-read as a `String.replace` `$&`/`$1` pattern.
+   */
+  downloadUrlFor(blobId: Id, type: string, name: string): string {
+    return this.session.downloadUrl
+      .replaceAll("{accountId}", encodeURIComponent(this.accountId))
+      .replaceAll("{blobId}", encodeURIComponent(blobId))
+      .replaceAll("{type}", encodeURIComponent(type))
+      .replaceAll("{name}", encodeURIComponent(name));
   }
 }

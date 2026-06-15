@@ -193,7 +193,7 @@ fn random_b64(bytes: usize) -> String {
 /// userinfo (`https://localhost:443@evil.com`), ports, and IPv6 literals can't smuggle a
 /// non-loopback host past the check. A parse failure or missing host returns `false` (the
 /// safe default: validate certs).
-fn is_loopback_url(raw: &str) -> bool {
+pub(crate) fn is_loopback_url(raw: &str) -> bool {
     let Ok(parsed) = ::url::Url::parse(raw) else {
         return false;
     };
@@ -435,7 +435,7 @@ fn refresh(provider_id: &str, refresh_token: &str) -> Result<StoredTokens, Refre
 /// in, or the refresh token is revoked/expired). `Ok(None)` is distinct from `Err` (a
 /// transient keychain/network failure worth retrying): the frontend maps `None` to a clean
 /// `JmapAuthError` re-auth gate, whereas a thrown `Err` is a transient transport error.
-fn access_token(provider_id: &str) -> Result<Option<String>, String> {
+pub(crate) fn access_token(provider_id: &str) -> Result<Option<String>, String> {
     // Hold the cache lock across the whole operation so concurrent callers share one
     // cached token and at most one refresh runs at a time (no refresh-token races).
     let mut cache = token_cache()
@@ -494,7 +494,10 @@ fn access_token(provider_id: &str) -> Result<Option<String>, String> {
 /// concurrent `401`s into a single refresh: a caller that reaches the lock after the
 /// refresh finds a token unequal to its `stale_token` and reuses it instead of spending
 /// the (possibly rotated) refresh token again.
-fn force_refresh(provider_id: &str, stale_token: &str) -> Result<Option<String>, String> {
+pub(crate) fn force_refresh(
+    provider_id: &str,
+    stale_token: &str,
+) -> Result<Option<String>, String> {
     let mut cache = token_cache()
         .lock()
         .map_err(|_| "token cache poisoned".to_string())?;
@@ -843,7 +846,7 @@ async fn open_authenticated(
 /// supplied by the frontend, and the stream attaches the OAuth bearer token, so without this
 /// a compromised webview could point the stream at an attacker host and exfiltrate the token.
 /// Pinned to the provider's `session_url` origin (the eventSourceUrl is same-origin with it).
-fn ensure_provider_origin(provider_id: &str, url: &str) -> Result<(), String> {
+pub(crate) fn ensure_provider_origin(provider_id: &str, url: &str) -> Result<(), String> {
     let p = provider(provider_id)?;
     let expected = ::url::Url::parse(p.session_url).map_err(|e| e.to_string())?;
     let requested = ::url::Url::parse(url).map_err(|_| "invalid push url".to_string())?;

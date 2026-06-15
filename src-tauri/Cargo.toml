@@ -21,6 +21,10 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+# Native Save dialog for the desktop attachment-download path (browsers can't pick a
+# destination path or stream to disk). Driven entirely from Rust (no JS-facing dialog API),
+# so it needs no capability permission — see src/download.rs.
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # OAuth 2.0 (Authorization Code + PKCE) against the JMAP provider. `stream` powers the

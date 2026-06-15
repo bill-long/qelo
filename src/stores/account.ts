@@ -187,15 +187,19 @@ export async function connect(): Promise<void> {
       // carry URI-template placeholders ({accountId}/{blobId}/{type}/{name}) + a query string, so
       // strip only the origin (like eventSourceUrl below) rather than parsing them as a URL —
       // new URL() would mangle the `{...}` placeholders and drop downloadUrl's `?accept=` query.
-      // This routes attachment transfers through the same Vite proxy as apiUrl in the dev build.
+      // Upload always goes through JS (JmapClient.upload), so route it via the Vite proxy on both
+      // targets. Download diverges: the browser/PWA build fetches it in JS (proxy → strip origin),
+      // but on desktop the native-save path hands downloadUrl to the Rust backend, which connects
+      // to the provider directly (trusting the loopback cert) and pins the URL to the provider
+      // origin — so it must stay ABSOLUTE on desktop, same reasoning as eventSourceUrl below.
       s.uploadUrl = s.uploadUrl.replace(/^https?:\/\/[^/]+/, "");
-      s.downloadUrl = s.downloadUrl.replace(/^https?:\/\/[^/]+/, "");
       // The push stream is opened by EventSource in the browser (must be same-origin to use
       // the Vite proxy that injects credentials) but by the Rust backend on desktop, which
       // connects to the provider directly and trusts the loopback cert itself — so leave the
-      // eventSourceUrl absolute for desktop. The {types}/{closeafter}/{ping} template is
-      // preserved either way, so strip only the origin rather than parsing it as a URL.
+      // eventSourceUrl (and, per above, downloadUrl) absolute for desktop. The template
+      // placeholders are preserved either way, so strip only the origin, not parse as a URL.
       if (!isDesktop) {
+        s.downloadUrl = s.downloadUrl.replace(/^https?:\/\/[^/]+/, "");
         s.eventSourceUrl = s.eventSourceUrl.replace(/^https?:\/\/[^/]+/, "");
       }
     }
