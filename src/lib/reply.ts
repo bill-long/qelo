@@ -162,7 +162,8 @@ function sourceHtmlBody(email: ReplySource): string {
     const value = email.bodyValues?.[part.partId]?.value;
     if (value !== undefined) return value;
   }
-  return escapeHtml(plainTextBody(email)).replace(/\n/g, "<br>");
+  // Normalize CRLF/CR to LF first so a Windows-origin source doesn't leave stray \r in the quote.
+  return escapeHtml(plainTextBody(email)).replace(/\r\n?|\n/g, "<br>");
 }
 
 /** Escape the five HTML-significant characters so author text can't break out of the markup. */

@@ -118,7 +118,7 @@ export function RichTextEditor(props: {
   function applyLink(): void {
     const s = squire;
     const url = normalizeUrl(linkUrl());
-    if (!s || !url) return;
+    if (!s || !url || props.disabled) return;
     if (savedLinkRange) s.setSelection(savedLinkRange);
     s.makeLink(url);
     setLinkOpen(false);
@@ -228,6 +228,7 @@ export function RichTextEditor(props: {
             inputmode="url"
             placeholder="https://example.com"
             aria-label="Link URL"
+            disabled={props.disabled}
             value={linkUrl()}
             onInput={(event) => setLinkUrl(event.currentTarget.value)}
             onKeyDown={onLinkKeyDown}
@@ -235,12 +236,17 @@ export function RichTextEditor(props: {
           <button
             type="button"
             class="composer-link-apply"
-            disabled={normalizeUrl(linkUrl()) === null}
+            disabled={props.disabled || normalizeUrl(linkUrl()) === null}
             onClick={applyLink}
           >
             Add link
           </button>
-          <button type="button" class="composer-link-cancel" onClick={closeLink}>
+          <button
+            type="button"
+            class="composer-link-cancel"
+            disabled={props.disabled}
+            onClick={closeLink}
+          >
             Cancel
           </button>
         </div>

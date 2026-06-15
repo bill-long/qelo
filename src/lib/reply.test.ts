@@ -253,6 +253,15 @@ describe("replyQuoteHtml", () => {
     expect(body).toContain("<blockquote>line one<br><br>line two</blockquote>");
   });
 
+  it("normalizes CRLF/CR newlines in a plain-text source (no stray \\r left)", () => {
+    const crlf = source({
+      bodyValues: { t: { value: "a\r\nb\rc", isEncodingProblem: false, isTruncated: false } },
+    });
+    const body = replyQuoteHtml(crlf);
+    expect(body).toContain("<blockquote>a<br>b<br>c</blockquote>");
+    expect(body).not.toContain("\r");
+  });
+
   it("escapes HTML-significant characters in the attribution (a hostile sender name)", () => {
     const body = replyQuoteHtml(htmlSource({ from: [{ name: "<script>", email: "x@y.test" }] }));
     expect(body).toContain("&lt;script&gt; wrote:");
