@@ -167,18 +167,17 @@ export function splitForwardParts(
   html: string,
 ): { attachments: DraftAttachment[]; inlineImages: InlineImage[] } {
   const inlineImages = referencedInlineImages(parts, html);
-  const inlineCids = new Set(inlineImages.map((i) => i.cid));
   const attachments: DraftAttachment[] = [];
   // Seed the dedupe set with the inline images' blobIds so a byte-identical *other* part (a
   // content-addressed store hands back one blobId) isn't ALSO shown as a chip — a blob referenced
-  // inline is emitted once, as the inline part. A real Set (not an object) so an exotic blobId like
-  // "__proto__" is just an ordinary key.
+  // inline is emitted once, as the inline part. Dedupe is purely by blobId, NOT by cid: a malformed
+  // source could reuse one cid across two distinct blobs, and skipping the second by cid would drop
+  // it entirely (neither inline — referencedInlineImages dedupes by cid — nor a chip). A real Set
+  // (not an object) so an exotic blobId like "__proto__" is just an ordinary key.
   const seen = new Set<string>(inlineImages.map((i) => i.blobId));
   for (const part of parts) {
     const blobId = part.blobId;
     if (!blobId || seen.has(blobId)) continue;
-    // Kept inline (re-referenced by cid in the body) — don't also surface it as a chip.
-    if (part.cid && inlineCids.has(part.cid)) continue;
     seen.add(blobId);
     attachments.push({
       blobId,

@@ -313,6 +313,28 @@ describe("splitForwardParts", () => {
     ]);
     expect(attachments).toEqual([]);
   });
+
+  it("keeps a same-cid-but-different-blob part as a chip (no data loss; chip dedupe is by blobId)", () => {
+    // A malformed source reuses one cid across two distinct blobs. referencedInlineImages dedupes by
+    // cid (only the first is inline); the second distinct blob must still surface as a chip.
+    const { attachments, inlineImages } = splitForwardParts(
+      [
+        part({
+          blobId: "I1",
+          type: "image/png",
+          name: "a.png",
+          cid: "dup@x",
+          disposition: "inline",
+        }),
+        part({ blobId: "I2", type: "image/png", name: "b.png", cid: "dup@x" }),
+      ],
+      '<img src="cid:dup@x">',
+    );
+    expect(inlineImages).toEqual([
+      { cid: "dup@x", blobId: "I1", type: "image/png", name: "a.png", size: 100 },
+    ]);
+    expect(attachments).toEqual([{ blobId: "I2", type: "image/png", name: "b.png", size: 100 }]);
+  });
 });
 
 describe("inlineAttachmentParts", () => {
