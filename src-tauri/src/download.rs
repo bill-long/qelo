@@ -11,8 +11,8 @@
 //! frontend builds the templated download URL (it owns the JMAP session) and hands it here; this
 //! command attaches the bearer token — which lives in the keychain, Rust-side — and streams the
 //! response body to the chosen file. Because the URL is frontend-supplied and we attach a token, it
-//! is pinned to the provider origin first (`ensure_provider_origin`), the same token-exfiltration
-//! guard the push proxy uses. This is authenticated transport, not JMAP logic: the frontend still
+//! is pinned to an allowed provider download origin first (`ensure_blob_origin`), the same
+//! token-exfiltration guard the push proxy uses. This is authenticated transport, not JMAP logic: the frontend still
 //! constructs the URL and nothing here parses a JMAP response, so it doesn't duplicate the protocol
 //! layer (CLAUDE.md) — it only does the two things the browser can't: pick a path and stream to it.
 
@@ -21,7 +21,7 @@ use std::path::Path;
 use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
 
-use crate::auth::{access_token, ensure_provider_origin, force_refresh, is_loopback_url};
+use crate::auth::{access_token, ensure_blob_origin, force_refresh, is_loopback_url};
 
 /// Connect timeout for the download request. Unlike the auth requests there is deliberately no
 /// *total* timeout — a large attachment over a slow link can legitimately take a long time — but
@@ -54,6 +54,27 @@ fn safe_file_name(raw: &str) -> String {
     let cleaned = cleaned.trim().trim_end_matches(['.', ' ']).trim();
     let usable = !cleaned.is_empty() && cleaned != "." && cleaned != "..";
     let name = if usable { cleaned } else { "attachment" };
+    cap_len(name)
+}
+
+/// Cap a filename at {@link MAX_NAME_LEN} characters, preserving a short trailing extension so the
+/// truncated default keeps its file-type association (a name with a 300-char base before `.pdf`
+/// shouldn't lose the `.pdf`). Truncates by `char`, not byte, to stay on a UTF-8 boundary.
+fn cap_len(name: &str) -> String {
+    if name.chars().count() <= MAX_NAME_LEN {
+        return name.to_string();
+    }
+    // A leading dot is part of the stem (e.g. `.gitignore`), so only treat an interior dot as an
+    // extension separator. Keep the extension only if it's plausibly short.
+    if let Some(dot) = name.rfind('.').filter(|&i| i > 0) {
+        let ext = &name[dot..]; // includes the dot; `.` is ASCII so the slice is char-aligned
+        let ext_len = ext.chars().count();
+        // `MAX_NAME_LEN` (200) comfortably exceeds 16, so the subtraction below can't underflow.
+        if ext_len <= 16 {
+            let stem: String = name.chars().take(MAX_NAME_LEN - ext_len).collect();
+            return format!("{stem}{ext}");
+        }
+    }
     name.chars().take(MAX_NAME_LEN).collect()
 }
 
@@ -146,16 +167,29 @@ fn stream_to_file(resp: &mut reqwest::blocking::Response, target: &Path) -> Resu
     })();
 
     match write {
-        Ok(()) => std::fs::rename(&temp, target).map_err(|e| {
-            // The bytes are written but couldn't be moved into place — drop the temp so it doesn't
-            // linger, and report the failure.
+        // On a finalize failure the bytes are written but couldn't be moved into place — drop the
+        // temp so it doesn't linger, and report the failure.
+        Ok(()) => finalize(&temp, target).inspect_err(|_| {
             let _ = std::fs::remove_file(&temp);
-            format!("could not finalize file: {e}")
         }),
         Err(e) => {
             let _ = std::fs::remove_file(&temp);
             Err(e)
         }
+    }
+}
+
+/// Move the finished temp file onto `target`. A plain `rename` replaces an existing destination on
+/// modern NTFS, but not on every filesystem (FAT32/exFAT removable media, some network shares),
+/// where it fails when the target already exists — even though the user explicitly chose to
+/// overwrite it in the Save dialog. So on failure, if the target exists, remove it and rename again.
+fn finalize(temp: &Path, target: &Path) -> Result<(), String> {
+    match std::fs::rename(temp, target) {
+        Ok(()) => Ok(()),
+        Err(_) if target.exists() => std::fs::remove_file(target)
+            .and_then(|()| std::fs::rename(temp, target))
+            .map_err(|e| format!("could not finalize file: {e}")),
+        Err(e) => Err(format!("could not finalize file: {e}")),
     }
 }
 
@@ -168,9 +202,10 @@ fn save_attachment_inner(
     download_url: &str,
     suggested_name: &str,
 ) -> Result<Option<String>, String> {
-    // Pin the (frontend-supplied) URL to the provider origin BEFORE attaching the bearer token, so
-    // a compromised webview can't point the download at an attacker host and exfiltrate the token.
-    ensure_provider_origin(provider_id, download_url)?;
+    // Pin the (frontend-supplied) URL to an allowed provider download origin BEFORE attaching the
+    // bearer token, so a compromised webview can't point the download at an attacker host and
+    // exfiltrate the token. (Downloads may legitimately sit on a different origin than the session.)
+    ensure_blob_origin(provider_id, download_url)?;
 
     // Native Save dialog — the user picks the exact destination (and confirms any overwrite), so
     // there is no silent rename-on-conflict and the app learns the real final path.
@@ -261,5 +296,20 @@ mod tests {
     fn caps_the_length() {
         let long = "a".repeat(500);
         assert_eq!(safe_file_name(&long).chars().count(), MAX_NAME_LEN);
+    }
+
+    #[test]
+    fn length_cap_preserves_a_short_extension() {
+        let name = format!("{}.pdf", "a".repeat(500));
+        let capped = safe_file_name(&name);
+        assert_eq!(capped.chars().count(), MAX_NAME_LEN);
+        assert!(
+            capped.ends_with(".pdf"),
+            "extension should survive truncation: {capped}"
+        );
+        // A name whose only dot is leading (a hidden-style name) is truncated without a spurious
+        // "extension" — the leading dot is part of the stem.
+        let hidden = format!(".{}", "a".repeat(500));
+        assert_eq!(safe_file_name(&hidden).chars().count(), MAX_NAME_LEN);
     }
 }

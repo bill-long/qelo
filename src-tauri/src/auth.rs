@@ -73,6 +73,13 @@ enum ProviderKind {
 struct Provider {
     kind: ProviderKind,
     session_url: &'static str,
+    /// Origins (scheme + host + port) the provider serves blob *downloads* from, which the desktop
+    /// native-save path (`download.rs`) attaches the bearer token to. Unlike the push
+    /// `eventSourceUrl` — which is same-origin with `session_url`, so `ensure_provider_origin`
+    /// pins it there — a provider may serve blobs from a SEPARATE origin (Fastmail's session is
+    /// `api.fastmail.com` but its `downloadUrl` is `www.fastmailusercontent.com`), so the allowed
+    /// download origins are declared explicitly rather than assumed equal to the session origin.
+    blob_origins: &'static [&'static str],
 }
 
 impl Provider {
@@ -101,6 +108,8 @@ fn provider(id: &str) -> Result<Provider, String> {
                 scope: "",
             },
             session_url: "https://localhost/.well-known/jmap",
+            // Stalwart serves blob downloads from the same loopback origin as its session.
+            blob_origins: &["https://localhost"],
         }),
         // Fastmail OAuth scaffold — NOT usable. Fastmail has no self-serve OAuth *client*
         // registration (an account only exposes API tokens and app passwords), so there is no
@@ -114,6 +123,7 @@ fn provider(id: &str) -> Result<Provider, String> {
                 scope: "urn:ietf:params:jmap:core urn:ietf:params:jmap:mail",
             },
             session_url: "https://api.fastmail.com/jmap/session",
+            blob_origins: &["https://www.fastmailusercontent.com"],
         }),
         // Fastmail via a pasted API token (Settings → Privacy & Security → Connected apps &
         // API tokens). Stored in the keychain like an OAuth access token but never refreshed;
@@ -121,6 +131,8 @@ fn provider(id: &str) -> Result<Provider, String> {
         "fastmail-token" => Ok(Provider {
             kind: ProviderKind::Token,
             session_url: "https://api.fastmail.com/jmap/session",
+            // Fastmail serves blob downloads from a different host than the JMAP session/API.
+            blob_origins: &["https://www.fastmailusercontent.com"],
         }),
         other => Err(format!("Unknown provider: {other}")),
     }
@@ -842,18 +854,44 @@ async fn open_authenticated(
     }
 }
 
+/// Does `url`'s origin (scheme + host + port) match any origin in `allowed`? A `url` or `allowed`
+/// entry that doesn't parse, or whose origin doesn't match, is rejected — so userinfo
+/// (`https://localhost:443@evil.com`), a scheme/port mismatch, or a malformed URL can't smuggle a
+/// disallowed host past the check.
+fn origin_in(url: &str, allowed: &[&str]) -> bool {
+    let Ok(requested) = ::url::Url::parse(url) else {
+        return false;
+    };
+    allowed.iter().any(|a| {
+        ::url::Url::parse(a)
+            .map(|expected| expected.origin() == requested.origin())
+            .unwrap_or(false)
+    })
+}
+
 /// Require the push `url` to share the provider's origin (scheme + host + port). The URL is
 /// supplied by the frontend, and the stream attaches the OAuth bearer token, so without this
 /// a compromised webview could point the stream at an attacker host and exfiltrate the token.
 /// Pinned to the provider's `session_url` origin (the eventSourceUrl is same-origin with it).
 pub(crate) fn ensure_provider_origin(provider_id: &str, url: &str) -> Result<(), String> {
     let p = provider(provider_id)?;
-    let expected = ::url::Url::parse(p.session_url).map_err(|e| e.to_string())?;
-    let requested = ::url::Url::parse(url).map_err(|_| "invalid push url".to_string())?;
-    if requested.origin() == expected.origin() {
+    if origin_in(url, &[p.session_url]) {
         Ok(())
     } else {
         Err("push url is not on the provider's origin".to_string())
+    }
+}
+
+/// Require a blob-download `url` to sit on one of the provider's declared download origins (see
+/// `Provider::blob_origins`). Same token-exfiltration guard as `ensure_provider_origin`, but for the
+/// desktop native-save path — and pinned to the download origins, which (unlike the push stream) are
+/// not assumed equal to the session origin.
+pub(crate) fn ensure_blob_origin(provider_id: &str, url: &str) -> Result<(), String> {
+    let p = provider(provider_id)?;
+    if origin_in(url, p.blob_origins) {
+        Ok(())
+    } else {
+        Err("download url is not on an allowed provider origin".to_string())
     }
 }
 
@@ -1093,6 +1131,34 @@ mod tests {
         assert!(ensure_provider_origin("stalwart-dev", "https://localhost:8443/jmap").is_err());
         assert!(ensure_provider_origin("stalwart-dev", "not a url").is_err());
         assert!(ensure_provider_origin("unknown-provider", "https://localhost/").is_err());
+    }
+
+    #[test]
+    fn blob_download_origin_is_pinned_per_provider() {
+        // Stalwart serves downloads from the same loopback origin as its session.
+        assert!(ensure_blob_origin(
+            "stalwart-dev",
+            "https://localhost/jmap/download/acct/blob/file.pdf?accept=application/pdf"
+        )
+        .is_ok());
+        // Fastmail serves downloads from a SEPARATE origin than its session/API — the whole reason
+        // blob_origins is declared rather than reusing session_url. The download host is allowed…
+        assert!(ensure_blob_origin(
+            "fastmail-token",
+            "https://www.fastmailusercontent.com/jmap/download/acct/blob/file.pdf"
+        )
+        .is_ok());
+        // …while the session origin itself is NOT a valid download origin (would have been wrongly
+        // accepted by a session-origin pin, and is where the bug was), nor is any foreign host.
+        assert!(
+            ensure_blob_origin("fastmail-token", "https://api.fastmail.com/jmap/download").is_err()
+        );
+        assert!(ensure_blob_origin("fastmail-token", "https://evil.com/jmap/download").is_err());
+        // Scheme/userinfo/malformed smuggling is rejected for downloads too.
+        assert!(ensure_blob_origin("stalwart-dev", "http://localhost/jmap/download").is_err());
+        assert!(ensure_blob_origin("stalwart-dev", "https://localhost@evil.com/jmap").is_err());
+        assert!(ensure_blob_origin("stalwart-dev", "not a url").is_err());
+        assert!(ensure_blob_origin("unknown-provider", "https://localhost/").is_err());
     }
 
     #[test]
