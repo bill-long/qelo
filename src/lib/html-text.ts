@@ -26,10 +26,14 @@ const BLOCK_TAGS = new Set([
   "H6",
 ]);
 
+// Table cells are separated by a tab (the row's <tr> supplies the line break), so cells on a row
+// don't run their text together — the outbound allowlist permits pasted tables (table/tr/td/th).
+const CELL_TAGS = new Set(["TD", "TH"]);
+
 // Recursively flatten, inserting a single newline at each block boundary (deduped against a newline
 // already present) and one for each <br>, so adjacent blocks are single-spaced while an explicit
-// empty block (e.g. <div><br></div>) still yields a blank line. Text nodes contribute verbatim; the
-// DOM has already decoded their entities.
+// empty block (e.g. <div><br></div>) still yields a blank line. Table cells get a trailing tab so
+// row text stays separated. Text nodes contribute verbatim; the DOM has already decoded their entities.
 function flatten(node: Node): string {
   let text = "";
   for (const child of node.childNodes) {
@@ -41,6 +45,10 @@ function flatten(node: Node): string {
     const el = child as Element;
     if (el.tagName === "BR") {
       text += "\n";
+      continue;
+    }
+    if (CELL_TAGS.has(el.tagName)) {
+      text += `${flatten(el)}\t`; // a trailing tab on the last cell is trimmed before the row break
       continue;
     }
     const isBlock = BLOCK_TAGS.has(el.tagName);

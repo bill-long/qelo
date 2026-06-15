@@ -26,6 +26,11 @@ describe("htmlToText", () => {
     expect(htmlToText("<ul><li>a</li><li>b</li></ul>")).toBe("a\nb");
   });
 
+  it("separates table cells with a tab and rows with a newline (no run-together)", () => {
+    const table = "<table><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table>";
+    expect(htmlToText(table)).toBe("a\tb\nc\td");
+  });
+
   it("flattens a quoted blockquote (losing the '>' markers)", () => {
     expect(htmlToText("<div>reply</div><blockquote><div>quoted</div></blockquote>")).toBe(
       "reply\nquoted",
