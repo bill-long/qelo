@@ -93,6 +93,10 @@ describe("sanitizeOutboundHtml", () => {
     expect(sanitizeOutboundHtml('<img src="javascript:alert(1)">')).not.toContain("<img");
   });
 
+  it("drops an empty-cid <img> (cid: with no token would be a dead reference)", () => {
+    expect(sanitizeOutboundHtml('<img src="cid:">')).not.toContain("<img");
+  });
+
   it("strips a remote src that landed on a NON-img tag (src is allowed globally, cid-gated only on img)", () => {
     const out = sanitizeOutboundHtml(
       '<a href="https://x.test" src="https://tracker.test/p.gif">x</a>',

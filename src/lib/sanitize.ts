@@ -58,7 +58,9 @@ function restrictImgToCid(node: Element): void {
     return;
   }
   const src = node.getAttribute("src") ?? "";
-  if (!/^cid:/i.test(src.trim())) node.remove();
+  // Require a non-empty cid after the scheme: a bare `cid:` would pass a prefix-only check but never
+  // match cidsReferencedIn (which needs a token), leaving a dead <img> with no backing inline part.
+  if (!/^cid:.+/i.test(src.trim())) node.remove();
 }
 outboundPurify.addHook("afterSanitizeAttributes", restrictImgToCid);
 // Unlike the singleton hook above, this instance is freshly minted on each module eval, so its hooks
