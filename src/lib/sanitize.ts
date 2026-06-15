@@ -33,11 +33,12 @@ export function sanitizeHtml(html: string): string {
 // --- Outbound (compose / send) sanitization --------------------------------
 
 // A SEPARATE DOMPurify instance for the OUTBOUND path (the HTML the user composes + the source HTML
-// they quote on reply/forward). It deliberately shares NONE of the module singleton's hooks: the
+// they quote on reply/forward). It deliberately does NOT share the module singleton's hooks: the
 // singleton carries `forceExternalLinkTargets`, which rewrites every <a> to target="_blank" — right
 // for the reading-pane iframe, but wrong for mail we author and send (it would pollute the
 // recipient's copy with a meaningless target). DOMPurify's default export is callable to mint a
-// fresh, hook-free instance bound to the same window.
+// fresh instance bound to the same window; this one carries exactly ONE outbound-only hook,
+// `restrictImgToCid` (added below), and none of the inbound singleton's.
 const outboundPurify = DOMPurify(window);
 
 // Inline images (Phase 2) are referenced by `cid:` — a part the same message carries — never by a
