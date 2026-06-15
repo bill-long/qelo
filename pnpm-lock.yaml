@@ -20,6 +20,9 @@ importers:
       solid-js:
         specifier: ^1.9.3
         version: 1.9.13
+      squire-rte:
+        specifier: ^2.4.8
+        version: 2.4.8
     devDependencies:
       '@biomejs/biome':
         specifier: 2.4.16
@@ -1473,6 +1476,9 @@ packages:
   source-map-js@1.2.1:
     resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
     engines: {node: '>=0.10.0'}
+
+  squire-rte@2.4.8:
+    resolution: {integrity: sha512-pUp+LhZf2cUlhRKnD40DopUCdhmHlYUF7zGYqOBr8I/tQk/qZie/nXQ1DQcKlXqlr8Bw16TpE/7LQWxUeVrFNg==}
 
   stackback@0.0.2:
     resolution: {integrity: sha512-1XMJE5fQo1jGH6Y/7ebnwPOBEkIEnT4QF32d5R1+VXdXveM0IBMJt8zfaxX1P3QhVwrYe+576+jkANtSS2mBbw==}
@@ -3016,6 +3022,8 @@ snapshots:
       - supports-color
 
   source-map-js@1.2.1: {}
+
+  squire-rte@2.4.8: {}
 
   stackback@0.0.2: {}
 

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { emailSrcdoc, sanitizeHtml } from "@/lib/sanitize";
+import {
+  emailSrcdoc,
+  sanitizeComposeFragment,
+  sanitizeHtml,
+  sanitizeOutboundHtml,
+} from "@/lib/sanitize";
 
 describe("sanitizeHtml", () => {
   it("passes plain text through unchanged", () => {
@@ -33,6 +38,54 @@ describe("sanitizeHtml", () => {
     expect(out).toContain('target="_blank"');
     expect(out).toContain('rel="noopener noreferrer"');
     expect(out).not.toContain('target="_self"');
+  });
+});
+
+describe("sanitizeOutboundHtml", () => {
+  it("keeps the formatting the composer + quoting produce", () => {
+    const html =
+      "<div>hi <b>bold</b> <i>italic</i></div><ul><li>a</li></ul>" +
+      '<a href="https://x.test">link</a><blockquote>quoted</blockquote>';
+    const out = sanitizeOutboundHtml(html);
+    expect(out).toContain("<b>bold</b>");
+    expect(out).toContain("<i>italic</i>");
+    expect(out).toContain("<ul><li>a</li></ul>");
+    expect(out).toContain('href="https://x.test"');
+    expect(out).toContain("<blockquote>quoted</blockquote>");
+  });
+
+  it("does NOT rewrite links to target=_blank (that inbound-only hook must not apply outbound)", () => {
+    const out = sanitizeOutboundHtml('<a href="https://x.test">x</a>');
+    expect(out).not.toContain("target");
+    expect(out).not.toContain("rel=");
+  });
+
+  it("strips <script>, event handlers, and javascript: URLs", () => {
+    expect(sanitizeOutboundHtml("<p>ok</p><script>alert(1)</script>")).not.toContain("<script");
+    expect(sanitizeOutboundHtml('<a href="javascript:alert(1)">x</a>')).not.toContain(
+      "javascript:",
+    );
+    expect(sanitizeOutboundHtml('<b onclick="alert(1)">x</b>')).not.toContain("onclick");
+  });
+
+  it("drops images entirely (Phase 1: the non-sandboxed editor must not load remote content)", () => {
+    expect(sanitizeOutboundHtml('<img src="https://tracker.test/p.gif">')).not.toContain("<img");
+  });
+
+  it("drops disallowed structural tags but keeps their text", () => {
+    expect(sanitizeOutboundHtml("<style>p{color:red}</style><p>body</p>")).not.toContain("<style");
+    expect(sanitizeOutboundHtml("<iframe src='x'></iframe><p>body</p>")).not.toContain("<iframe");
+    expect(sanitizeOutboundHtml("<form><input></form><p>body</p>")).toContain("<p>body</p>");
+  });
+});
+
+describe("sanitizeComposeFragment", () => {
+  it("returns a DocumentFragment cleaned to the outbound policy (for Squire's paste boundary)", () => {
+    const frag = sanitizeComposeFragment('<p>ok</p><script>alert(1)</script><img src="x">');
+    expect(frag).toBeInstanceOf(DocumentFragment);
+    expect(frag.querySelector("script")).toBeNull();
+    expect(frag.querySelector("img")).toBeNull();
+    expect(frag.querySelector("p")?.textContent).toBe("ok");
   });
 });
 

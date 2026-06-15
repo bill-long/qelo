@@ -1,7 +1,8 @@
-// Pure builders for reply / reply-all / forward prefill (PR 4). Plain-text only (D3): the quoted
-// body is plain-text quoting with "> " line prefixes, not HTML. No SolidJS, no JMAP client — just
-// Email → derived recipients / subject / quoted body / threading headers, so it's unit-tested in
-// isolation alongside the other lib helpers.
+// Pure builders for reply / reply-all / forward prefill. Recipients/subject/threading are plain
+// derivations; the quoted body is now HTML (compose v2 is rich-text), built as an attribution/header
+// line plus the source body in a <blockquote>. The source HTML embedded here is UNSANITIZED — it is
+// cleaned downstream at the editor boundary (Squire's sanitizeToDOMFragment) and again, authoritatively,
+// on send (sanitizeOutboundHtml) — so these stay DOM-free pure builders, unit-tested in isolation.
 
 import type { Email, EmailAddress } from "@/jmap/types";
 import { formatDateTime, recipientList, senderName } from "./format";
@@ -19,6 +20,7 @@ type ReplySource = Pick<
   | "messageId"
   | "references"
   | "textBody"
+  | "htmlBody"
   | "bodyValues"
   | "preview"
 >;
@@ -148,38 +150,57 @@ export function plainTextBody(
   return email.preview ?? "";
 }
 
-/** Prefix every line of `text` with "> " (a bare ">" for blank lines), the usual reply quote. */
-function quoteLines(text: string): string {
+/**
+ * The source's HTML body to quote. Prefers the fetched `text/html` part; for a plain-text-only
+ * source (no HTML part) it promotes the plain text to HTML — escaped, with newlines as `<br>` — so
+ * the quote is well-formed HTML either way. The result is embedded raw into a blockquote and cleaned
+ * downstream (see the module header).
+ */
+function sourceHtmlBody(email: ReplySource): string {
+  const part = email.htmlBody?.[0];
+  if (part?.partId && part.type === "text/html") {
+    const value = email.bodyValues?.[part.partId]?.value;
+    if (value !== undefined) return value;
+  }
+  return escapeHtml(plainTextBody(email)).replace(/\n/g, "<br>");
+}
+
+/** Escape the five HTML-significant characters so author text can't break out of the markup. */
+function escapeHtml(text: string): string {
   return text
-    .split("\n")
-    .map((line) => (line.length > 0 ? `> ${line}` : ">"))
-    .join("\n");
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
+// A leading empty line (an empty default block) for the user to type into above the quote — matching
+// Squire's blockTag so the cursor lands in a real, editable block.
+const LEAD_IN = "<div><br></div>";
+
 /**
- * A reply body: a blank line for the user to type into, an attribution line
- * ("On <date>, <sender> wrote:"), and the source body quoted with "> " prefixes.
+ * A reply body as HTML: a blank line to type into, an attribution line
+ * ("On <date>, <sender> wrote:"), and the source body in a `<blockquote>`.
  */
-export function replyQuote(email: ReplySource): string {
+export function replyQuoteHtml(email: ReplySource): string {
   const attribution = `On ${formatDateTime(email.receivedAt)}, ${senderName(email.from)} wrote:`;
-  return `\n\n${attribution}\n${quoteLines(plainTextBody(email))}\n`;
+  return `${LEAD_IN}<div>${escapeHtml(attribution)}</div><blockquote>${sourceHtmlBody(email)}</blockquote>`;
 }
 
 /**
- * A forward body: a "Forwarded message" header block (From/Date/Subject/To) followed by the
- * source body verbatim (a forward presents the original, it doesn't quote it as a reply does).
+ * A forward body as HTML: a blank line to type into, a "Forwarded message" header block
+ * (From/Date/Subject/To), and the source body in a `<blockquote>`.
  */
-export function forwardQuote(email: ReplySource): string {
-  const lines = [
-    "",
-    "",
+export function forwardQuoteHtml(email: ReplySource): string {
+  const header = [
     "---------- Forwarded message ----------",
     `From: ${senderName(email.from)}`,
     `Date: ${formatDateTime(email.receivedAt)}`,
     `Subject: ${email.subject ?? ""}`,
     `To: ${recipientList(email.to)}`,
-    "",
-    plainTextBody(email),
-  ];
-  return lines.join("\n");
+  ]
+    .map((line) => `<div>${escapeHtml(line)}</div>`)
+    .join("");
+  return `${LEAD_IN}${header}<blockquote>${sourceHtmlBody(email)}</blockquote>`;
 }

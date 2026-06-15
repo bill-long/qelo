@@ -30,6 +30,87 @@ export function sanitizeHtml(html: string): string {
   return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
 }
 
+// --- Outbound (compose / send) sanitization --------------------------------
+
+// A SEPARATE DOMPurify instance for the OUTBOUND path (the HTML the user composes + the source HTML
+// they quote on reply/forward). It deliberately shares NONE of the module singleton's hooks: the
+// singleton carries `forceExternalLinkTargets`, which rewrites every <a> to target="_blank" — right
+// for the reading-pane iframe, but wrong for mail we author and send (it would pollute the
+// recipient's copy with a meaningless target). DOMPurify's default export is callable to mint a
+// fresh, hook-free instance bound to the same window.
+const outboundPurify = DOMPurify(window);
+
+// The tags/attributes the outbound path keeps. This is intentionally an allowlist (not the broad
+// inbound `html` profile): the composer's toolbar only ever emits bold/italic/list/link/blockquote
+// markup, and quoted source HTML is re-emitted into mail we own, so a tight, predictable set keeps
+// the sent message clean and shrinks the surface a quoted hostile message could smuggle through.
+// NOTE (Phase 1): no <img>. The compose editor is NOT sandboxed (the app CSP is null), so allowing
+// remote <img> would fire tracking pixels the instant a tracked message is quoted into a reply.
+// Phase 2 (inline images) adds <img> restricted to cid: sources only.
+const OUTBOUND_ALLOWED_TAGS = [
+  "p",
+  "div",
+  "br",
+  "span",
+  "blockquote",
+  "pre",
+  "b",
+  "strong",
+  "i",
+  "em",
+  "u",
+  "s",
+  "strike",
+  "sub",
+  "sup",
+  "code",
+  "a",
+  "ul",
+  "ol",
+  "li",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "table",
+  "thead",
+  "tbody",
+  "tfoot",
+  "tr",
+  "td",
+  "th",
+  "caption",
+];
+const OUTBOUND_ALLOWED_ATTR = ["href", "title", "dir", "colspan", "rowspan"];
+
+/**
+ * Sanitize HTML bound for the wire (the composed body + any quoted source HTML), to the tight
+ * outbound allowlist and WITHOUT the inbound link-target rewrite. Run on `bodyHtml` immediately
+ * before it becomes the `text/html` part in {@link buildDraftEmail}'s create.
+ */
+export function sanitizeOutboundHtml(html: string): string {
+  return outboundPurify.sanitize(html, {
+    ALLOWED_TAGS: OUTBOUND_ALLOWED_TAGS,
+    ALLOWED_ATTR: OUTBOUND_ALLOWED_ATTR,
+  });
+}
+
+/**
+ * The same outbound policy, returning a DocumentFragment — wired into Squire's `sanitizeToDOMFragment`
+ * so everything entering the editor (pasted clipboard HTML AND the quoted source HTML we seed via
+ * setHTML) is cleaned at the editor boundary, before it reaches our non-sandboxed compose DOM. The
+ * send-path {@link sanitizeOutboundHtml} is the second, authoritative pass.
+ */
+export function sanitizeComposeFragment(html: string): DocumentFragment {
+  return outboundPurify.sanitize(html, {
+    ALLOWED_TAGS: OUTBOUND_ALLOWED_TAGS,
+    ALLOWED_ATTR: OUTBOUND_ALLOWED_ATTR,
+    RETURN_DOM_FRAGMENT: true,
+  });
+}
+
 // CSP for the reading-pane iframe: no scripts, and the only resources allowed are
 // inline styles and data: URIs. This blocks remote images (tracking pixels), web
 // fonts, and any other network fetch the message might attempt. base-uri and

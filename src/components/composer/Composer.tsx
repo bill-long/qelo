@@ -1,4 +1,5 @@
 import { createMemo, For, onMount, Show } from "solid-js";
+import { RichTextEditor } from "@/components/composer/RichTextEditor";
 import { invalidRecipients, parseRecipients } from "@/lib/addresses";
 import { formatBytes } from "@/lib/format";
 import {
@@ -97,7 +98,7 @@ export function Composer() {
     if (busy() === null) discardDraft();
   }
 
-  // Cmd/Ctrl+Enter sends (when sendable) from anywhere in the dialog — including the body textarea,
+  // Cmd/Ctrl+Enter sends (when sendable) from anywhere in the dialog — including the body editor,
   // where a bare Enter inserts a newline and the modifier combo is otherwise inert. Escape→discard
   // is handled natively by the dialog's `cancel` event (onCancel above), so it's not duplicated here.
   function onKeyDown(event: KeyboardEvent) {
@@ -223,11 +224,11 @@ export function Composer() {
           />
         </label>
 
-        <textarea
-          class="composer-body"
-          aria-label="Message body"
-          value={draft.body}
-          onInput={(event) => updateDraft("body", event.currentTarget.value)}
+        <RichTextEditor
+          ariaLabel="Message body"
+          html={draft.bodyHtml}
+          disabled={busy() !== null}
+          onInput={(html) => updateDraft("bodyHtml", html)}
         />
 
         <div class="composer-attach">
