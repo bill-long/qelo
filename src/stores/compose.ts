@@ -584,10 +584,15 @@ export function removeAttachment(blobId: string): void {
  * blobId) reuses the existing cid so the body can reference one part rather than emitting two. The
  * cid is a UUID under a `.invalid` domain (RFC 6761) — it never resolves on the network, it's only a
  * within-message part label. Refuses while another upload is in flight (matching attach), returning
- * null so nothing is inserted.
+ * null so nothing is inserted. Rejects a non-image file (the editor only offers image/* via the
+ * picker/paste/drop, but this also guards the `inlineImages`-are-images invariant for any caller).
  */
 export async function insertInlineImage(file: File): Promise<string | null> {
   if (uploading()) return null;
+  if (!file.type.startsWith("image/")) {
+    setComposeError("Only image files can be inserted inline.");
+    return null;
+  }
   const generation = draftGeneration;
   setUploading(true);
   setComposeError(null);

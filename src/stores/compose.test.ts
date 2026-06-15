@@ -3,11 +3,14 @@ import type { EmailBodyPart } from "@/jmap/types";
 import {
   attachmentParts,
   buildDraftEmail,
+  composeError,
   type DraftAttachment,
   type DraftEmailInput,
   type InlineImage,
   inlineAttachmentParts,
+  insertInlineImage,
   referencedInlineImages,
+  resetCompose,
   sentFilePatch,
   splitForwardParts,
 } from "./compose";
@@ -393,6 +396,16 @@ describe("inlineAttachmentParts", () => {
 
   it("filters out an inline image the html doesn't reference (no orphan part)", () => {
     expect(inlineAttachmentParts("<div>no image</div>", [img])).toEqual([]);
+  });
+});
+
+describe("insertInlineImage", () => {
+  it("rejects a non-image file without uploading (defends the inlineImages-are-images invariant)", async () => {
+    // Returns before touching the JMAP client, so this needs no live server.
+    const pdf = new File(["%PDF-1.4"], "doc.pdf", { type: "application/pdf" });
+    expect(await insertInlineImage(pdf)).toBeNull();
+    expect(composeError()).toMatch(/image/i);
+    resetCompose();
   });
 });
 
