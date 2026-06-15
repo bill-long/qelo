@@ -106,19 +106,20 @@ export function attachmentParts(
 }
 
 /**
- * The set of `cid` tokens an `<img src="cid:…">` in `html` actually references. Extracted by pulling
- * each `cid:` URL out to its delimiter (quote/whitespace/`>`/`)`) rather than a bare `includes`
- * substring scan — so a part whose cid is a *prefix* of another's (e.g. `image001` vs the body's
- * `image001@host`) isn't a false positive. The scheme must sit at a left boundary (start, quote,
- * `=`, `(`, `>`, or whitespace) so a `cid:` buried mid-URL (e.g. `https://host/cid:foo`) is NOT
- * matched. The scheme is matched case-insensitively (the outbound sanitizer keeps a `CID:` <img>),
- * but the token is captured verbatim, matching the `cid` the part carries. Used by both the
- * carry-forward filter and the send-time orphan filter so they share one matching rule.
+ * The set of `cid` tokens an actual `<img src="cid:…">` in `html` embeds. Only an `<img src>` counts
+ * — NOT a bare `cid:` token in quoted text, nor an `<a href="cid:…">` — so forwarding attacker
+ * HTML can't silently promote one of the source's parts to inline (and hide it from the attachment
+ * chips) just by mentioning its cid. Pulls each `<img>`'s `src` (quoted or bare, attributes in any
+ * order), case-insensitively on the scheme (the outbound sanitizer keeps a `CID:` <img>), and keeps
+ * the token verbatim — so a cid that's a *prefix* of another's (`image001` vs `image001@host`) isn't
+ * a false positive either. Shared by the carry-forward filter and the send-time orphan filter.
  */
 function cidsReferencedIn(html: string): Set<string> {
   const refs = new Set<string>();
-  for (const match of html.matchAll(/(?:^|[\s"'=(>])cid:([^"'\s)>]+)/gi)) {
-    if (match[1]) refs.add(match[1]);
+  for (const tag of html.matchAll(/<img\b[^>]*?\ssrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)) {
+    const src = (tag[1] ?? tag[2] ?? tag[3] ?? "").trim();
+    const cid = /^cid:(.+)$/i.exec(src);
+    if (cid?.[1]) refs.add(cid[1]);
   }
   return refs;
 }

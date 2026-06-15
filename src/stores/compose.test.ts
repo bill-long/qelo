@@ -188,7 +188,7 @@ describe("referencedInlineImages", () => {
           part({ blobId: "I1", cid: "c@x", type: "", name: null }),
           part({ blobId: "I2", cid: "c@x", type: "image/gif", name: "dup.gif" }),
         ],
-        "cid:c@x",
+        '<img src="cid:c@x">',
       ),
     ).toEqual([
       { cid: "c@x", blobId: "I1", type: "application/octet-stream", name: null, size: 100 },
@@ -210,11 +210,11 @@ describe("referencedInlineImages", () => {
     ]);
   });
 
-  it("does NOT match a `cid:` buried mid-URL (e.g. a link path), only one at a left boundary", () => {
-    // A part with cid `c1@x` must not be 'referenced' just because some link path contains cid:c1@x.
-    expect(referencedInlineImages([img], '<a href="https://host/path/cid:c1@x">link</a>')).toEqual(
-      [],
-    );
+  it('counts ONLY an actual <img src>, not a bare cid: token or an <a href="cid:…">', () => {
+    // A part must not be 'referenced' just because the body mentions its cid in text or a link —
+    // only an embedded <img> embeds it. Both of these must yield no inline image.
+    expect(referencedInlineImages([img], "<div>see attachment cid:c1@x</div>")).toEqual([]);
+    expect(referencedInlineImages([img], '<a href="cid:c1@x">link</a>')).toEqual([]);
   });
 });
 
@@ -360,7 +360,7 @@ describe("inlineAttachmentParts", () => {
   });
 
   it("omits name when the inline image has none", () => {
-    const out = inlineAttachmentParts("cid:c@x", [
+    const out = inlineAttachmentParts('<img src="cid:c@x">', [
       { cid: "c@x", blobId: "I1", type: "image/png", name: null, size: 1 },
     ]);
     expect(out[0]).not.toHaveProperty("name");
