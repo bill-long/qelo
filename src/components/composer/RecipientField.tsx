@@ -152,7 +152,9 @@ export function RecipientField(props: {
         autocomplete="off"
         aria-autocomplete="list"
         aria-expanded={expanded()}
-        aria-controls={listboxId()}
+        // Only reference the listbox while it's actually in the DOM (it's conditionally rendered on
+        // expanded()); pointing aria-controls at a missing id when collapsed is invalid.
+        aria-controls={expanded() ? listboxId() : undefined}
         aria-activedescendant={active() >= 0 && expanded() ? optionId(active()) : undefined}
         aria-invalid={props.invalid}
         aria-describedby={props.errorId}

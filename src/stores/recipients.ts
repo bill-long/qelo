@@ -50,7 +50,9 @@ export async function loadRecipientSuggestions(): Promise<void> {
     const responses = await client.request([
       emailQuery(client.accountId, "q", {
         mailboxId: sentId,
-        // collapseThreads off: we want every sent message's recipients, not one per conversation.
+        // Explicitly off (not relying on the JMAP default): we want every sent message's recipients,
+        // not one representative per conversation.
+        collapseThreads: false,
         limit: SENT_SCAN_LIMIT,
       }),
       emailGet(client.accountId, "g", {
