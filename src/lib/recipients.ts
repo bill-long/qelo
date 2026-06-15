@@ -47,6 +47,9 @@ export function buildSuggestionIndex(emails: Email[]): RecipientSuggestion[] {
       ...(email.cc ?? []),
       ...(email.bcc ?? []),
     ];
+    // `count` is "how many MESSAGES addressed this email", so an address appearing more than once
+    // within ONE message (e.g. in both to and cc) increments it only once — dedupe per message.
+    const countedThisMessage = new Set<string>();
     for (const addr of recipients) {
       const raw = addr.email?.trim();
       if (!raw) continue; // a group/undisclosed entry can lack an address
@@ -54,12 +57,13 @@ export function buildSuggestionIndex(emails: Email[]): RecipientSuggestion[] {
       const name = addr.name?.trim() || null;
       const existing = byEmail.get(key);
       if (existing) {
-        existing.count += 1;
-        if (!existing.name && name) existing.name = name; // backfill a name the first sighting lacked
+        if (!countedThisMessage.has(key)) existing.count += 1;
+        if (!existing.name && name) existing.name = name; // backfill a name an earlier sighting lacked
       } else {
         byEmail.set(key, { email: raw, name, count: 1, rank: order });
         order += 1;
       }
+      countedThisMessage.add(key);
     }
   }
   return [...byEmail.values()]

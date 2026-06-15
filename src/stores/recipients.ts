@@ -60,8 +60,15 @@ export async function loadRecipientSuggestions(): Promise<void> {
         properties: RECIPIENT_PROPERTIES,
       }),
     ]);
-    const list = (methodResult(responses, "g").list ?? []) as Email[];
-    setSuggestionIndex(buildSuggestionIndex(list));
+    // Reorder the fetched emails to the Email/query order (newest-first): Email/get does NOT
+    // guarantee it returns records in the requested-id order, and buildSuggestionIndex's recency
+    // ranking depends on newest-first input. Drop any id the /get didn't return.
+    const queryIds = (methodResult(responses, "q").ids ?? []) as string[];
+    const byId = new Map(
+      ((methodResult(responses, "g").list ?? []) as Email[]).map((e) => [e.id, e]),
+    );
+    const ordered = queryIds.map((id) => byId.get(id)).filter((e): e is Email => e !== undefined);
+    setSuggestionIndex(buildSuggestionIndex(ordered));
     loadState = "loaded";
   } catch (err) {
     loadState = "idle"; // allow a retry on the next composer open

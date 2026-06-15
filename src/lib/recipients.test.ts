@@ -38,6 +38,23 @@ describe("buildSuggestionIndex", () => {
     expect(index).toHaveLength(2);
   });
 
+  it("counts an address once per message even if it appears in several fields of that message", () => {
+    // dup@x.io is in both to and cc of ONE message → frequency 1, NOT 2; solo@x.io once. Equal
+    // count, so recency (encounter order) decides: dup (rank 0) before solo (rank 1).
+    const index = buildSuggestionIndex([
+      email({ to: [addr("dup@x.io")], cc: [addr("dup@x.io")] }),
+      email({ to: [addr("solo@x.io")] }),
+    ]);
+    expect(index.map((s) => s.email)).toEqual(["dup@x.io", "solo@x.io"]);
+    // A second message addressing dup@x.io would make it 2 and clearly outrank solo.
+    const index2 = buildSuggestionIndex([
+      email({ to: [addr("dup@x.io")], cc: [addr("dup@x.io")] }),
+      email({ to: [addr("solo@x.io")] }),
+      email({ to: [addr("solo@x.io")] }),
+    ]);
+    expect(index2.map((s) => s.email)).toEqual(["solo@x.io", "dup@x.io"]);
+  });
+
   it("breaks frequency ties by recency (newest-first input)", () => {
     // Both appear once; the more recent (earlier in the newest-first list) wins the tie.
     const index = buildSuggestionIndex([
