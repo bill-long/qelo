@@ -396,11 +396,14 @@ function selfAddresses(): string[] {
 export function startReply(email: Email, opts: { all?: boolean } = {}): void {
   const { to, cc } = replyRecipients(email, { all: opts.all ?? false, self: selfAddresses() });
   const headers = threadingHeaders(email);
-  // The quote may embed the source's inline (cid'd) images; re-reference their blobs so they stay
-  // inline in the sent reply rather than rendering broken (the outbound sanitizer keeps cid <img>,
-  // but a cid with no backing part would be a dead reference). Regular attachments are NOT carried
-  // on a reply — only the inline images the quoted body actually shows.
-  const bodyHtml = replyQuoteHtml(email);
+  // Sanitize the quote UP FRONT (not just at send) so the stored body, the inline/chip decision, the
+  // editor surface, and the eventual sent body all agree on one HTML. Computing the split against raw
+  // source HTML would let a hostile message hide a fake <img src="cid:…"> in markup the sanitizer
+  // strips (e.g. a <script>) — classifying a part inline here, then dropping it at send when the
+  // sanitized body no longer references it. The quote may embed the source's real inline (cid'd)
+  // images; re-reference their blobs so they stay inline in the sent reply rather than rendering
+  // broken. Regular attachments are NOT carried on a reply — only the inline images it actually shows.
+  const bodyHtml = sanitizeOutboundHtml(replyQuoteHtml(email));
   openWith({
     ...emptyDraft(),
     to: to.join(", "),
@@ -419,10 +422,14 @@ export function startReply(email: Email, opts: { all?: boolean } = {}): void {
  * original text. A forward starts a NEW thread, so no threading headers are set. The source's
  * binary parts are re-referenced by their existing `blobId`s (a server-side copy, not a re-upload —
  * see {@link splitForwardParts}): inline (cid'd) images the quoted body shows stay truly inline,
- * while real attachments become chips; the quoted text lives in the body as before.
+ * while real attachments become chips; the quoted text lives in the body as before. The quote is
+ * sanitized UP FRONT so the inline/chip split is computed against the same HTML that will be stored,
+ * edited, and sent — a hostile source can't hide a fake `<img src="cid:…">` in markup the sanitizer
+ * strips (e.g. a `<script>`) to drop one of its parts from the forward (it'd be excluded from chips
+ * here, then filtered out of inline parts at send).
  */
 export function startForward(email: Email): void {
-  const bodyHtml = forwardQuoteHtml(email);
+  const bodyHtml = sanitizeOutboundHtml(forwardQuoteHtml(email));
   const { attachments, inlineImages } = splitForwardParts(email.attachments ?? [], bodyHtml);
   openWith({
     ...emptyDraft(),

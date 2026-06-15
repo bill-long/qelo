@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EmailBodyPart } from "@/jmap/types";
+import { sanitizeOutboundHtml } from "@/lib/sanitize";
 import {
   attachmentParts,
   buildDraftEmail,
@@ -327,6 +328,18 @@ describe("splitForwardParts", () => {
       { cid: "c1@x", blobId: "S1", type: "image/png", name: "pic.png", size: 100 },
     ]);
     expect(attachments).toEqual([]);
+  });
+
+  it("when fed sanitized HTML (as startForward does), a cid <img> hidden in a stripped <script> can't drop a part", () => {
+    // startForward/startReply sanitize the quote BEFORE the split, so a fake cid <img> the sanitizer
+    // removes (here inside a <script>) doesn't classify the part inline — it stays a chip, not lost.
+    const raw = '<blockquote><script><img src="cid:real@x"></script>visible text</blockquote>';
+    const { attachments, inlineImages } = splitForwardParts(
+      [part({ blobId: "R1", type: "image/png", name: "r.png", cid: "real@x" })],
+      sanitizeOutboundHtml(raw),
+    );
+    expect(inlineImages).toEqual([]);
+    expect(attachments).toEqual([{ blobId: "R1", type: "image/png", name: "r.png", size: 100 }]);
   });
 
   it("surfaces a non-image cid'd part as a chip (not hidden as an un-renderable inline part)", () => {
