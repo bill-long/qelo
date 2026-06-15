@@ -1,4 +1,10 @@
-import { Buffer } from "node:buffer";
+// @vitest-environment jsdom
+//
+// This suite (uniquely among the integration tests) drives send()/saveDraft(), whose path now
+// sanitizes the composed HTML (DOMPurify) and derives the plain-text alternative (htmlToText) — both
+// need a DOM. The rest of the integration config runs in node; this per-file override gives just this
+// file a DOM while keeping the real network client (node fetch + the loopback TLS trust) intact.
+import { Buffer, Blob as NodeBlob, File as NodeFile } from "node:buffer";
 import process from "node:process";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -32,6 +38,21 @@ import {
   resetStores,
   testClient,
 } from "./harness";
+
+// The jsdom env (above) swaps in jsdom's File/Blob, but the real blob upload goes through undici
+// fetch, which needs a WHATWG Blob exposing .stream() — jsdom's lacks it. Swap node's File/Blob in
+// for the duration of this suite (the send-path DOM work only needs document/window, which jsdom
+// still provides), and restore them afterward so the mutation can't leak to other files in the worker.
+const jsdomFile = globalThis.File;
+const jsdomBlob = globalThis.Blob;
+beforeAll(() => {
+  globalThis.File = NodeFile as unknown as typeof globalThis.File;
+  globalThis.Blob = NodeBlob as unknown as typeof globalThis.Blob;
+});
+afterAll(() => {
+  globalThis.File = jsdomFile;
+  globalThis.Blob = jsdomBlob;
+});
 
 // PR 3 — compose foundation (identities, drafts, send). Drives the real compose store actions
 // against a live Stalwart (CLAUDE.md forbids mocking), then reads the server back to prove the
@@ -125,11 +146,17 @@ describe("compose", () => {
     return email;
   }
 
-  /** Read one email with the full reading-pane property set (threadId, headers, body). */
+  /** Read one email with the full reading-pane property set (threadId, headers, body values). */
   async function serverEmailDetail(id: Id): Promise<Email> {
     const client = testClient();
     const resp = await client.request(
-      [emailGet(client.accountId, "g", { ids: [id], properties: [...DETAIL_PROPERTIES] })],
+      [
+        emailGet(client.accountId, "g", {
+          ids: [id],
+          properties: [...DETAIL_PROPERTIES],
+          fetchAllBodyValues: true,
+        }),
+      ],
       [CAP_CORE, CAP_MAIL],
     );
     const email = ((methodResult(resp, "g").list ?? []) as Email[])[0];
@@ -153,7 +180,7 @@ describe("compose", () => {
     const subject = freshSubject("draft");
     updateDraft("to", ACCOUNT_EMAIL);
     updateDraft("subject", subject);
-    updateDraft("body", "A saved draft body.");
+    updateDraft("bodyHtml", "<div>A saved draft body.</div>");
 
     expect(await saveDraft()).toBe(true);
 
@@ -171,7 +198,7 @@ describe("compose", () => {
     // valid address. The store must instead refuse, naming the bad token, with no round trip.
     updateDraft("to", "valid@example.test, nope");
     updateDraft("subject", freshSubject("invalid"));
-    updateDraft("body", "Should not be sent.");
+    updateDraft("bodyHtml", "<div>Should not be sent.</div>");
 
     const before = testClient().requestCount;
     expect(await send()).toBe(false);
@@ -192,7 +219,7 @@ describe("compose", () => {
     const subject = freshSubject("send");
     updateDraft("to", ACCOUNT_EMAIL); // send to our own address so it loops back to the Inbox
     updateDraft("subject", subject);
-    updateDraft("body", "A sent message body.");
+    updateDraft("bodyHtml", "<div>A sent <b>message</b> body.</div>");
 
     // The single batched round trip is exactly two requests' worth of work in one request: assert
     // the action issued just one JMAP request (Email/set{create} + EmailSubmission/set together).
@@ -207,6 +234,22 @@ describe("compose", () => {
     expect(sentEmail.keywords.$seen).toBe(true);
     expect(sentEmail.mailboxIds[sentId]).toBe(true);
     expect(sentEmail.mailboxIds[draftsId]).toBeUndefined();
+
+    // The body went out as multipart/alternative: the server parsed both a text/html part (carrying
+    // the composed markup) and a text/plain alternative (the derived fallback).
+    const sentDetail = await serverEmailDetail(sentIds[0] as Id);
+    const htmlPart = sentDetail.htmlBody?.[0];
+    const textPart = sentDetail.textBody?.[0];
+    expect(htmlPart?.type).toBe("text/html");
+    expect(textPart?.type).toBe("text/plain");
+    const htmlValue = htmlPart?.partId
+      ? sentDetail.bodyValues?.[htmlPart.partId]?.value
+      : undefined;
+    const textValue = textPart?.partId
+      ? sentDetail.bodyValues?.[textPart.partId]?.value
+      : undefined;
+    expect(htmlValue).toContain("<b>message</b>");
+    expect(textValue).toContain("A sent message body."); // tags flattened to plain text
 
     // Delivered copy: the SMTP loopback put a fresh message in the Inbox.
     const inboxIds = await waitForSubject(inboxId, subject);

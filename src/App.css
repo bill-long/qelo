@@ -818,25 +818,146 @@ body,
   font-size: 0.78rem;
 }
 
-.composer-body {
-  min-height: 12rem;
+/* ---- Composer rich-text body ---------------------------------------------- */
+
+.composer-rte {
+  display: flex;
+  flex-direction: column;
   margin-top: 0.4rem;
-  /* Horizontal padding so the text isn't flush against the edge — the field inputs get their left
-     margin from the label column, but the labelless full-width body has none of its own otherwise. */
-  padding: 0.6rem 0.75rem;
+}
+
+/* The formatting toolbar above the editing surface. */
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.2rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.composer-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.9rem;
+  height: 1.8rem;
+  padding: 0 0.4rem;
   border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.composer-tool:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+/* The toggle's on-state (bold/italic/list active at the cursor). */
+.composer-tool.is-active {
+  background: var(--selection);
+  color: var(--accent);
+}
+
+.composer-tool:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.composer-tool:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* The italic toolbar glyph should look italic. */
+.composer-tool-italic span {
+  font-style: italic;
+}
+
+.composer-tool-sep {
+  width: 1px;
+  height: 1.1rem;
+  margin: 0 0.25rem;
+  background: var(--line);
+}
+
+/* The inline "insert link" form, shown below the toolbar while adding a link. */
+.composer-link-form {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0;
+}
+
+.composer-link-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+}
+
+.composer-link-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.composer-link-apply,
+.composer-link-cancel {
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
   background: transparent;
   color: var(--ink);
   font: inherit;
-  line-height: 1.55;
-  resize: vertical;
+  font-size: 0.85rem;
+  cursor: pointer;
 }
 
-/* The body isn't inside a .composer-field row, so it has no :focus-within underline — give it
-   the standard accent outline so keyboard focus stays visible. */
-.composer-body:focus-visible {
+.composer-link-apply:hover:not(:disabled),
+.composer-link-cancel:hover {
+  background: var(--hover);
+}
+
+.composer-link-apply:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* The Squire contenteditable surface. */
+.composer-rte-input {
+  min-height: 12rem;
+  /* Horizontal padding so text isn't flush against the edge — the field inputs get their left
+     margin from the label column, but the labelless full-width body has none of its own otherwise. */
+  padding: 0.6rem 0.75rem;
+  color: var(--ink);
+  font: inherit;
+  line-height: 1.55;
+  overflow-y: auto;
+  overflow-wrap: break-word;
+}
+
+.composer-rte-input:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* Quoted source content (reply/forward) reads as a quote, matching the editorial language. */
+.composer-rte-input blockquote {
+  margin: 0.5rem 0;
+  padding-left: 0.9rem;
+  border-left: 2px solid var(--line);
+  color: var(--ink-soft);
+}
+
+.composer-rte-input a {
+  color: var(--accent);
 }
 
 /* ---- Composer attachments -------------------------------------------------- */

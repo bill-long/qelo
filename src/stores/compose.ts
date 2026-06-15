@@ -13,14 +13,16 @@ import {
 } from "@/jmap/methods";
 import type { Email, EmailAddress, EmailBodyPart, EmailSubmission, Identity } from "@/jmap/types";
 import { invalidRecipients, parseRecipients } from "@/lib/addresses";
+import { htmlToText } from "@/lib/html-text";
 import {
-  forwardQuote,
+  forwardQuoteHtml,
   forwardSubject,
-  replyQuote,
+  replyQuoteHtml,
   replyRecipients,
   replySubject,
   threadingHeaders,
 } from "@/lib/reply";
+import { sanitizeOutboundHtml } from "@/lib/sanitize";
 import { handleAuthFailure, jmap } from "./account";
 import { mailboxIdByRole } from "./mailboxes";
 import { notify } from "./toasts";
@@ -54,7 +56,10 @@ export interface DraftEmailInput {
   cc: EmailAddress[] | null;
   bcc: EmailAddress[] | null;
   subject: string;
-  body: string;
+  /** The composed body as sanitized HTML (the `text/html` part). */
+  html: string;
+  /** The plain-text alternative derived from the HTML (the `text/plain` part). */
+  text: string;
   // Threading headers — reserved for PR 4 (reply/forward); always null in v1.
   inReplyTo?: string[] | null;
   references?: string[] | null;
@@ -112,9 +117,11 @@ export function forwardAttachments(parts: EmailBodyPart[]): DraftAttachment[] {
 
 /**
  * Build the `Email/set` `create` object for a draft: it lives in the Drafts mailbox and carries
- * `$draft` (+ `$seen`, since the author has obviously seen their own draft). The single text part
- * is `bodyValues.body` referenced by `textBody` (RFC 8621 §4.1.4). Recipient/threading fields are
- * omitted entirely when absent rather than sent as null, keeping the wire object minimal.
+ * `$draft` (+ `$seen`, since the author has obviously seen their own draft). The body is sent as
+ * multipart/alternative — a `text/html` part (the rich-text the user composed) plus a `text/plain`
+ * alternative derived from it (RFC 8621 §4.1.4): two `bodyValues` keyed by partId, referenced by
+ * `htmlBody` and `textBody` respectively, and the server assembles the MIME tree. Recipient/threading
+ * fields are omitted entirely when absent rather than sent as null, keeping the wire object minimal.
  */
 export function buildDraftEmail(input: DraftEmailInput): Record<string, unknown> {
   const create: Record<string, unknown> = {
@@ -122,8 +129,12 @@ export function buildDraftEmail(input: DraftEmailInput): Record<string, unknown>
     keywords: { $draft: true, $seen: true },
     from: [input.from],
     subject: input.subject,
-    bodyValues: { body: { value: input.body, isTruncated: false } },
-    textBody: [{ partId: "body", type: "text/plain" }],
+    bodyValues: {
+      text: { value: input.text, isTruncated: false },
+      html: { value: input.html, isTruncated: false },
+    },
+    textBody: [{ partId: "text", type: "text/plain" }],
+    htmlBody: [{ partId: "html", type: "text/html" }],
   };
   if (input.to) create.to = input.to;
   if (input.cc) create.cc = input.cc;
@@ -157,7 +168,8 @@ export interface DraftState {
   cc: string;
   bcc: string;
   subject: string;
-  body: string;
+  /** The composed body as HTML (the RichTextEditor's canonical output). */
+  bodyHtml: string;
   // Reserved for PR 4 (reply threading); always null in v1.
   inReplyTo: string[] | null;
   references: string[] | null;
@@ -174,7 +186,7 @@ function emptyDraft(): DraftState {
     cc: "",
     bcc: "",
     subject: "",
-    body: "",
+    bodyHtml: "",
     inReplyTo: null,
     references: null,
     attachments: [],
@@ -260,7 +272,7 @@ export function startReply(email: Email, opts: { all?: boolean } = {}): void {
     to: to.join(", "),
     cc: cc.join(", "),
     subject: replySubject(email.subject),
-    body: replyQuote(email),
+    bodyHtml: replyQuoteHtml(email),
     inReplyTo: headers.inReplyTo,
     references: headers.references,
   });
@@ -277,7 +289,7 @@ export function startForward(email: Email): void {
   openWith({
     ...emptyDraft(),
     subject: forwardSubject(email.subject),
-    body: forwardQuote(email),
+    bodyHtml: forwardQuoteHtml(email),
     attachments: forwardAttachments(email.attachments ?? []),
   });
 }
@@ -342,8 +354,11 @@ function invalidDraftRecipients(): string[] {
   ];
 }
 
-// Build the draft create object from the current reactive state + a resolved identity.
+// Build the draft create object from the current reactive state + a resolved identity. The composed
+// HTML is sanitized HERE — the authoritative outbound pass — before it becomes the text/html part,
+// and the text/plain alternative is derived from the *sanitized* HTML so the two parts agree.
 function currentDraftCreate(draftsId: string, identity: Identity): Record<string, unknown> {
+  const html = sanitizeOutboundHtml(draft.bodyHtml);
   return buildDraftEmail({
     draftsMailboxId: draftsId,
     from: { name: identity.name || null, email: identity.email },
@@ -351,7 +366,8 @@ function currentDraftCreate(draftsId: string, identity: Identity): Record<string
     cc: parseRecipients(draft.cc),
     bcc: parseRecipients(draft.bcc),
     subject: draft.subject,
-    body: draft.body,
+    html,
+    text: htmlToText(html),
     inReplyTo: draft.inReplyTo,
     references: draft.references,
     // Spread to a plain array: buildDraftEmail/attachmentParts are pure (no store proxy in).

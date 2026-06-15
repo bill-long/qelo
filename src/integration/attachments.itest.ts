@@ -1,4 +1,9 @@
-import { Buffer } from "node:buffer";
+// @vitest-environment jsdom
+//
+// Drives saveDraft(), whose path sanitizes the composed HTML (DOMPurify) and derives the plain-text
+// alternative (htmlToText) — both need a DOM. The rest of the integration config runs in node; this
+// per-file override gives just this file a DOM while keeping the real network client intact.
+import { Buffer, Blob as NodeBlob, File as NodeFile } from "node:buffer";
 import process from "node:process";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -21,6 +26,21 @@ import {
 } from "@/stores/compose";
 import { loadMailboxes, mailboxIdByRole } from "@/stores/mailboxes";
 import { connectTestClient, disconnectTestClient, resetStores, testClient } from "./harness";
+
+// The jsdom env (above) swaps in jsdom's File/Blob, but the real blob upload goes through undici
+// fetch, which needs a WHATWG Blob exposing .stream() — jsdom's lacks it. Swap node's File/Blob in
+// for the duration of this suite (the send-path DOM work only needs document/window, which jsdom
+// still provides), and restore them afterward so the mutation can't leak to other files in the worker.
+const jsdomFile = globalThis.File;
+const jsdomBlob = globalThis.Blob;
+beforeAll(() => {
+  globalThis.File = NodeFile as unknown as typeof globalThis.File;
+  globalThis.Blob = NodeBlob as unknown as typeof globalThis.Blob;
+});
+afterAll(() => {
+  globalThis.File = jsdomFile;
+  globalThis.Blob = jsdomBlob;
+});
 
 // PR 5 — attachments. Drives the real compose store + blob transport against a live Stalwart
 // (CLAUDE.md forbids mocking): upload a small file via client.upload (through attachFiles), attach
@@ -121,7 +141,7 @@ describe("attachments", () => {
     const subject = freshSubject("draft");
     updateDraft("to", ACCOUNT_EMAIL);
     updateDraft("subject", subject);
-    updateDraft("body", "A draft with an attachment.");
+    updateDraft("bodyHtml", "<div>A draft with an attachment.</div>");
     expect(await saveDraft()).toBe(true);
 
     // Read the saved draft back: it must report hasAttachment and carry the attachment part.

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { Email } from "@/jmap/types";
 import {
-  forwardQuote,
+  forwardQuoteHtml,
   forwardSubject,
   plainTextBody,
-  replyQuote,
+  replyQuoteHtml,
   replyRecipients,
   replySubject,
   threadingHeaders,
@@ -216,27 +216,67 @@ describe("plainTextBody", () => {
   });
 });
 
-describe("replyQuote", () => {
-  it("opens with a blank line, an attribution, and a '> '-prefixed quote", () => {
-    const body = replyQuote(source());
-    expect(body.startsWith("\n\n")).toBe(true);
-    expect(body).toContain("Ada Sender wrote:");
-    // Each source line is quoted; the blank line becomes a bare ">".
-    expect(body).toContain("> line one");
-    expect(body).toContain("\n>\n");
-    expect(body).toContain("> line two");
+// The Email factory in source() is plain-text-only (htmlBody undefined), so its quote promotes the
+// plain text to escaped HTML; htmlSource() overrides with a real text/html part.
+function htmlSource(over: Partial<Email> = {}): Email {
+  return source({
+    bodyValues: {
+      h: { value: "<p>Hello <b>there</b></p>", isEncodingProblem: false, isTruncated: false },
+    },
+    htmlBody: [
+      {
+        partId: "h",
+        blobId: null,
+        size: 0,
+        type: "text/html",
+        charset: null,
+        disposition: null,
+        cid: null,
+        name: null,
+      },
+    ],
+    ...over,
+  });
+}
+
+describe("replyQuoteHtml", () => {
+  it("opens with a blank block, an attribution div, and the source HTML in a blockquote", () => {
+    const body = replyQuoteHtml(htmlSource());
+    expect(body.startsWith("<div><br></div>")).toBe(true);
+    expect(body).toContain("<div>On ");
+    expect(body).toContain("Ada Sender wrote:</div>");
+    expect(body).toContain("<blockquote><p>Hello <b>there</b></p></blockquote>");
+  });
+
+  it("promotes a plain-text-only source to escaped HTML with <br> line breaks", () => {
+    const body = replyQuoteHtml(source());
+    expect(body).toContain("<blockquote>line one<br><br>line two</blockquote>");
+  });
+
+  it("normalizes CRLF/CR newlines in a plain-text source (no stray \\r left)", () => {
+    const crlf = source({
+      bodyValues: { t: { value: "a\r\nb\rc", isEncodingProblem: false, isTruncated: false } },
+    });
+    const body = replyQuoteHtml(crlf);
+    expect(body).toContain("<blockquote>a<br>b<br>c</blockquote>");
+    expect(body).not.toContain("\r");
+  });
+
+  it("escapes HTML-significant characters in the attribution (a hostile sender name)", () => {
+    const body = replyQuoteHtml(htmlSource({ from: [{ name: "<script>", email: "x@y.test" }] }));
+    expect(body).toContain("&lt;script&gt; wrote:");
+    expect(body).not.toContain("<script>");
   });
 });
 
-describe("forwardQuote", () => {
-  it("emits a forwarded-message header block then the source body verbatim", () => {
-    const body = forwardQuote(source());
-    expect(body).toContain("---------- Forwarded message ----------");
-    expect(body).toContain("From: Ada Sender");
-    expect(body).toContain("Subject: Project plan");
-    expect(body).toContain("To: Me");
-    // The original body is presented as-is (not quoted) in a forward.
-    expect(body).toContain("line one\n\nline two");
-    expect(body).not.toContain("> line one");
+describe("forwardQuoteHtml", () => {
+  it("emits a forwarded-message header block then the source HTML in a blockquote", () => {
+    const body = forwardQuoteHtml(htmlSource());
+    expect(body.startsWith("<div><br></div>")).toBe(true);
+    expect(body).toContain("<div>---------- Forwarded message ----------</div>");
+    expect(body).toContain("<div>From: Ada Sender</div>");
+    expect(body).toContain("<div>Subject: Project plan</div>");
+    expect(body).toContain("<div>To: Me</div>");
+    expect(body).toContain("<blockquote><p>Hello <b>there</b></p></blockquote>");
   });
 });

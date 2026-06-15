@@ -16,19 +16,25 @@ const baseInput: DraftEmailInput = {
   cc: null,
   bcc: null,
   subject: "Hello",
-  body: "Body text",
+  html: "<div>Body text</div>",
+  text: "Body text",
 };
 
 describe("buildDraftEmail", () => {
-  it("places the draft in Drafts with $draft + $seen and a single text part", () => {
+  it("places the draft in Drafts with $draft + $seen and a multipart/alternative body", () => {
     const create = buildDraftEmail(baseInput);
     expect(create.mailboxIds).toEqual({ drafts1: true });
     expect(create.keywords).toEqual({ $draft: true, $seen: true });
     expect(create.from).toEqual([{ name: "Test One", email: "test@example.test" }]);
     expect(create.to).toEqual([{ name: null, email: "a@x.io" }]);
     expect(create.subject).toBe("Hello");
-    expect(create.bodyValues).toEqual({ body: { value: "Body text", isTruncated: false } });
-    expect(create.textBody).toEqual([{ partId: "body", type: "text/plain" }]);
+    // Both alternatives: a text/plain part and a text/html part, keyed by partId in bodyValues.
+    expect(create.bodyValues).toEqual({
+      text: { value: "Body text", isTruncated: false },
+      html: { value: "<div>Body text</div>", isTruncated: false },
+    });
+    expect(create.textBody).toEqual([{ partId: "text", type: "text/plain" }]);
+    expect(create.htmlBody).toEqual([{ partId: "html", type: "text/html" }]);
   });
 
   it("omits cc/bcc and the reserved threading headers when absent", () => {
