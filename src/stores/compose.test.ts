@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
+import type { EmailBodyPart } from "@/jmap/types";
 import {
   attachmentParts,
   buildDraftEmail,
   type DraftAttachment,
   type DraftEmailInput,
+  forwardAttachments,
   sentFilePatch,
 } from "./compose";
 
@@ -78,6 +80,69 @@ describe("attachmentParts", () => {
     expect(attachmentParts([att, { ...att, blobId: "B2", name: "two.txt" }])).toEqual([
       { blobId: "B1", type: "text/plain", name: "note.txt", disposition: "attachment", size: 42 },
       { blobId: "B2", type: "text/plain", name: "two.txt", disposition: "attachment", size: 42 },
+    ]);
+  });
+});
+
+describe("forwardAttachments", () => {
+  // A server-read attachment part (RFC 8621 §4.1.4): the fields a forward re-references.
+  function part(over: Partial<EmailBodyPart>): EmailBodyPart {
+    return {
+      partId: "2",
+      blobId: "B1",
+      size: 100,
+      type: "application/pdf",
+      charset: null,
+      disposition: "attachment",
+      cid: null,
+      name: "report.pdf",
+      ...over,
+    };
+  }
+
+  it("re-references each part's blobId/type/size with the file name (a copy, not a re-upload)", () => {
+    expect(
+      forwardAttachments([
+        part({ blobId: "B1", type: "application/pdf", name: "report.pdf", size: 1000 }),
+        part({ blobId: "B2", type: "text/csv", name: "data.csv", size: 50 }),
+      ]),
+    ).toEqual([
+      { blobId: "B1", type: "application/pdf", name: "report.pdf", size: 1000 },
+      { blobId: "B2", type: "text/csv", name: "data.csv", size: 50 },
+    ]);
+  });
+
+  it("skips parts without a blobId (nothing to reference)", () => {
+    expect(forwardAttachments([part({ blobId: null, name: "phantom.txt" })])).toEqual([]);
+    expect(forwardAttachments([])).toEqual([]);
+  });
+
+  it("re-attaches inline (cid'd) image parts too — they become ordinary chips", () => {
+    expect(
+      forwardAttachments([
+        part({
+          blobId: "I1",
+          type: "image/png",
+          name: "logo.png",
+          disposition: "inline",
+          cid: "x",
+        }),
+      ]),
+    ).toEqual([{ blobId: "I1", type: "image/png", name: "logo.png", size: 100 }]);
+  });
+
+  it("dedupes identical blobIds to one chip (content-addressed store returns one id)", () => {
+    expect(
+      forwardAttachments([
+        part({ blobId: "B1", name: "first.pdf" }),
+        part({ blobId: "B1", name: "again.pdf" }),
+      ]),
+    ).toEqual([{ blobId: "B1", type: "application/pdf", name: "first.pdf", size: 100 }]);
+  });
+
+  it("falls back on a missing name/type the same way the reading pane + download path do", () => {
+    expect(forwardAttachments([part({ blobId: "B9", name: null, type: "" })])).toEqual([
+      { blobId: "B9", type: "application/octet-stream", name: "attachment", size: 100 },
     ]);
   });
 });
