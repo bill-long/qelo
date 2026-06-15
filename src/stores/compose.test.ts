@@ -5,8 +5,11 @@ import {
   buildDraftEmail,
   type DraftAttachment,
   type DraftEmailInput,
-  forwardAttachments,
+  type InlineImage,
+  inlineAttachmentParts,
+  referencedInlineImages,
   sentFilePatch,
+  splitForwardParts,
 } from "./compose";
 
 const baseInput: DraftEmailInput = {
@@ -73,6 +76,61 @@ describe("buildDraftEmail", () => {
       { blobId: "B1", type: "image/png", name: "logo.png", disposition: "attachment", size: 1234 },
     ]);
   });
+
+  it("appends inline image parts (disposition inline + cid) when the body references them", () => {
+    const create = buildDraftEmail({
+      ...baseInput,
+      html: '<div>hi</div><img src="cid:c1@qelo.invalid">',
+      attachments: [{ blobId: "B1", type: "application/pdf", name: "a.pdf", size: 9 }],
+      inlineImages: [
+        { cid: "c1@qelo.invalid", blobId: "I1", type: "image/png", name: "p.png", size: 42 },
+      ],
+    });
+    // Regular attachment first, then the inline part — both in the one attachments array.
+    expect(create.attachments).toEqual([
+      { blobId: "B1", type: "application/pdf", name: "a.pdf", disposition: "attachment", size: 9 },
+      {
+        blobId: "I1",
+        type: "image/png",
+        cid: "c1@qelo.invalid",
+        disposition: "inline",
+        size: 42,
+        name: "p.png",
+      },
+    ]);
+  });
+
+  it("emits a blob attached AND inlined just once — as the inline part (no duplicate chip)", () => {
+    const create = buildDraftEmail({
+      ...baseInput,
+      html: '<div>hi</div><img src="cid:c1@qelo.invalid">',
+      attachments: [{ blobId: "SHARED", type: "image/png", name: "pic.png", size: 42 }],
+      inlineImages: [
+        { cid: "c1@qelo.invalid", blobId: "SHARED", type: "image/png", name: "pic.png", size: 42 },
+      ],
+    });
+    expect(create.attachments).toEqual([
+      {
+        blobId: "SHARED",
+        type: "image/png",
+        cid: "c1@qelo.invalid",
+        disposition: "inline",
+        size: 42,
+        name: "pic.png",
+      },
+    ]);
+  });
+
+  it("drops an inline image the body no longer references (inserted then deleted → no orphan part)", () => {
+    const create = buildDraftEmail({
+      ...baseInput,
+      html: "<div>no image here anymore</div>",
+      inlineImages: [
+        { cid: "gone@qelo.invalid", blobId: "I1", type: "image/png", name: null, size: 42 },
+      ],
+    });
+    expect(create).not.toHaveProperty("attachments");
+  });
 });
 
 describe("attachmentParts", () => {
@@ -90,66 +148,197 @@ describe("attachmentParts", () => {
   });
 });
 
-describe("forwardAttachments", () => {
-  // A server-read attachment part (RFC 8621 §4.1.4): the fields a forward re-references.
-  function part(over: Partial<EmailBodyPart>): EmailBodyPart {
-    return {
-      partId: "2",
-      blobId: "B1",
-      size: 100,
-      type: "application/pdf",
-      charset: null,
-      disposition: "attachment",
-      cid: null,
-      name: "report.pdf",
-      ...over,
-    };
-  }
+// A server-read attachment part (RFC 8621 §4.1.4): the fields a forward/reply re-references.
+function part(over: Partial<EmailBodyPart>): EmailBodyPart {
+  return {
+    partId: "2",
+    blobId: "B1",
+    size: 100,
+    type: "application/pdf",
+    charset: null,
+    disposition: "attachment",
+    cid: null,
+    name: "report.pdf",
+    ...over,
+  };
+}
 
-  it("re-references each part's blobId/type/size with the file name (a copy, not a re-upload)", () => {
+describe("referencedInlineImages", () => {
+  const img = part({ blobId: "I1", type: "image/png", name: "logo.png", cid: "c1@x", size: 42 });
+
+  it("returns cid'd image parts the body actually references", () => {
+    expect(referencedInlineImages([img], '<img src="cid:c1@x">')).toEqual([
+      { cid: "c1@x", blobId: "I1", type: "image/png", name: "logo.png", size: 42 },
+    ]);
+  });
+
+  it("skips a cid'd part the body does NOT reference (it'll become a chip instead)", () => {
+    expect(referencedInlineImages([img], "<div>no image</div>")).toEqual([]);
+  });
+
+  it("skips parts without a cid or without a blobId (nothing to reference inline)", () => {
+    expect(referencedInlineImages([part({ cid: null })], "x")).toEqual([]);
+    expect(referencedInlineImages([part({ cid: "c@x", blobId: null })], "cid:c@x")).toEqual([]);
+  });
+
+  it("dedupes by cid and carries name:null + the type fallback", () => {
     expect(
-      forwardAttachments([
+      referencedInlineImages(
+        [
+          part({ blobId: "I1", cid: "c@x", type: "", name: null }),
+          part({ blobId: "I2", cid: "c@x", type: "image/gif", name: "dup.gif" }),
+        ],
+        "cid:c@x",
+      ),
+    ).toEqual([
+      { cid: "c@x", blobId: "I1", type: "application/octet-stream", name: null, size: 100 },
+    ]);
+  });
+
+  it("does NOT false-match when one part's cid is a prefix of the referenced one", () => {
+    // A forwarded message's cids are sender-controlled: `image001` must not match `cid:image001@host`.
+    const prefix = part({ blobId: "P1", type: "image/png", cid: "image001", name: "p.png" });
+    const real = part({ blobId: "R1", type: "image/png", cid: "image001@host", name: "r.png" });
+    expect(referencedInlineImages([prefix, real], '<img src="cid:image001@host">')).toEqual([
+      { cid: "image001@host", blobId: "R1", type: "image/png", name: "r.png", size: 100 },
+    ]);
+  });
+
+  it("matches a CID: <img> case-insensitively in the scheme (the sanitizer keeps it)", () => {
+    expect(referencedInlineImages([img], '<img src="CID:c1@x">')).toEqual([
+      { cid: "c1@x", blobId: "I1", type: "image/png", name: "logo.png", size: 42 },
+    ]);
+  });
+});
+
+describe("splitForwardParts", () => {
+  it("re-references each non-inline part as a chip (a copy, not a re-upload)", () => {
+    const { attachments, inlineImages } = splitForwardParts(
+      [
         part({ blobId: "B1", type: "application/pdf", name: "report.pdf", size: 1000 }),
         part({ blobId: "B2", type: "text/csv", name: "data.csv", size: 50 }),
-      ]),
-    ).toEqual([
+      ],
+      "<div>body, no inline images</div>",
+    );
+    expect(inlineImages).toEqual([]);
+    expect(attachments).toEqual([
       { blobId: "B1", type: "application/pdf", name: "report.pdf", size: 1000 },
       { blobId: "B2", type: "text/csv", name: "data.csv", size: 50 },
     ]);
   });
 
-  it("skips parts without a blobId (nothing to reference)", () => {
-    expect(forwardAttachments([part({ blobId: null, name: "phantom.txt" })])).toEqual([]);
-    expect(forwardAttachments([])).toEqual([]);
-  });
-
-  it("re-attaches inline (cid'd) image parts too — they become ordinary chips", () => {
-    expect(
-      forwardAttachments([
+  it("splits referenced inline images out of the chips (truly inline) but keeps real attachments", () => {
+    const { attachments, inlineImages } = splitForwardParts(
+      [
         part({
           blobId: "I1",
           type: "image/png",
-          name: "logo.png",
+          name: "sig.png",
           disposition: "inline",
-          cid: "x",
+          cid: "c1@x",
         }),
-      ]),
-    ).toEqual([{ blobId: "I1", type: "image/png", name: "logo.png", size: 100 }]);
+        part({ blobId: "B1", type: "application/pdf", name: "report.pdf" }),
+      ],
+      '<blockquote><img src="cid:c1@x"></blockquote>',
+    );
+    expect(inlineImages).toEqual([
+      { cid: "c1@x", blobId: "I1", type: "image/png", name: "sig.png", size: 100 },
+    ]);
+    // The inline image is NOT also a chip; the real attachment still is.
+    expect(attachments).toEqual([
+      { blobId: "B1", type: "application/pdf", name: "report.pdf", size: 100 },
+    ]);
   });
 
-  it("dedupes identical blobIds to one chip (content-addressed store returns one id)", () => {
-    expect(
-      forwardAttachments([
+  it("treats a cid'd part the body doesn't reference as an ordinary chip (not lost)", () => {
+    const { attachments, inlineImages } = splitForwardParts(
+      [part({ blobId: "I1", type: "image/png", name: "orphan.png", cid: "nope@x" })],
+      "<div>body without that image</div>",
+    );
+    expect(inlineImages).toEqual([]);
+    expect(attachments).toEqual([
+      { blobId: "I1", type: "image/png", name: "orphan.png", size: 100 },
+    ]);
+  });
+
+  it("skips parts without a blobId and dedupes identical blobIds to one chip", () => {
+    const { attachments } = splitForwardParts(
+      [
+        part({ blobId: null, name: "phantom.txt" }),
         part({ blobId: "B1", name: "first.pdf" }),
         part({ blobId: "B1", name: "again.pdf" }),
-      ]),
-    ).toEqual([{ blobId: "B1", type: "application/pdf", name: "first.pdf", size: 100 }]);
+      ],
+      "<div>body</div>",
+    );
+    expect(attachments).toEqual([
+      { blobId: "B1", type: "application/pdf", name: "first.pdf", size: 100 },
+    ]);
   });
 
   it("falls back on a missing name/type the same way the reading pane + download path do", () => {
-    expect(forwardAttachments([part({ blobId: "B9", name: null, type: "" })])).toEqual([
+    const { attachments } = splitForwardParts(
+      [part({ blobId: "B9", name: null, type: "" })],
+      "<div>body</div>",
+    );
+    expect(attachments).toEqual([
       { blobId: "B9", type: "application/octet-stream", name: "attachment", size: 100 },
     ]);
+  });
+
+  it("does not ALSO surface a chip for bytes already kept inline (same blobId, one part)", () => {
+    // The source carries the same image bytes both inline (cid'd) and as a separate part; a
+    // content-addressed store returns one blobId. It should ride only as the inline image.
+    const { attachments, inlineImages } = splitForwardParts(
+      [
+        part({
+          blobId: "S1",
+          type: "image/png",
+          name: "pic.png",
+          cid: "c1@x",
+          disposition: "inline",
+        }),
+        part({ blobId: "S1", type: "image/png", name: "pic-again.png", disposition: "attachment" }),
+      ],
+      '<img src="cid:c1@x">',
+    );
+    expect(inlineImages).toEqual([
+      { cid: "c1@x", blobId: "S1", type: "image/png", name: "pic.png", size: 100 },
+    ]);
+    expect(attachments).toEqual([]);
+  });
+});
+
+describe("inlineAttachmentParts", () => {
+  const img: InlineImage = {
+    cid: "c1@qelo.invalid",
+    blobId: "I1",
+    type: "image/png",
+    name: "p.png",
+    size: 42,
+  };
+
+  it("shapes a referenced inline image into a disposition:inline part with its cid", () => {
+    expect(inlineAttachmentParts('<img src="cid:c1@qelo.invalid">', [img])).toEqual([
+      {
+        blobId: "I1",
+        type: "image/png",
+        cid: "c1@qelo.invalid",
+        disposition: "inline",
+        size: 42,
+        name: "p.png",
+      },
+    ]);
+  });
+
+  it("omits name when the inline image has none", () => {
+    const out = inlineAttachmentParts("cid:c@x", [
+      { cid: "c@x", blobId: "I1", type: "image/png", name: null, size: 1 },
+    ]);
+    expect(out[0]).not.toHaveProperty("name");
+  });
+
+  it("filters out an inline image the html doesn't reference (no orphan part)", () => {
+    expect(inlineAttachmentParts("<div>no image</div>", [img])).toEqual([]);
   });
 });
 

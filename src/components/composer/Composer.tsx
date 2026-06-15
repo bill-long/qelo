@@ -9,6 +9,7 @@ import {
   discardDraft,
   draft,
   identities,
+  insertInlineImage,
   removeAttachment,
   saveDraft,
   selectedIdentity,
@@ -229,6 +230,7 @@ export function Composer() {
           html={draft.bodyHtml}
           disabled={busy() !== null}
           onInput={(html) => updateDraft("bodyHtml", html)}
+          onInsertImage={insertInlineImage}
         />
 
         <div class="composer-attach">

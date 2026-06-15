@@ -48,6 +48,23 @@ export interface DraftAttachment {
   size: number;
 }
 
+/**
+ * An inline image embedded in the body: its bytes uploaded to the blob store (or, on forward/reply,
+ * the source part's existing blob re-referenced), keyed by a `cid` that an `<img src="cid:…">` in
+ * `bodyHtml` points at. On send it becomes an `attachments` part with `disposition: "inline"` + the
+ * matching `cid` (RFC 8621 §4.1.4), so the server assembles a multipart/related body and the
+ * recipient sees the image in place rather than as a download. `name` rides through when the source
+ * had one (inline images often don't).
+ */
+export interface InlineImage {
+  /** Content-ID with no angle brackets, as referenced by `cid:<cid>` in the HTML and stored on the part. */
+  cid: string;
+  blobId: string;
+  type: string;
+  size: number;
+  name: string | null;
+}
+
 export interface DraftEmailInput {
   draftsMailboxId: string;
   from: EmailAddress;
@@ -65,6 +82,8 @@ export interface DraftEmailInput {
   references?: string[] | null;
   /** Uploaded attachments to reference by blobId; omitted/empty → no `attachments` field. */
   attachments?: DraftAttachment[];
+  /** Inline images referenced by `cid:` in {@link html}; emitted as `disposition: "inline"` parts. */
+  inlineImages?: InlineImage[];
 }
 
 /**
@@ -87,32 +106,112 @@ export function attachmentParts(
 }
 
 /**
- * Map a forwarded email's parts to {@link DraftAttachment}s that re-reference the *source* message's
- * existing `blobId`s in the new draft — a server-side blob copy, NOT a re-upload (no bytes leave the
- * server). A part without a `blobId` can't be referenced, so it's skipped. Identical blobs (a
- * content-addressed store returns one `blobId` for byte-identical parts) collapse to a single chip,
- * matching {@link attachFiles}, so `removeAttachment(blobId)` can't be left dropping a duplicate. The
- * server-recorded `type`/`size` ride through; a missing `name`/`type` falls back the same way the
- * reading pane + download path do. Inline parts (`image/*` referenced by `cid` in the original HTML)
- * are re-attached too: compose v1 is plain-text, so they surface as ordinary attachment chips rather
- * than staying inline — intended (carry every binary part forward) over silently dropping them.
+ * The set of `cid` tokens an `<img src="cid:…">` in `html` actually references. Extracted by pulling
+ * each `cid:` URL out to its delimiter (quote/whitespace/`>`/`)`) rather than a bare `includes`
+ * substring scan — so a part whose cid is a *prefix* of another's (e.g. `image001` vs the body's
+ * `image001@host`) isn't a false positive. The scheme is matched case-insensitively (the outbound
+ * sanitizer keeps a `CID:` <img>), but the token is captured verbatim, matching the `cid` the part
+ * carries. Used by both the carry-forward filter and the send-time orphan filter so they share one
+ * matching rule.
  */
-export function forwardAttachments(parts: EmailBodyPart[]): DraftAttachment[] {
-  const out: DraftAttachment[] = [];
-  // A real Set (not an object) so an exotic blobId like "__proto__" is just an ordinary key.
+function cidsReferencedIn(html: string): Set<string> {
+  const refs = new Set<string>();
+  for (const match of html.matchAll(/cid:([^"'\s)>]+)/gi)) {
+    if (match[1]) refs.add(match[1]);
+  }
+  return refs;
+}
+
+/**
+ * The source parts that are inline images *actually referenced* by a `cid:` in `html` — i.e. the
+ * ones a reply/forward should keep truly inline by re-referencing their existing `blobId`s (a
+ * server-side copy, NOT a re-upload). A part qualifies only with both a `cid` and a `blobId` AND a
+ * matching `cid:<cid>` in the body; a cid'd part the body doesn't reference falls through to be a
+ * regular attachment chip instead (see {@link splitForwardParts}) rather than vanishing. Deduped by
+ * `cid` (the body references each once).
+ */
+export function referencedInlineImages(parts: EmailBodyPart[], html: string): InlineImage[] {
+  const refs = cidsReferencedIn(html);
+  const out: InlineImage[] = [];
   const seen = new Set<string>();
+  for (const part of parts) {
+    const { cid, blobId } = part;
+    if (!cid || !blobId || seen.has(cid)) continue;
+    if (!refs.has(cid)) continue;
+    seen.add(cid);
+    out.push({
+      cid,
+      blobId,
+      type: part.type || "application/octet-stream",
+      name: part.name,
+      size: part.size,
+    });
+  }
+  return out;
+}
+
+/**
+ * Partition a forwarded message's parts into the two ways a forward carries them: inline images that
+ * stay inline (re-referenced by `cid` in the rebuilt HTML body — {@link referencedInlineImages}) and
+ * everything else as ordinary attachment {@link DraftAttachment} chips. Both re-reference the
+ * *source* message's existing `blobId`s (a server-side copy, NOT a re-upload). A part without a
+ * `blobId` can't be referenced, so it's skipped from chips; the inline ones are excluded from chips
+ * so a `cid`'d image isn't shown twice. Identical blobs collapse to one chip (a content-addressed
+ * store returns one `blobId` for byte-identical parts), matching {@link attachFiles}, so
+ * `removeAttachment(blobId)` can't be left dropping a duplicate. The server-recorded `type`/`size`
+ * ride through; a missing `name`/`type` falls back the same way the reading pane + download path do.
+ */
+export function splitForwardParts(
+  parts: EmailBodyPart[],
+  html: string,
+): { attachments: DraftAttachment[]; inlineImages: InlineImage[] } {
+  const inlineImages = referencedInlineImages(parts, html);
+  const inlineCids = new Set(inlineImages.map((i) => i.cid));
+  const attachments: DraftAttachment[] = [];
+  // Seed the dedupe set with the inline images' blobIds so a byte-identical *other* part (a
+  // content-addressed store hands back one blobId) isn't ALSO shown as a chip — a blob referenced
+  // inline is emitted once, as the inline part. A real Set (not an object) so an exotic blobId like
+  // "__proto__" is just an ordinary key.
+  const seen = new Set<string>(inlineImages.map((i) => i.blobId));
   for (const part of parts) {
     const blobId = part.blobId;
     if (!blobId || seen.has(blobId)) continue;
+    // Kept inline (re-referenced by cid in the body) — don't also surface it as a chip.
+    if (part.cid && inlineCids.has(part.cid)) continue;
     seen.add(blobId);
-    out.push({
+    attachments.push({
       blobId,
       type: part.type || "application/octet-stream",
       name: part.name ?? "attachment",
       size: part.size,
     });
   }
-  return out;
+  return { attachments, inlineImages };
+}
+
+/**
+ * Shape the inline images referenced in `html` into `attachments` parts with `disposition: "inline"`
+ * + their `cid` (RFC 8621 §4.1.4). Filtered against the (sanitized) `html` so an image the user
+ * inserted then deleted — its `cid` no longer in the body — doesn't ride along as an orphan part.
+ */
+export function inlineAttachmentParts(
+  html: string,
+  inlineImages: InlineImage[],
+): Array<Record<string, unknown>> {
+  const refs = cidsReferencedIn(html);
+  return inlineImages
+    .filter((img) => refs.has(img.cid))
+    .map((img) => {
+      const part: Record<string, unknown> = {
+        blobId: img.blobId,
+        type: img.type,
+        cid: img.cid,
+        disposition: "inline",
+        size: img.size,
+      };
+      if (img.name) part.name = img.name;
+      return part;
+    });
 }
 
 /**
@@ -122,6 +221,8 @@ export function forwardAttachments(parts: EmailBodyPart[]): DraftAttachment[] {
  * alternative derived from it (RFC 8621 §4.1.4): two `bodyValues` keyed by partId, referenced by
  * `htmlBody` and `textBody` respectively, and the server assembles the MIME tree. Recipient/threading
  * fields are omitted entirely when absent rather than sent as null, keeping the wire object minimal.
+ * Inline images referenced by `cid:` in the body ride the same `attachments` array as ordinary
+ * attachments, tagged `disposition: "inline"` so the server builds a multipart/related body.
  */
 export function buildDraftEmail(input: DraftEmailInput): Record<string, unknown> {
   const create: Record<string, unknown> = {
@@ -141,8 +242,17 @@ export function buildDraftEmail(input: DraftEmailInput): Record<string, unknown>
   if (input.bcc) create.bcc = input.bcc;
   if (input.inReplyTo) create.inReplyTo = input.inReplyTo;
   if (input.references) create.references = input.references;
-  const attachments = attachmentParts(input.attachments ?? []);
-  if (attachments) create.attachments = attachments;
+  // Inline images win over a byte-identical chip: a blob referenced inline (the body shows it) is
+  // emitted once, as the inline part — never also as a disposition:attachment part with the same
+  // blobId (which would duplicate it and, lacking a cid, leave the body's <img> with a backing part
+  // that doesn't render in place). This restores the all-parts dedupe the single forward path had.
+  const inline = inlineAttachmentParts(input.html, input.inlineImages ?? []);
+  const inlineBlobIds = new Set(inline.map((p) => p.blobId as string));
+  const regular = (attachmentParts(input.attachments ?? []) ?? []).filter(
+    (p) => !inlineBlobIds.has(p.blobId as string),
+  );
+  const attachments = [...regular, ...inline];
+  if (attachments.length > 0) create.attachments = attachments;
   return create;
 }
 
@@ -175,6 +285,8 @@ export interface DraftState {
   references: string[] | null;
   /** Already-uploaded attachments (see {@link attachFiles}); ride the create as blobId refs. */
   attachments: DraftAttachment[];
+  /** Inline images embedded in {@link bodyHtml} by `cid:` (see {@link insertInlineImage}). */
+  inlineImages: InlineImage[];
 }
 
 // A fresh blank draft. A factory (not a shared const) so each reset gets its own `attachments`
@@ -190,6 +302,7 @@ function emptyDraft(): DraftState {
     inReplyTo: null,
     references: null,
     attachments: [],
+    inlineImages: [],
   };
 }
 
@@ -267,12 +380,18 @@ function selfAddresses(): string[] {
 export function startReply(email: Email, opts: { all?: boolean } = {}): void {
   const { to, cc } = replyRecipients(email, { all: opts.all ?? false, self: selfAddresses() });
   const headers = threadingHeaders(email);
+  // The quote may embed the source's inline (cid'd) images; re-reference their blobs so they stay
+  // inline in the sent reply rather than rendering broken (the outbound sanitizer keeps cid <img>,
+  // but a cid with no backing part would be a dead reference). Regular attachments are NOT carried
+  // on a reply — only the inline images the quoted body actually shows.
+  const bodyHtml = replyQuoteHtml(email);
   openWith({
     ...emptyDraft(),
     to: to.join(", "),
     cc: cc.join(", "),
     subject: replySubject(email.subject),
-    bodyHtml: replyQuoteHtml(email),
+    bodyHtml,
+    inlineImages: referencedInlineImages(email.attachments ?? [], bodyHtml),
     inReplyTo: headers.inReplyTo,
     references: headers.references,
   });
@@ -282,15 +401,19 @@ export function startReply(email: Email, opts: { all?: boolean } = {}): void {
  * Open the composer to forward `email`: recipients are left empty (the user picks them), subject
  * is "Fwd: …" (no double-prefix), and the body carries a forwarded-message header block + the
  * original text. A forward starts a NEW thread, so no threading headers are set. The source's
- * binary parts are re-attached by referencing their existing `blobId`s (a server-side copy, not a
- * re-upload — see {@link forwardAttachments}); the quoted text lives in the body as before.
+ * binary parts are re-referenced by their existing `blobId`s (a server-side copy, not a re-upload —
+ * see {@link splitForwardParts}): inline (cid'd) images the quoted body shows stay truly inline,
+ * while real attachments become chips; the quoted text lives in the body as before.
  */
 export function startForward(email: Email): void {
+  const bodyHtml = forwardQuoteHtml(email);
+  const { attachments, inlineImages } = splitForwardParts(email.attachments ?? [], bodyHtml);
   openWith({
     ...emptyDraft(),
     subject: forwardSubject(email.subject),
-    bodyHtml: forwardQuoteHtml(email),
-    attachments: forwardAttachments(email.attachments ?? []),
+    bodyHtml,
+    attachments,
+    inlineImages,
   });
 }
 
@@ -370,8 +493,11 @@ function currentDraftCreate(draftsId: string, identity: Identity): Record<string
     text: htmlToText(html),
     inReplyTo: draft.inReplyTo,
     references: draft.references,
-    // Spread to a plain array: buildDraftEmail/attachmentParts are pure (no store proxy in).
+    // Spread to plain arrays: buildDraftEmail/attachmentParts/inlineAttachmentParts are pure (no
+    // store proxy in). inlineAttachmentParts filters against `html` (the sanitized body), so an
+    // image inserted then deleted — its cid no longer present — is dropped rather than sent orphaned.
     attachments: [...draft.attachments],
+    inlineImages: [...draft.inlineImages],
   });
 }
 
@@ -431,6 +557,47 @@ export async function attachFiles(files: File[]): Promise<void> {
 /** Drop an uploaded attachment from the draft by its blobId (the chip's remove control). */
 export function removeAttachment(blobId: string): void {
   setDraft("attachments", (prev) => prev.filter((a) => a.blobId !== blobId));
+}
+
+/**
+ * Upload one inline image and register it on the draft, returning the `cid:<cid>` URL the editor
+ * inserts as an `<img src>` (or null on failure/skip). Like {@link attachFiles} it rides the existing
+ * blob transport, guards against grafting a late upload onto a superseded draft (the generation
+ * check), and toggles {@link uploading} so send/save wait it out — an in-flight inline upload must
+ * not be left out of the create. A repeat of the same bytes (a content-addressed store returns one
+ * blobId) reuses the existing cid so the body can reference one part rather than emitting two. The
+ * cid is a UUID under a `.invalid` domain (RFC 6761) — it never resolves on the network, it's only a
+ * within-message part label. Refuses while another upload is in flight (matching attach), returning
+ * null so nothing is inserted.
+ */
+export async function insertInlineImage(file: File): Promise<string | null> {
+  if (uploading()) return null;
+  const generation = draftGeneration;
+  setUploading(true);
+  setComposeError(null);
+  try {
+    const client = jmap();
+    const { blobId, type, size } = await client.upload(
+      file,
+      file.type || "application/octet-stream",
+    );
+    // The draft was discarded/reopened mid-upload — don't graft this onto a different draft.
+    if (draftGeneration !== generation) return null;
+    const existing = draft.inlineImages.find((i) => i.blobId === blobId);
+    if (existing) return `cid:${existing.cid}`;
+    const cid = `${crypto.randomUUID()}@qelo.invalid`;
+    setDraft("inlineImages", (prev) => [
+      ...prev,
+      { cid, blobId, type, name: file.name || null, size },
+    ]);
+    return `cid:${cid}`;
+  } catch (err) {
+    if (handleAuthFailure(err)) return null;
+    setComposeError(err instanceof Error ? err.message : String(err));
+    return null;
+  } finally {
+    if (draftGeneration === generation) setUploading(false);
+  }
 }
 
 /**

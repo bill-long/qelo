@@ -960,6 +960,13 @@ body,
   color: var(--accent);
 }
 
+/* Inline images (cid:) — keep a large pasted/inserted image inside the composer rather than letting
+   it blow out the layout; mirrors the reading pane's img clamp. */
+.composer-rte-input img {
+  max-width: 100%;
+  height: auto;
+}
+
 /* ---- Composer attachments -------------------------------------------------- */
 
 .composer-attach {

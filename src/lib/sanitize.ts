@@ -40,13 +40,36 @@ export function sanitizeHtml(html: string): string {
 // fresh, hook-free instance bound to the same window.
 const outboundPurify = DOMPurify(window);
 
+// Inline images (Phase 2) are referenced by `cid:` — a part the same message carries — never by a
+// remote/data URL. DOMPurify's default IS_ALLOWED_URI permits http(s) <img src> (and, because <img>
+// is a default DATA_URI tag, data: too), so allowing <img> at all would let a quoted hostile message
+// smuggle a remote tracking pixel into our NON-sandboxed compose DOM (the app CSP is null) — exactly
+// the vector the no-<img> Phase-1 stance closed. ALLOWED_URI_REGEXP can't help: it applies to every
+// URI attribute, so clamping it to cid: would also break <a href>. So police <img src> directly: drop
+// any <img> whose src isn't cid:. afterSanitizeAttributes runs after DOMPurify's own URI check, so a
+// javascript:/stripped src arrives here as empty and is likewise dropped.
+function restrictImgToCid(node: Element): void {
+  if (node.nodeName !== "IMG") {
+    // `src` is allowed for <img>, but ALLOWED_ATTR is global — so strip a `src` that landed on any
+    // OTHER element (e.g. a hostile quoted `<a href="…" src="https://tracker">`) so it can't carry a
+    // remote URL into the wire/compose DOM. No outbound-allowed non-img tag has a meaningful src.
+    if (node.hasAttribute("src")) node.removeAttribute("src");
+    return;
+  }
+  const src = node.getAttribute("src") ?? "";
+  if (!/^cid:/i.test(src.trim())) node.remove();
+}
+outboundPurify.addHook("afterSanitizeAttributes", restrictImgToCid);
+// Unlike the singleton hook above, this instance is freshly minted on each module eval, so its hooks
+// vanish with it under HMR — no dispose needed to avoid stacking.
+
 // The tags/attributes the outbound path keeps. This is intentionally an allowlist (not the broad
 // inbound `html` profile): the composer's toolbar only ever emits bold/italic/list/link/blockquote
 // markup, and quoted source HTML is re-emitted into mail we own, so a tight, predictable set keeps
 // the sent message clean and shrinks the surface a quoted hostile message could smuggle through.
-// NOTE (Phase 1): no <img>. The compose editor is NOT sandboxed (the app CSP is null), so allowing
-// remote <img> would fire tracking pixels the instant a tracked message is quoted into a reply.
-// Phase 2 (inline images) adds <img> restricted to cid: sources only.
+// NOTE (Phase 2): <img> is allowed, but `restrictImgToCid` (above) drops any whose src isn't cid:,
+// so only our own inline-image references survive — remote/data <img> never reaches the wire or the
+// non-sandboxed compose DOM.
 const OUTBOUND_ALLOWED_TAGS = [
   "p",
   "div",
@@ -65,6 +88,7 @@ const OUTBOUND_ALLOWED_TAGS = [
   "sup",
   "code",
   "a",
+  "img",
   "ul",
   "ol",
   "li",
@@ -83,7 +107,18 @@ const OUTBOUND_ALLOWED_TAGS = [
   "th",
   "caption",
 ];
-const OUTBOUND_ALLOWED_ATTR = ["href", "title", "dir", "colspan", "rowspan"];
+const OUTBOUND_ALLOWED_ATTR = [
+  "href",
+  "title",
+  "dir",
+  "colspan",
+  "rowspan",
+  // <img> — src is further restricted to cid: by restrictImgToCid; alt/width/height carry inline-image fidelity.
+  "src",
+  "alt",
+  "width",
+  "height",
+];
 
 /**
  * Sanitize HTML bound for the wire (the composed body + any quoted source HTML), to the tight
