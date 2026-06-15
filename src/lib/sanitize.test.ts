@@ -68,8 +68,42 @@ describe("sanitizeOutboundHtml", () => {
     expect(sanitizeOutboundHtml('<b onclick="alert(1)">x</b>')).not.toContain("onclick");
   });
 
-  it("drops images entirely (Phase 1: the non-sandboxed editor must not load remote content)", () => {
-    expect(sanitizeOutboundHtml('<img src="https://tracker.test/p.gif">')).not.toContain("<img");
+  it("keeps a cid: <img> (an inline image referencing a part this message carries)", () => {
+    const out = sanitizeOutboundHtml('<p>see</p><img src="cid:abc@qelo.invalid" alt="logo">');
+    expect(out).toContain("<img");
+    expect(out).toContain('src="cid:abc@qelo.invalid"');
+  });
+
+  it("strips a remote <img> while keeping a cid: one (the tracking-pixel vector stays shut)", () => {
+    const out = sanitizeOutboundHtml(
+      '<img src="https://tracker.test/p.gif"><img src="cid:keep@qelo.invalid">',
+    );
+    expect(out).not.toContain("tracker.test");
+    expect(out).not.toContain("https://");
+    expect(out).toContain('src="cid:keep@qelo.invalid"');
+  });
+
+  it("strips a data: <img> too (cid: is the ONLY allowed image source)", () => {
+    const data = '<img src="data:image/png;base64,iVBORw0KGgo=">';
+    expect(sanitizeOutboundHtml(data)).not.toContain("<img");
+    expect(sanitizeOutboundHtml(data)).not.toContain("data:");
+  });
+
+  it("drops an <img> whose src DOMPurify already stripped (e.g. javascript:), not just leaves it bare", () => {
+    expect(sanitizeOutboundHtml('<img src="javascript:alert(1)">')).not.toContain("<img");
+  });
+
+  it("drops an empty-cid <img> (cid: with no token would be a dead reference)", () => {
+    expect(sanitizeOutboundHtml('<img src="cid:">')).not.toContain("<img");
+  });
+
+  it("strips a remote src that landed on a NON-img tag (src is allowed globally, cid-gated only on img)", () => {
+    const out = sanitizeOutboundHtml(
+      '<a href="https://x.test" src="https://tracker.test/p.gif">x</a>',
+    );
+    expect(out).toContain('href="https://x.test"');
+    expect(out).not.toContain("tracker.test");
+    expect(out).not.toContain("src=");
   });
 
   it("drops disallowed structural tags but keeps their text", () => {
@@ -81,11 +115,20 @@ describe("sanitizeOutboundHtml", () => {
 
 describe("sanitizeComposeFragment", () => {
   it("returns a DocumentFragment cleaned to the outbound policy (for Squire's paste boundary)", () => {
-    const frag = sanitizeComposeFragment('<p>ok</p><script>alert(1)</script><img src="x">');
+    const frag = sanitizeComposeFragment(
+      '<p>ok</p><script>alert(1)</script><img src="https://tracker.test/x.gif">',
+    );
     expect(frag).toBeInstanceOf(DocumentFragment);
     expect(frag.querySelector("script")).toBeNull();
+    // The remote <img> (a quoted tracking pixel) is dropped at the editor boundary, before it can
+    // reach the non-sandboxed compose DOM.
     expect(frag.querySelector("img")).toBeNull();
     expect(frag.querySelector("p")?.textContent).toBe("ok");
+  });
+
+  it("keeps a cid: <img> at the editor boundary (so a quoted/inserted inline image survives)", () => {
+    const frag = sanitizeComposeFragment('<img src="cid:keep@qelo.invalid">');
+    expect(frag.querySelector("img")?.getAttribute("src")).toBe("cid:keep@qelo.invalid");
   });
 });
 

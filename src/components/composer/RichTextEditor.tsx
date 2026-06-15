@@ -17,13 +17,23 @@ export function RichTextEditor(props: {
   ariaLabel: string;
   /** Gates the toolbar + editing while a submit is in flight. */
   disabled?: boolean;
+  /**
+   * Upload an inline image and resolve to the `cid:<cid>` URL to embed (or null on failure/skip).
+   * The store owns the JMAP upload + cid bookkeeping (components don't call the client directly);
+   * the editor just inserts the `<img>`. Omitted → the insert-image control + paste/drop are inert.
+   */
+  onInsertImage?: (file: File) => Promise<string | null>;
 }) {
   let editorEl: HTMLDivElement | undefined;
   let linkInput: HTMLInputElement | undefined;
+  let imageInput: HTMLInputElement | undefined;
   let squire: Squire | undefined;
   // The selection captured when the link form opens — focus moves to the URL input, so we restore
   // this range before applying the link rather than letting Squire link an empty cursor.
   let savedLinkRange: Range | undefined;
+  // Likewise for the insert-image button: the file picker steals focus, so capture the caret here
+  // and restore it before inserting the uploaded image on return.
+  let savedImageRange: Range | undefined;
 
   const [bold, setBold] = createSignal(false);
   const [italic, setItalic] = createSignal(false);
@@ -57,10 +67,27 @@ export function RichTextEditor(props: {
     // pathChange fires as the cursor moves across formatting boundaries; keep the toolbar in sync.
     editor.addEventListener("pathChange", refreshState);
     editor.addEventListener("select", refreshState);
+    // Squire fires `pasteImage` when the clipboard holds an image (e.g. a screenshot) and no useful
+    // text/html alongside; route those bytes through our upload→cid path instead of Squire's default
+    // (which would inline a data: URL the outbound sanitizer strips). An image copied WITH HTML is a
+    // known gap — Squire inserts the HTML and the remote <img> is dropped; the toolbar button + drag
+    // cover that case.
+    editor.addEventListener("pasteImage", onPasteImage);
+    // File drops don't carry text/plain|text/html, so Squire's own drop handler ignores them (no
+    // preventDefault) and the browser would navigate away. Claim image-file drag/drop ourselves.
+    editorEl.addEventListener("dragover", onDragOver);
+    editorEl.addEventListener("drop", onDrop);
     refreshState();
   });
 
-  onCleanup(() => squire?.destroy());
+  onCleanup(() => {
+    editorEl?.removeEventListener("dragover", onDragOver);
+    editorEl?.removeEventListener("drop", onDrop);
+    squire?.destroy();
+    // Null it so an inline-image upload that resolves after unmount (its continuation closes over
+    // `squire`) bails instead of calling methods on the destroyed instance.
+    squire = undefined;
+  });
 
   // Make `disabled` real: toggle the contenteditable off during an in-flight submit so the body
   // can't be edited after currentDraftCreate has already snapshotted it (the toolbar is gated
@@ -148,6 +175,80 @@ export function RichTextEditor(props: {
     event.preventDefault();
   }
 
+  // --- Inline images -------------------------------------------------------
+
+  /** The image files from a clipboard/drop list (ignore non-images — those route to normal paste). */
+  function imageFilesFrom(list: FileList | null | undefined): File[] {
+    return Array.from(list ?? []).filter((file) => file.type.startsWith("image/"));
+  }
+
+  /**
+   * Upload each image (via the store's onInsertImage) and insert the returned `<img src="cid:…">` at
+   * the caret, sequentially. The selection is restored before each insert (and re-captured after) so
+   * a focus-stealing picker — or an await that collapsed the selection — still lands the image where
+   * the user was. A failed/skipped upload (null) just contributes no image.
+   */
+  async function insertImageFiles(files: File[], at?: Range): Promise<void> {
+    if (!squire || props.disabled || !props.onInsertImage || files.length === 0) return;
+    let range = at;
+    for (const file of files) {
+      const src = await props.onInsertImage(file);
+      const s = squire;
+      if (!src || !s) continue;
+      if (range) s.setSelection(range);
+      s.insertImage(src, {});
+      range = s.getSelection();
+    }
+    const s = squire;
+    if (!s) return;
+    s.focus();
+    props.onInput(s.getHTML());
+    refreshState();
+  }
+
+  function onPasteImage(event: Event): void {
+    if (props.disabled) return;
+    const clipboardData = (event as CustomEvent<{ clipboardData: DataTransfer }>).detail
+      ?.clipboardData;
+    const files = imageFilesFrom(clipboardData?.files);
+    if (files.length > 0) void insertImageFiles(files, squire?.getSelection());
+  }
+
+  // Accept the drag only when it carries files, so a within-editor text drag still uses Squire's own
+  // drop handling; preventing default here is what lets the `drop` event fire for files.
+  function onDragOver(event: DragEvent): void {
+    if (props.disabled) return;
+    if (event.dataTransfer?.types.includes("Files")) event.preventDefault();
+  }
+
+  function onDrop(event: DragEvent): void {
+    if (props.disabled) return;
+    // A text/within-editor drag → leave it to Squire's own drop handling.
+    if (!event.dataTransfer?.types.includes("Files")) return;
+    // onDragOver already claimed ALL file drags, so we must preventDefault every file drop here —
+    // otherwise dropping a non-image file (e.g. a PDF) falls through to the browser's default
+    // "open file / navigate away", which would lose the draft. Stops Squire's capture-phase handler
+    // too (it ignores file drops anyway). Only image files are inserted; other files are a no-op.
+    event.preventDefault();
+    event.stopPropagation();
+    const files = imageFilesFrom(event.dataTransfer.files);
+    if (files.length > 0) void insertImageFiles(files, squire?.getSelection());
+  }
+
+  function openImagePicker(): void {
+    if (props.disabled || !squire) return;
+    savedImageRange = squire.getSelection();
+    imageInput?.click();
+  }
+
+  function onPickImage(event: { currentTarget: HTMLInputElement }): void {
+    const input = event.currentTarget;
+    const files = imageFilesFrom(input.files);
+    input.value = ""; // let re-picking the same file fire change again
+    if (files.length > 0) void insertImageFiles(files, savedImageRange);
+    savedImageRange = undefined;
+  }
+
   return (
     <div class="composer-rte">
       <div class="composer-toolbar" role="toolbar" aria-label="Text formatting">
@@ -219,6 +320,29 @@ export function RichTextEditor(props: {
         >
           <span aria-hidden="true">🔗</span>
         </button>
+        <Show when={props.onInsertImage}>
+          <button
+            type="button"
+            class="composer-tool"
+            aria-label="Insert image"
+            disabled={props.disabled}
+            onMouseDown={keepSelection}
+            onClick={openImagePicker}
+          >
+            <span aria-hidden="true">🖼️</span>
+          </button>
+          {/* Hidden picker the insert-image button drives. accept="image/*" filters at the OS dialog;
+              insertImageFiles re-filters defensively. */}
+          <input
+            ref={imageInput}
+            class="composer-image-input"
+            type="file"
+            accept="image/*"
+            multiple
+            hidden
+            onChange={onPickImage}
+          />
+        </Show>
       </div>
 
       <Show when={linkOpen()}>

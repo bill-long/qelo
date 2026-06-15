@@ -21,6 +21,7 @@ import {
   composeError,
   draft,
   identities,
+  insertInlineImage,
   loadIdentities,
   resetCompose,
   saveDraft,
@@ -80,6 +81,12 @@ describe("compose", () => {
       if (subject) await destroyBySubject(subject).catch(() => {});
     }
   });
+
+  // A real 1×1 PNG, so the inline-image parts carry genuine image bytes through the blob round trip.
+  const PNG_1x1 = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQAY3Y2wAAAAAElFTkSuQmCC",
+    "base64",
+  );
 
   function freshSubject(label: string): string {
     const subject = `itest-compose-${label}-${Date.now()}`;
@@ -370,5 +377,133 @@ describe("compose", () => {
     expect(part?.size).toBe(byteSize);
     const blob = await testClient().download(part?.blobId as Id, part?.type as string, "doc.txt");
     expect(await blob.text()).toBe(content);
+  });
+
+  it("insertInlineImage → send emits the image as a disposition:inline part referenced by cid", async () => {
+    await loadMailboxes();
+    await loadIdentities();
+    const sentId = mailboxIdByRole("sent") as Id;
+    expect(sentId, "Sent mailbox").toBeDefined();
+
+    const subject = freshSubject("inline");
+    updateDraft("to", ACCOUNT_EMAIL); // to ourselves so the Sent copy is reachable
+    updateDraft("subject", subject);
+
+    // Upload through the real store action; it returns the cid: URL the editor would embed.
+    const cidUrl = await insertInlineImage(new File([PNG_1x1], "pic.png", { type: "image/png" }));
+    expect(cidUrl).toMatch(/^cid:.+@qelo\.invalid$/);
+    expect(draft.inlineImages).toHaveLength(1);
+    updateDraft("bodyHtml", `<div>look:</div><img src="${cidUrl}">`);
+
+    expect(await send()).toBe(true);
+
+    const sentIds = await waitForSubject(sentId, subject);
+    const sent = await serverEmailDetail(sentIds[0] as Id);
+    // The image rode as an attachments part tagged disposition:inline with a cid (multipart/related),
+    // not a plain attachment — and its bytes round-trip through the blob store unchanged.
+    const inlinePart = (sent.attachments ?? []).find((p) => p.disposition === "inline");
+    expect(inlinePart, "the sent message carries an inline image part").toBeDefined();
+    expect(inlinePart?.type).toBe("image/png");
+    expect(inlinePart?.cid).toBeTruthy();
+    const blob = await testClient().download(
+      inlinePart?.blobId as Id,
+      inlinePart?.type as string,
+      "pic.png",
+    );
+    expect(Buffer.from(await blob.arrayBuffer()).equals(PNG_1x1)).toBe(true);
+    // The HTML body still references the image by cid (so the recipient renders it in place).
+    const htmlPart = sent.htmlBody?.[0];
+    const htmlValue = htmlPart?.partId ? sent.bodyValues?.[htmlPart.partId]?.value : undefined;
+    expect(htmlValue).toContain("<img");
+    expect(htmlValue).toContain(`cid:${inlinePart?.cid}`);
+  });
+
+  it("startForward keeps the source's inline image inline (cid) while a real attachment becomes a chip", async () => {
+    await loadMailboxes();
+    await loadIdentities();
+    const inboxId = mailboxIdByRole("inbox") as Id;
+    const sentId = mailboxIdByRole("sent") as Id;
+    expect(inboxId, "Inbox mailbox").toBeDefined();
+    expect(sentId, "Sent mailbox").toBeDefined();
+
+    // Seed a source that embeds one inline image (cid'd) AND carries one ordinary attachment.
+    const imgUpload = await testClient().upload(
+      new File([PNG_1x1], "sig.png", { type: "image/png" }),
+      "image/png",
+    );
+    const docContent = "a real attachment, not inline\n";
+    const docUpload = await testClient().upload(
+      new File([docContent], "doc.txt", { type: "text/plain" }),
+      "text/plain",
+    );
+    const subject = freshSubject("fwd-inline");
+    const cid = "src-inline@qelo.invalid";
+    const client = testClient();
+    const createResp = await client.request(
+      [
+        emailSet(client.accountId, "src-set", {
+          create: {
+            src: {
+              mailboxIds: { [inboxId]: true },
+              from: [{ name: "Test User", email: ACCOUNT_EMAIL }],
+              to: [{ name: "Test User", email: ACCOUNT_EMAIL }],
+              subject,
+              bodyValues: {
+                h: { value: `<div>body</div><img src="cid:${cid}">`, isTruncated: false },
+              },
+              htmlBody: [{ partId: "h", type: "text/html" }],
+              attachments: [
+                {
+                  blobId: imgUpload.blobId,
+                  type: "image/png",
+                  name: "sig.png",
+                  disposition: "inline",
+                  cid,
+                  size: imgUpload.size,
+                },
+                {
+                  blobId: docUpload.blobId,
+                  type: "text/plain",
+                  name: "doc.txt",
+                  disposition: "attachment",
+                  size: docUpload.size,
+                },
+              ],
+            },
+          },
+        }),
+      ],
+      [CAP_CORE, CAP_MAIL],
+    );
+    const created = (methodResult(createResp, "src-set").created ?? {}) as Record<
+      string,
+      { id: Id }
+    >;
+    const srcId = created.src?.id as Id;
+    expect(srcId, "the source message was created").toBeDefined();
+
+    // Read it back as the reading pane would (with body values + attachments), then forward it.
+    const source = await serverEmailDetail(srcId);
+    startForward(source);
+
+    // The split: the inline image is re-referenced inline (not a chip); the real attachment IS a chip.
+    expect(draft.inlineImages).toHaveLength(1);
+    expect(draft.inlineImages[0]?.type).toBe("image/png");
+    expect(draft.attachments).toHaveLength(1);
+    expect(draft.attachments[0]?.name).toBe("doc.txt");
+
+    updateDraft("to", ACCOUNT_EMAIL);
+    expect(await send()).toBe(true);
+
+    // The Sent "Fwd: …" copy carries BOTH: an inline image part and a separate attachment part.
+    const sentIds = await waitForSubject(sentId, subject);
+    const sent = await serverEmailDetail(sentIds[0] as Id);
+    expect(sent.subject).toBe(`Fwd: ${subject}`);
+    const inlinePart = (sent.attachments ?? []).find((p) => p.disposition === "inline");
+    const filePart = (sent.attachments ?? []).find((p) => p.disposition !== "inline");
+    expect(inlinePart?.type).toBe("image/png");
+    expect(filePart?.name).toBe("doc.txt");
+    const imgBlob = await testClient().download(inlinePart?.blobId as Id, "image/png", "sig.png");
+    expect(Buffer.from(await imgBlob.arrayBuffer()).equals(PNG_1x1)).toBe(true);
   });
 });
