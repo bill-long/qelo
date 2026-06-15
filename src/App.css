@@ -806,6 +806,63 @@ body,
   border-bottom-color: var(--accent);
 }
 
+/* ---- Recipient autocomplete (combobox) ------------------------------------ */
+
+/* Positioned wrapper so the suggestion listbox can float below the input; flex so the input fills
+   the field's value column exactly as a bare .composer-input did. */
+.composer-combobox {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+
+.composer-suggestions {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  margin: 0.15rem 0 0;
+  padding: 0.2rem;
+  list-style: none;
+  max-height: 14rem;
+  overflow-y: auto;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--ink) 22%, transparent);
+}
+
+.composer-suggestion {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.4rem 0.55rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+/* Active/hover share one wash — the highlight follows aria-activedescendant (keyboard) or the
+   pointer, so both surfaces read the same. */
+.composer-suggestion:hover,
+.composer-suggestion.is-active {
+  background: var(--hover);
+}
+
+.composer-suggestion-name {
+  flex: none;
+  color: var(--ink);
+}
+
+.composer-suggestion-email {
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .composer-from {
   flex: 1;
   padding: 0.45rem 0;

@@ -25,6 +25,7 @@ import {
 import { sanitizeOutboundHtml } from "@/lib/sanitize";
 import { handleAuthFailure, jmap } from "./account";
 import { mailboxIdByRole } from "./mailboxes";
+import { loadRecipientSuggestions } from "./recipients";
 import { notify } from "./toasts";
 
 // Compose v1 (D3): plain-text body only, new message only. The headline JMAP payoff lives in
@@ -371,6 +372,9 @@ function openWith(initial: DraftState): void {
   setComposeError(null);
   setComposeOpen(true);
   if (identities().length === 0) void loadIdentities();
+  // Mine past recipients for autocomplete (once per session; self-guarded + fire-and-forget), so
+  // suggestions are ready by the time the user types a recipient.
+  void loadRecipientSuggestions();
 }
 
 /** Open the composer on a fresh blank message, loading identities on first use. */
