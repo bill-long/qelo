@@ -57,7 +57,7 @@ fn safe_file_name(raw: &str) -> String {
     cap_len(name)
 }
 
-/// Cap a filename at {@link MAX_NAME_LEN} characters, preserving a short trailing extension so the
+/// Cap a filename at [`MAX_NAME_LEN`] characters, preserving a short trailing extension so the
 /// truncated default keeps its file-type association (a name with a 300-char base before `.pdf`
 /// shouldn't lose the `.pdf`). Truncates by `char`, not byte, to stay on a UTF-8 boundary.
 fn cap_len(name: &str) -> String {
@@ -80,7 +80,7 @@ fn cap_len(name: &str) -> String {
 
 /// A blocking HTTP client for the download, trusting the dev server's self-signed cert for loopback
 /// URLs only (mirrors `auth::http_client`/`async_http_client`). Connect timeout only — see
-/// {@link CONNECT_TIMEOUT}.
+/// [`CONNECT_TIMEOUT`].
 fn download_client(url: &str) -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
         .danger_accept_invalid_certs(is_loopback_url(url))

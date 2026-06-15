@@ -7,8 +7,9 @@
 //   - Desktop: the Rust `save_attachment` command opens a native Save dialog, fetches the blob with
 //     the keychain bearer token, and streams it straight to the chosen path — so the user picks the
 //     destination, there's no silent rename-on-conflict, and we get the real final path for a
-//     "Saved to …" toast. The frontend only builds the (authenticated) download URL; the bytes
-//     never pass through JS. See src-tauri/src/download.rs.
+//     "Saved to …" toast. The frontend only builds the download URL (the bearer header is attached
+//     Rust-side, not embedded in the URL); the bytes never pass through JS. See
+//     src-tauri/src/download.rs.
 //   - Browser/PWA: no native dialog, so fetch the bytes through the authenticated client
 //     (JmapClient.download → Blob) and save via a transient object-URL <a download> anchor. The
 //     browser owns the download location and UI here.
