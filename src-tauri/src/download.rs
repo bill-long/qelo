@@ -81,10 +81,16 @@ fn cap_len(name: &str) -> String {
 /// A blocking HTTP client for the download, trusting the dev server's self-signed cert for loopback
 /// URLs only (mirrors `auth::http_client`/`async_http_client`). Connect timeout only — see
 /// [`CONNECT_TIMEOUT`].
+///
+/// Redirects are DISABLED: `ensure_blob_origin` only validates the initial URL, so following a
+/// redirect (including an open redirect on an allowed host) could carry the bearer token off the
+/// pinned origin. JMAP `downloadUrl`s are direct blob endpoints with no legitimate redirect, so a
+/// 3xx is treated as a failure (see `send_download`) rather than followed.
 fn download_client(url: &str) -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
         .danger_accept_invalid_certs(is_loopback_url(url))
         .connect_timeout(CONNECT_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| e.to_string())
 }
@@ -104,8 +110,16 @@ fn send_download(client: &reqwest::blocking::Client, url: &str, token: &str) -> 
         Ok(resp) => resp,
         Err(e) => return Attempt::Error(format!("download request failed: {e}")),
     };
-    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
         return Attempt::Unauthorized;
+    }
+    // Redirects are disabled (see `download_client`), so a 3xx isn't followed — refuse it rather
+    // than write the redirect response body, since the target may be off the pinned origin.
+    if status.is_redirection() {
+        return Attempt::Error(format!(
+            "download redirected ({status}); refusing to follow off the allowed origin"
+        ));
     }
     match resp.error_for_status() {
         Ok(resp) => Attempt::Ok(resp),
