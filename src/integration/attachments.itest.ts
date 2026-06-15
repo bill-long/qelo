@@ -28,10 +28,19 @@ import { loadMailboxes, mailboxIdByRole } from "@/stores/mailboxes";
 import { connectTestClient, disconnectTestClient, resetStores, testClient } from "./harness";
 
 // The jsdom env (above) swaps in jsdom's File/Blob, but the real blob upload goes through undici
-// fetch, which needs a WHATWG Blob exposing .stream() — jsdom's lacks it. Restore node's File/Blob;
-// the send-path DOM work only needs document/window, which jsdom still provides.
-globalThis.File = NodeFile as unknown as typeof globalThis.File;
-globalThis.Blob = NodeBlob as unknown as typeof globalThis.Blob;
+// fetch, which needs a WHATWG Blob exposing .stream() — jsdom's lacks it. Swap node's File/Blob in
+// for the duration of this suite (the send-path DOM work only needs document/window, which jsdom
+// still provides), and restore them afterward so the mutation can't leak to other files in the worker.
+const jsdomFile = globalThis.File;
+const jsdomBlob = globalThis.Blob;
+beforeAll(() => {
+  globalThis.File = NodeFile as unknown as typeof globalThis.File;
+  globalThis.Blob = NodeBlob as unknown as typeof globalThis.Blob;
+});
+afterAll(() => {
+  globalThis.File = jsdomFile;
+  globalThis.Blob = jsdomBlob;
+});
 
 // PR 5 — attachments. Drives the real compose store + blob transport against a live Stalwart
 // (CLAUDE.md forbids mocking): upload a small file via client.upload (through attachFiles), attach

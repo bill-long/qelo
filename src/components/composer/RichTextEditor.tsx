@@ -107,7 +107,9 @@ export function RichTextEditor(props: {
     try {
       const url = new URL(candidate);
       if (url.protocol === "http:" || url.protocol === "https:" || url.protocol === "mailto:") {
-        return candidate;
+        // Return the parsed form, not the raw input, so the href we insert is exactly the one we
+        // validated (spaces/control chars escaped, scheme normalized).
+        return url.toString();
       }
     } catch {
       // fall through
