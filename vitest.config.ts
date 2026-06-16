@@ -4,7 +4,9 @@ import { defineConfig } from "vitest/config";
 
 // Separate from vite.config.ts so the Tauri dev-server options don't apply to tests.
 export default defineConfig({
-  plugins: [solid()],
+  // `hot: false` disables solid-refresh (HMR) — irrelevant in a test run, and its virtual
+  // `@solid-refresh` module otherwise fails to resolve under vitest (so .tsx component tests load).
+  plugins: [solid({ hot: false })],
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),

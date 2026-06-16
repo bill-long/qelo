@@ -8,17 +8,19 @@ import { unwrap } from "solid-js/store";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { CAP_CONTACTS, CAP_CORE, methodResult } from "@/jmap/methods";
 import type { ContactCard, Id } from "@/jmap/types";
-import { cardToEditable } from "@/lib/contacts";
+import { cardToEditable, emptyEditableContact } from "@/lib/contacts";
 import {
   addressBooks,
   contactCards,
   contactsAccountId,
   contactsReady,
+  createContact,
   loadContacts,
   resetContacts,
   saveContact,
   syncContacts,
 } from "@/stores/contacts";
+import { selectedContactId, setSelectedContactId } from "@/stores/ui";
 import { connectTestClient, disconnectTestClient, resetStores, testClient } from "./harness";
 
 const CONTACTS_USING = [CAP_CORE, CAP_CONTACTS];
@@ -270,6 +272,45 @@ describe("contacts (live Stalwart)", () => {
     expect(Object.values(contactCards[id]?.emails ?? {})[0]?.address).toBe(
       `concurrent-${tag}@auto.test`,
     );
+  });
+
+  it("createContact creates a card, lands it in the store under the server id, and selects it", async () => {
+    const bookId = await defaultBookId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    // Load first so contactsAccountId/the store are warm (createContact resolves the account itself,
+    // but loading mirrors the real flow where the Contacts view is open when "New contact" is used).
+    resetContacts();
+    await loadContacts();
+    setSelectedContactId(null);
+
+    const editable = emptyEditableContact();
+    editable.nameFull = `Created ${tag}`;
+    editable.emails = [{ key: null, value: `created-${tag}@auto.test` }];
+    editable.phones = [{ key: null, value: "+1-555-0142" }];
+
+    const result = await createContact(editable, { [bookId]: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("create failed"); // narrow for the id below
+    createdIds.push(result.id);
+
+    // The new card is in the store under its server id, selected, with the form's fields persisted.
+    const created = contactCards[result.id];
+    expect(created?.name?.full).toBe(`Created ${tag}`);
+    expect(Object.values(created?.emails ?? {})[0]?.address).toBe(`created-${tag}@auto.test`);
+    expect(Object.values(created?.phones ?? {})[0]?.number).toBe("+1-555-0142");
+    expect(created?.addressBookIds?.[bookId]).toBe(true);
+    expect(selectedContactId()).toBe(result.id);
+
+    // Persisted: a fresh reload from the server shows the created contact.
+    await loadUntil(result.id);
+    expect(contactCards[result.id]?.name?.full).toBe(`Created ${tag}`);
+  });
+
+  it("createContact refuses an empty working copy without a round trip", async () => {
+    // No name, no fields — nothing savable survives the rebuild, so it's rejected as a no-op (the
+    // empty check short-circuits before any account resolution or request).
+    const result = await createContact(emptyEditableContact(), { b: true });
+    expect(result).toEqual({ ok: false, reason: "empty" });
   });
 
   it("saveContact is a clean no-op when nothing changed", async () => {
