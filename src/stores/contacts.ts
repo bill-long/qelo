@@ -1,5 +1,5 @@
 import { createSignal } from "solid-js";
-import { createStore, produce, reconcile, unwrap } from "solid-js/store";
+import { createStore, produce, reconcile } from "solid-js/store";
 import { drainChanges } from "@/jmap/changes";
 import type { JmapClient } from "@/jmap/client";
 import {
@@ -226,32 +226,37 @@ export type SaveContactResult =
     };
 
 /**
- * Save edits to an existing contact: build the minimal whole-property patch from the form's working
- * copy, optimistically apply the rebuilt card to the store, issue ONE `ContactCard/set update`, then
- * reconcile to server truth. ContactCard content is mutable (unlike Email), so this is an in-place
- * patch, not a create+destroy. Resolves with a {@link SaveContactResult} (never rejects) so the form
- * can surface a failure inline.
+ * Save edits to an existing contact. `baseline` is the card the form was seeded from (its open-time
+ * snapshot); the patch is the diff between THAT and the edits, so it carries only the properties the
+ * user actually changed. Issued as ONE `ContactCard/set update` — a JSON-pointer patch that touches
+ * only those properties, so a concurrent server-side change to a *different* property merges cleanly
+ * instead of being clobbered (last-writer-wins only within the properties the user edited). The
+ * rebuilt card is applied optimistically, then reconciled to server truth. ContactCard content is
+ * mutable (unlike Email), so this is an in-place patch, not a create+destroy. Resolves with a
+ * {@link SaveContactResult} (never rejects) so the form can surface a failure inline.
  *
  * Discipline mirrors the email mutations ([[jmap-set-quirks]] / [[qelo-review-checklist]]):
  * `requireNewState:false` (an all-failed /set omits newState on Stalwart; this path never persists
  * that cursor — sync owns it via ContactCard/changes); on a per-item refusal OR a transport error we
  * refetch the card so the view shows server truth rather than reverting to a possibly-stale local
- * snapshot, falling back to the pre-optimistic snapshot only if that refetch also fails. An empty
- * patch (nothing actually changed) is a no-op success.
+ * snapshot, falling back to the baseline only if that refetch also fails. An empty patch (nothing
+ * actually changed) is a no-op success.
  */
-export async function saveContact(id: string, edits: EditableContact): Promise<SaveContactResult> {
-  const card = contactCards[id];
-  if (!card) return { ok: false, reason: "missing" };
+export async function saveContact(
+  id: string,
+  baseline: ContactCard,
+  edits: EditableContact,
+): Promise<SaveContactResult> {
+  if (!contactCards[id]) return { ok: false, reason: "missing" };
   const accountId = contactsAccountId();
   if (!accountId) return { ok: false, reason: "no-account" };
 
-  const patch = editableToPatch(card, edits);
+  // Diff and rebuild against the form's open-time baseline (a plain card), not the live store proxy:
+  // the patch is then exactly the user's delta, and the baseline doubles as the last-resort revert.
+  const patch = editableToPatch(baseline, edits);
   if (Object.keys(patch).length === 0) return { ok: true }; // nothing changed
 
-  // Snapshot the pre-optimistic card (a plain clone, not the live store proxy) for the last-resort
-  // revert, and compute the optimistic card BEFORE mutating the store (both read `card`).
-  const snapshot = structuredClone(unwrap(card)) as ContactCard;
-  const optimistic = editableToCard(card, edits);
+  const optimistic = editableToCard(baseline, edits);
   setContactCards(
     produce((s) => {
       s[id] = optimistic;
@@ -268,9 +273,9 @@ export async function saveContact(id: string, edits: EditableContact): Promise<S
     refused = setResult<ContactCard>(responses, "set", { requireNewState: false }).notUpdated[id];
   } catch (err) {
     if (handleAuthFailure(err)) return { ok: false, reason: "auth" };
-    // The /set never applied — revert the optimistic write to server truth (or the snapshot if the
+    // The /set never applied — revert the optimistic write to server truth (or the baseline if the
     // refetch also fails), then report the error.
-    await revertOptimistic(accountId, id, snapshot);
+    await revertOptimistic(accountId, id, baseline);
     console.error("ContactCard/set update failed:", err);
     return { ok: false, reason: "error" };
   }
@@ -281,11 +286,11 @@ export async function saveContact(id: string, edits: EditableContact): Promise<S
     await reconcileCard(accountId, id);
   } catch (err) {
     // A refetch blip: keep the optimistic write on success (it ≈ server truth), but on a refusal we
-    // couldn't fetch truth to revert to — fall back to the pre-optimistic snapshot.
+    // couldn't fetch truth to revert to — fall back to the baseline.
     if (!handleAuthFailure(err) && refused) {
       setContactCards(
         produce((s) => {
-          s[id] = snapshot;
+          s[id] = baseline;
         }),
       );
     }
@@ -294,18 +299,18 @@ export async function saveContact(id: string, edits: EditableContact): Promise<S
 }
 
 // Best-effort revert of an optimistic write after the /set itself failed: refetch server truth, or
-// restore the pre-optimistic snapshot if even the refetch fails (so the view isn't stuck on a guess).
+// restore the form's open-time baseline if even the refetch fails (so the view isn't stuck on a guess).
 async function revertOptimistic(
   accountId: string,
   id: string,
-  snapshot: ContactCard,
+  baseline: ContactCard,
 ): Promise<void> {
   try {
     await reconcileCard(accountId, id);
   } catch {
     setContactCards(
       produce((s) => {
-        s[id] = snapshot;
+        s[id] = baseline;
       }),
     );
   }

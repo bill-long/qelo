@@ -253,10 +253,17 @@ function freshKey(used: Set<string>): string {
   return key;
 }
 
-// Rebuild a single-value map from its editable entries: drop blank entries, patch each surviving
-// entry IN PLACE onto its original sub-object (carrying `pref`/`contexts`/etc. through) under its
-// original key, and assign new entries a fresh key. Returns undefined when nothing survives, which
-// the callers turn into the property's removal.
+// Rebuild a single-value map from its editable entries, patching each entry IN PLACE onto its
+// original sub-object (carrying through fields the form doesn't edit — `pref`/`contexts`, a postal
+// address's `components`, an org's `units`) under its original key; new entries get a fresh key.
+//
+// A blank value means "this leaf is empty", NOT "delete the entry" (removal is the ✕ button, which
+// drops the row from `entries`). So a blanked leaf on an EXISTING entry clears just that leaf and
+// keeps the rest — this is what preserves a component-only address whose editable `full` is blank.
+// The entry is dropped only when nothing survives: a NEW entry with a blank value (never had any
+// content), or an existing entry whose sub-object is empty once the leaf is removed (e.g. an email
+// whose sole field was the now-cleared address). Returns undefined when no entry survives, which the
+// callers turn into the whole property's removal.
 function rebuildSingle<T extends object>(
   entries: ValueEntry[],
   original: Record<string, T> | undefined,
@@ -266,9 +273,16 @@ function rebuildSingle<T extends object>(
   const used = new Set(entries.map((e) => e.key).filter((k): k is string => k !== null));
   for (const entry of entries) {
     const value = entry.value.trim();
-    if (value === "") continue;
-    const base = (entry.key ? original?.[entry.key] : undefined) ?? ({} as T);
-    out[entry.key ?? freshKey(used)] = { ...base, [leaf]: value } as T;
+    const base = entry.key ? original?.[entry.key] : undefined;
+    if (value === "") {
+      if (!base) continue; // a new (or already-empty) entry with nothing to keep
+      const kept = { ...base } as Record<string, unknown>;
+      delete kept[leaf];
+      if (Object.keys(kept).length === 0) continue; // the leaf was its only field — drop it
+      out[entry.key as string] = kept as T;
+    } else {
+      out[entry.key ?? freshKey(used)] = { ...(base ?? {}), [leaf]: value } as T;
+    }
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }

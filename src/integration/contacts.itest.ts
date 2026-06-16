@@ -4,6 +4,7 @@
 // create/destroy is picked up incrementally by syncContacts (the AddressBook/ContactCard /changes
 // cursors).
 
+import { unwrap } from "solid-js/store";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { CAP_CONTACTS, CAP_CORE, methodResult } from "@/jmap/methods";
 import type { ContactCard, Id } from "@/jmap/types";
@@ -202,14 +203,15 @@ describe("contacts (live Stalwart)", () => {
     });
     await loadUntil(id);
 
-    const editable = cardToEditable(requireCard(id));
+    const baseline = structuredClone(unwrap(requireCard(id))) as ContactCard;
+    const editable = cardToEditable(baseline);
     editable.nameFull = `After ${tag}`;
     const firstEmail = editable.emails[0];
     if (firstEmail) firstEmail.value = `after-${tag}@auto.test`; // change address, keep pref/contexts
     editable.organizations = []; // remove the whole organizations property
     editable.phones.push({ key: null, value: "+1-555-0199" }); // add a new entry
 
-    const result = await saveContact(id, editable);
+    const result = await saveContact(id, baseline, editable);
     expect(result).toEqual({ ok: true });
 
     // saveContact reconciles to server truth after the set, so the store holds the persisted card.
@@ -228,13 +230,56 @@ describe("contacts (live Stalwart)", () => {
     expect(contactCards[id]?.organizations).toBeUndefined();
   });
 
+  it("saveContact patches only the user's delta, merging with a concurrent change to another field", async () => {
+    const bookId = await defaultBookId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    const id = await seedRawCard({
+      "@type": "Card",
+      version: "1.0",
+      addressBookIds: { [bookId]: true },
+      name: { full: `Concurrent ${tag}` },
+      emails: { e1: { address: `before-${tag}@auto.test` } },
+    });
+    await loadUntil(id);
+
+    // The form's baseline + edits: change only the name, never touch the email.
+    const baseline = structuredClone(unwrap(requireCard(id))) as ContactCard;
+    const editable = cardToEditable(baseline);
+    editable.nameFull = `Renamed ${tag}`;
+
+    // A concurrent server-side edit to a DIFFERENT property (the email) lands before we save.
+    await testClient().request(
+      [
+        [
+          "ContactCard/set",
+          {
+            accountId: contactsAcct(),
+            update: { [id]: { "emails/e1/address": `concurrent-${tag}@auto.test` } },
+          },
+          "u",
+        ],
+      ],
+      CONTACTS_USING,
+    );
+
+    const result = await saveContact(id, baseline, editable);
+    expect(result).toEqual({ ok: true });
+
+    // The name is the user's edit; the concurrent email change SURVIVES (the patch never touched it).
+    expect(contactCards[id]?.name?.full).toBe(`Renamed ${tag}`);
+    expect(Object.values(contactCards[id]?.emails ?? {})[0]?.address).toBe(
+      `concurrent-${tag}@auto.test`,
+    );
+  });
+
   it("saveContact is a clean no-op when nothing changed", async () => {
     const bookId = await defaultBookId();
     const tag = Math.random().toString(36).slice(2, 8);
     const [id] = (await seedCards(bookId, [{ fullName: `Noop ${tag}` }])) as [Id];
     await loadUntil(id);
     // An untouched working copy yields an empty patch — saveContact returns ok without a round trip.
-    const result = await saveContact(id, cardToEditable(requireCard(id)));
+    const baseline = structuredClone(unwrap(requireCard(id))) as ContactCard;
+    const result = await saveContact(id, baseline, cardToEditable(baseline));
     expect(result).toEqual({ ok: true });
     expect(contactCards[id]?.name?.full).toBe(`Noop ${tag}`);
   });

@@ -321,6 +321,58 @@ describe("editableToPatch", () => {
     ).toEqual({ name: null });
   });
 
+  it("preserves a component-only address (blank `full`) untouched when an unrelated field changes", () => {
+    // Regression: the editable model surfaces such an address as an empty `full`; an unrelated edit
+    // must NOT drop its components. The address stays out of the patch entirely (server keeps it).
+    const c = card({
+      name: { full: "Ada" },
+      addresses: {
+        ad1: { components: [{ kind: "locality", value: "Townsville" }], isOrdered: true },
+      },
+    });
+    const patch = editableToPatch(
+      c,
+      editableOf(c, (e) => {
+        e.nameFull = "Ada Lovelace";
+      }),
+    );
+    expect(patch).toEqual({ name: { full: "Ada Lovelace" } }); // addresses untouched
+    // And the optimistic card keeps the address.
+    const next = editableToCard(
+      c,
+      editableOf(c, (e) => {
+        e.nameFull = "Ada Lovelace";
+      }),
+    );
+    expect(next.addresses).toEqual({
+      ad1: { components: [{ kind: "locality", value: "Townsville" }], isOrdered: true },
+    });
+  });
+
+  it("preserves an organization carrying only `units` (no editable name)", () => {
+    const c = card({ organizations: { o1: { units: [{ name: "R&D" }] } }, name: { full: "Ada" } });
+    const patch = editableToPatch(
+      c,
+      editableOf(c, (e) => {
+        e.nameFull = "Ada L";
+      }),
+    );
+    expect(patch).toEqual({ name: { full: "Ada L" } }); // organizations untouched
+  });
+
+  it("drops an existing entry only when clearing its leaf leaves nothing", () => {
+    // An email whose sole field is the address: clearing it removes the entry (no orphan).
+    const c = card({ emails: { e1: { address: "a@x.test" } } });
+    const patch = editableToPatch(
+      c,
+      editableOf(c, (e) => {
+        const first = e.emails[0];
+        if (first) first.value = "";
+      }),
+    );
+    expect(patch).toEqual({ emails: null });
+  });
+
   it("drops a blank-value entry rather than persisting it", () => {
     const c = card({ emails: { e1: { address: "a@x.test" } } });
     const patch = editableToPatch(

@@ -25,11 +25,14 @@ type SingleKey =
  * confirms with a toast and closes back to the detail.
  */
 export function ContactEditForm(props: { card: ContactCard; onClose: () => void }) {
-  // A one-time working copy: the form snapshots the card at open and edits locally. Re-deriving it
-  // mid-edit would clobber the user's typing, and a selection change unmounts the form (ContactView
-  // exits edit mode), so there's no stale-card concern to track.
+  // Freeze a plain-object snapshot of the card at open. It seeds the working copy AND is the baseline
+  // saveContact diffs against, so the patch is exactly the user's delta (and a concurrent background
+  // sync that mutates the live store card can't shift the baseline out from under the edit). A
+  // one-time read: re-deriving mid-edit would clobber the user's typing, and a selection change
+  // unmounts the form (ContactView exits edit mode).
   // eslint-disable-next-line solid/reactivity
-  const [form, setForm] = createStore<EditableContact>(cardToEditable(props.card));
+  const baseline = structuredClone(unwrap(props.card)) as ContactCard;
+  const [form, setForm] = createStore<EditableContact>(cardToEditable(baseline));
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   let nameInput: HTMLInputElement | undefined;
@@ -61,7 +64,7 @@ export function ContactEditForm(props: { card: ContactCard; onClose: () => void 
     setBusy(true);
     setError(null);
     // unwrap the store proxy to a plain EditableContact for the pure transform in the store action.
-    const result = await saveContact(props.card.id, unwrap(form));
+    const result = await saveContact(baseline.id, baseline, unwrap(form));
     setBusy(false);
     if (result.ok) {
       notify("Contact saved");
