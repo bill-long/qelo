@@ -1,4 +1,13 @@
-import { createEffect, createMemo, createSignal, For, type JSX, on, Show } from "solid-js";
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  type JSX,
+  on,
+  onCleanup,
+  Show,
+} from "solid-js";
 import { ContactEditForm } from "@/components/contacts/ContactEditForm";
 import type { CardAddress, ContactCard } from "@/jmap/types";
 import { cardMayWrite, contactDisplayName, sortedEmails, writableBooks } from "@/lib/contacts";
@@ -27,6 +36,10 @@ export function ContactView() {
       setCreatingContact(false);
     }),
   );
+  // Clear the create form when the Contacts surface unmounts (the view switch swaps it out when
+  // activeView leaves "contacts"), so a half-filled create can't silently resurface on return —
+  // `creatingContact` is global UI state, unlike the component-local `editing`.
+  onCleanup(() => setCreatingContact(false));
   const books = createMemo(() => writableBooks(addressBooks));
 
   return (

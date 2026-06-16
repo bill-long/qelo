@@ -84,4 +84,18 @@ describe("NewContactButton", () => {
     expect(creatingContact()).toBe(true);
     expect(screen.getByRole("heading", { name: "New contact" })).toBeTruthy();
   });
+
+  it("clears the create form when the Contacts view unmounts (leaving the surface)", () => {
+    // creatingContact is global UI state, so a half-filled create must not resurface after switching
+    // away from Contacts and back. ContactView's onCleanup clears it when the surface unmounts.
+    reset();
+    setAddressBooks({ wb: writableBook });
+    const { unmount } = render(() => <ContactView />);
+    // Open the create form on the mounted surface (as the New button would), then leave the view.
+    setCreatingContact(true);
+    expect(screen.getByRole("heading", { name: "New contact" })).toBeTruthy();
+
+    unmount();
+    expect(creatingContact()).toBe(false);
+  });
 });

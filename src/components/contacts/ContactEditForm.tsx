@@ -112,7 +112,7 @@ export function ContactEditForm(props: ContactEditFormProps) {
     const book = bookId();
     if (!book) {
       setBusy(false);
-      setError("No writable address book to save into.");
+      setError("No writable address book to create the contact in.");
       return;
     }
     const result = await createContact(edits, { [book]: true });
