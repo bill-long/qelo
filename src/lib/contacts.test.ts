@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { AddressBook, ContactCard } from "@/jmap/types";
 import {
+  cardMayWrite,
+  cardToEditable,
   compareAddressBooks,
   compareContacts,
   contactDisplayName,
   contactInBook,
   contactMatchesQuery,
   contactNominalName,
+  type EditableContact,
+  editableToCard,
+  editableToPatch,
   primaryEmail,
   sortedEmails,
 } from "./contacts";
@@ -179,5 +184,195 @@ describe("compareAddressBooks", () => {
     const a = book({ id: "2", name: "Work", sortOrder: 1 });
     const b = book({ id: "3", name: "Personal", sortOrder: 2 });
     expect([b, a, def].sort(compareAddressBooks).map((x) => x.id)).toEqual(["1", "2", "3"]);
+  });
+});
+
+describe("cardMayWrite", () => {
+  const writable = { rw: book({ id: "rw", myRights: { ...book({}).myRights, mayWrite: true } }) };
+  const readonly = { ro: book({ id: "ro" }) }; // mayWrite: false by default
+
+  it("is true when ANY of the card's books grants mayWrite", () => {
+    expect(cardMayWrite(card({ addressBookIds: { rw: true } }), writable)).toBe(true);
+  });
+
+  it("is false when the card's books are all read-only, or the book is unknown", () => {
+    expect(cardMayWrite(card({ addressBookIds: { ro: true } }), readonly)).toBe(false);
+    expect(cardMayWrite(card({ addressBookIds: { gone: true } }), writable)).toBe(false);
+    expect(cardMayWrite(card({}), writable)).toBe(false);
+  });
+});
+
+describe("cardToEditable", () => {
+  it("flattens every editable property, preserving the server map keys", () => {
+    const c = card({
+      name: { full: "Ada Lovelace", components: [{ kind: "given", value: "Ada" }] },
+      nicknames: { n1: { name: "Countess" } },
+      emails: { e1: { address: "ada@x.test", pref: 1 } },
+      phones: { p1: { number: "+1-555-0100" } },
+      addresses: { a1: { full: "1 Engine Way" } },
+      organizations: { o1: { name: "Acme" } },
+      titles: { t1: { name: "Analyst" } },
+      notes: { note1: { note: "Met at conf" } },
+      onlineServices: { s1: { service: "Mastodon", user: "@ada", uri: "https://m.test/@ada" } },
+    });
+    const e = cardToEditable(c);
+    expect(e.nameFull).toBe("Ada Lovelace");
+    expect(e.emails).toEqual([{ key: "e1", value: "ada@x.test" }]);
+    expect(e.phones).toEqual([{ key: "p1", value: "+1-555-0100" }]);
+    expect(e.addresses).toEqual([{ key: "a1", value: "1 Engine Way" }]);
+    expect(e.onlineServices).toEqual([
+      { key: "s1", service: "Mastodon", user: "@ada", uri: "https://m.test/@ada" },
+    ]);
+  });
+
+  it("shows a component-only address as empty (only `full` is editable)", () => {
+    const c = card({
+      addresses: { a1: { components: [{ kind: "locality", value: "Townsville" }] } },
+    });
+    expect(cardToEditable(c).addresses).toEqual([{ key: "a1", value: "" }]);
+  });
+});
+
+// Build an EditableContact from a card, then apply a mutation to it before round-tripping.
+function editableOf(c: ContactCard, mutate: (e: EditableContact) => void): EditableContact {
+  const e = cardToEditable(c);
+  mutate(e);
+  return e;
+}
+
+describe("editableToPatch", () => {
+  it("returns an empty patch when nothing changed (open + save round-trips cleanly)", () => {
+    const c = card({
+      name: { full: "Ada", components: [{ kind: "given", value: "Ada" }] },
+      emails: { e1: { address: "ada@x.test", pref: 1 } },
+      phones: { p1: { number: "+1-555-0100" } },
+    });
+    expect(editableToPatch(c, cardToEditable(c))).toEqual({});
+  });
+
+  it("patches only the changed property, by whole-property pointer", () => {
+    const c = card({ name: { full: "Ada" }, emails: { e1: { address: "ada@x.test" } } });
+    const patch = editableToPatch(
+      c,
+      editableOf(c, (e) => {
+        e.nameFull = "Ada Lovelace";
+      }),
+    );
+    expect(patch).toEqual({ name: { full: "Ada Lovelace" } });
+  });
+
+  it("carries un-edited sub-fields (pref/contexts) through an edited entry", () => {
+    const c = card({
+      emails: { e1: { address: "old@x.test", pref: 1, contexts: { work: true } } },
+    });
+    const patch = editableToPatch(
+      c,
+      editableOf(c, (e) => {
+        const first = e.emails[0];
+        if (first) first.value = "new@x.test";
+      }),
+    );
+    expect(patch).toEqual({
+      emails: { e1: { address: "new@x.test", pref: 1, contexts: { work: true } } },
+    });
+  });
+
+  it("adds a new entry under a fresh key and removes a cleared one", () => {
+    const c = card({ emails: { e1: { address: "first@x.test" } } });
+    const added = editableToPatch(
+      c,
+      editableOf(c, (e) => {
+        e.emails.push({ key: null, value: "second@x.test" });
+      }),
+    );
+    expect(added.emails).toEqual({
+      e1: { address: "first@x.test" },
+      c0: { address: "second@x.test" },
+    });
+
+    const removed = editableToPatch(
+      c,
+      editableOf(c, (e) => {
+        e.emails = [];
+      }),
+    );
+    expect(removed).toEqual({ emails: null }); // whole property removed
+  });
+
+  it("preserves name.components when only full changes, and removes name when fully cleared", () => {
+    const c = card({ name: { full: "Ada", components: [{ kind: "given", value: "Ada" }] } });
+    expect(
+      editableToPatch(
+        c,
+        editableOf(c, (e) => {
+          e.nameFull = "Ada L";
+        }),
+      ),
+    ).toEqual({ name: { full: "Ada L", components: [{ kind: "given", value: "Ada" }] } });
+
+    const onlyFull = card({ name: { full: "Ada" } });
+    expect(
+      editableToPatch(
+        onlyFull,
+        editableOf(onlyFull, (e) => {
+          e.nameFull = "";
+        }),
+      ),
+    ).toEqual({ name: null });
+  });
+
+  it("drops a blank-value entry rather than persisting it", () => {
+    const c = card({ emails: { e1: { address: "a@x.test" } } });
+    const patch = editableToPatch(
+      c,
+      editableOf(c, (e) => {
+        e.emails.push({ key: null, value: "   " });
+      }),
+    );
+    expect(patch).toEqual({}); // the blank addition is ignored, so nothing changed
+  });
+
+  it("drops an online service with neither user nor uri", () => {
+    const c = card({ onlineServices: { s1: { service: "X", user: "@me" } } });
+    const patch = editableToPatch(
+      c,
+      editableOf(c, (e) => {
+        e.onlineServices.push({ key: null, service: "Label only", user: "", uri: "" });
+      }),
+    );
+    expect(patch).toEqual({});
+  });
+});
+
+describe("editableToCard", () => {
+  it("applies edits while carrying through un-exposed properties (kind, addressBookIds)", () => {
+    const c = card({
+      kind: "individual",
+      addressBookIds: { b: true },
+      name: { full: "Ada" },
+      emails: { e1: { address: "ada@x.test" } },
+    });
+    const next = editableToCard(
+      c,
+      editableOf(c, (e) => {
+        e.nameFull = "Ada Lovelace";
+      }),
+    );
+    expect(next.name?.full).toBe("Ada Lovelace");
+    expect(next.kind).toBe("individual");
+    expect(next.addressBookIds).toEqual({ b: true });
+    expect(next.emails).toEqual({ e1: { address: "ada@x.test" } });
+    expect(c.name?.full).toBe("Ada"); // original untouched (new object)
+  });
+
+  it("removes an emptied property from the optimistic card", () => {
+    const c = card({ name: { full: "Ada" }, phones: { p1: { number: "+1-555" } } });
+    const next = editableToCard(
+      c,
+      editableOf(c, (e) => {
+        e.phones = [];
+      }),
+    );
+    expect(next.phones).toBeUndefined();
   });
 });

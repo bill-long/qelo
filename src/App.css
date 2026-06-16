@@ -1539,6 +1539,173 @@ body,
   white-space: pre-wrap;
 }
 
+/* Edit button in the detail header — a quiet outline that sits beside the name. */
+.contact-detail-headline {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.contact-edit-button {
+  flex: none;
+  padding: 0.3rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.contact-edit-button:hover {
+  border-color: var(--accent);
+}
+
+/* Contact edit form (column 3, replacing the read-only detail). */
+.contact-edit {
+  max-width: 44rem;
+  padding: 1.6rem 1.8rem;
+}
+
+.contact-edit-head {
+  margin-bottom: 1.2rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.contact-edit-field {
+  display: block;
+  margin-bottom: 1.1rem;
+}
+
+.contact-edit-section {
+  margin: 0 0 1.1rem;
+  padding: 0;
+  border: none;
+}
+
+.contact-edit-legend {
+  padding: 0;
+  margin-bottom: 0.4rem;
+  color: var(--ink-soft);
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.contact-edit-label {
+  display: block;
+  margin-bottom: 0.3rem;
+  color: var(--ink-soft);
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.contact-edit-row,
+.contact-edit-service {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-bottom: 0.45rem;
+}
+
+.contact-edit-service {
+  flex-wrap: wrap;
+}
+
+.contact-edit-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+}
+
+textarea.contact-edit-input {
+  resize: vertical;
+}
+
+.contact-edit-input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.contact-edit-remove {
+  flex: none;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--ink-soft);
+  font: inherit;
+  cursor: pointer;
+}
+
+.contact-edit-remove:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.contact-edit-add {
+  padding: 0.3rem 0;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.contact-edit-error {
+  margin: 0 0 1rem;
+  padding: 0.6rem 0.8rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+  font-size: 0.85rem;
+}
+
+.contact-edit-actions {
+  display: flex;
+  gap: 0.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+
+.contact-edit-actions button {
+  padding: 0.45rem 1.1rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.contact-edit-actions .contact-edit-save {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.contact-edit-actions .contact-edit-save:hover {
+  background: color-mix(in srgb, var(--accent) 88%, #000);
+}
+
+.contact-edit-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --paper: #1b1916;

@@ -1,23 +1,43 @@
-import { createMemo, For, type JSX, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, type JSX, on, Show } from "solid-js";
+import { ContactEditForm } from "@/components/contacts/ContactEditForm";
 import type { CardAddress, ContactCard } from "@/jmap/types";
-import { contactDisplayName, sortedEmails } from "@/lib/contacts";
-import { contactCards } from "@/stores/contacts";
+import { cardMayWrite, contactDisplayName, sortedEmails } from "@/lib/contacts";
+import { addressBooks, contactCards } from "@/stores/contacts";
 import { selectedContactId } from "@/stores/ui";
 
 /**
- * The contact detail (column 3, where ThreadView sits in mail view): a read-only, focused-complete
- * render of the selected JSContact card — name, emails, phones, postal addresses, organizations/
- * titles, online services, notes. No edit affordances (mutations are a later phase).
+ * The contact detail (column 3, where ThreadView sits in mail view): a focused-complete render of
+ * the selected JSContact card — name, emails, phones, postal addresses, organizations/titles, online
+ * services, notes. An Edit affordance (gated on the card's address books granting `mayWrite`) swaps
+ * in {@link ContactEditForm} in place; a read-only card shows no edit UI.
  */
 export function ContactView() {
+  const [editing, setEditing] = createSignal(false);
   const card = () => {
     const id = selectedContactId();
     return id ? contactCards[id] : undefined;
   };
+  // Leave edit mode whenever the selected contact changes or clears, so a stale form can't outlive
+  // its card (runs once on mount setting false, which is harmless).
+  createEffect(on(selectedContactId, () => setEditing(false)));
+
   return (
     <div class="contact-view">
       <Show when={card()} fallback={<p class="contact-empty">Select a contact</p>}>
-        {(c) => <ContactDetail card={c()} />}
+        {(c) => (
+          <Show
+            when={editing()}
+            fallback={
+              <ContactDetail
+                card={c()}
+                canEdit={cardMayWrite(c(), addressBooks)}
+                onEdit={() => setEditing(true)}
+              />
+            }
+          >
+            <ContactEditForm card={c()} onClose={() => setEditing(false)} />
+          </Show>
+        )}
       </Show>
     </div>
   );
@@ -76,7 +96,7 @@ function httpHref(uri: string | undefined): string | null {
   }
 }
 
-function ContactDetail(props: { card: ContactCard }) {
+function ContactDetail(props: { card: ContactCard; canEdit: boolean; onEdit: () => void }) {
   const card = () => props.card;
   const name = createMemo(() => contactDisplayName(card()));
   const emails = createMemo(() => sortedEmails(card()));
@@ -97,7 +117,14 @@ function ContactDetail(props: { card: ContactCard }) {
   return (
     <article class="contact-detail">
       <header class="contact-detail-head">
-        <h1 class="contact-detail-name">{name()}</h1>
+        <div class="contact-detail-headline">
+          <h1 class="contact-detail-name">{name()}</h1>
+          <Show when={props.canEdit}>
+            <button type="button" class="contact-edit-button" onClick={() => props.onEdit()}>
+              Edit
+            </button>
+          </Show>
+        </div>
         <Show when={nicknames().length > 0}>
           <p class="contact-detail-nicknames">“{nicknames().join("”, “")}”</p>
         </Show>

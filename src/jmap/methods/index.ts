@@ -360,6 +360,39 @@ export function contactCardChanges(
   return ["ContactCard/changes", args, callId];
 }
 
+/**
+ * A single card's patch for `ContactCard/set update`. Keys are JSON pointers into the JSContact
+ * Card (RFC 8620 §5.3) — a whole-property pointer (`"emails"`, `"name"`) replaces that property,
+ * a leaf pointer (`"name/full"`, `"emails/<key>/address"`) sets one value, and `null` removes the
+ * pointed-at value. Unlike Email (immutable content — a "edit" is create+destroy), a ContactCard
+ * is a normal mutable JMAP object, so an in-place patch is the edit path. Qelo builds these with
+ * whole-property pointers (carrying un-edited sub-fields through), so a patch never clobbers a
+ * property — like `photos`/`kind` — the form doesn't expose. Verified live against dev Stalwart:
+ * whole-property replace, leaf set, and `null` removal all round-trip and leave un-named
+ * properties untouched.
+ */
+export type ContactCardPatch = Record<string, unknown>;
+
+export interface ContactCardSetOptions {
+  /** Creation-id → new-card map; the ids become `#creationId` back-references. (Phase 2 create.) */
+  create?: Record<string, Record<string, unknown>>;
+  /** Existing-id → patch map (JSON-pointer keys; see {@link ContactCardPatch}). */
+  update?: Record<Id, ContactCardPatch>;
+  destroy?: Id[];
+}
+
+export function contactCardSet(
+  accountId: Id,
+  callId: string,
+  opts: ContactCardSetOptions,
+): MethodCall {
+  const args: Record<string, unknown> = { accountId };
+  if (opts.create) args.create = opts.create;
+  if (opts.update) args.update = opts.update;
+  if (opts.destroy) args.destroy = opts.destroy;
+  return ["ContactCard/set", args, callId];
+}
+
 // ---------------------------------------------------------------------------
 // Thread
 // ---------------------------------------------------------------------------

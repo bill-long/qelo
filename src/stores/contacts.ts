@@ -1,5 +1,5 @@
 import { createSignal } from "solid-js";
-import { createStore, produce, reconcile } from "solid-js/store";
+import { createStore, produce, reconcile, unwrap } from "solid-js/store";
 import { drainChanges } from "@/jmap/changes";
 import type { JmapClient } from "@/jmap/client";
 import {
@@ -10,10 +10,14 @@ import {
   contactCardChanges,
   contactCardGet,
   contactCardQuery,
+  contactCardSet,
   idsFromContactQuery,
   methodResult,
+  setResult,
 } from "@/jmap/methods";
-import type { AddressBook, ContactCard, MethodCall } from "@/jmap/types";
+import type { AddressBook, ContactCard, MethodCall, SetError } from "@/jmap/types";
+import type { EditableContact } from "@/lib/contacts";
+import { editableToCard, editableToPatch } from "@/lib/contacts";
 import { handleAuthFailure, jmap, session } from "./account";
 
 export const [addressBooks, setAddressBooks] = createStore<Record<string, AddressBook>>({});
@@ -189,6 +193,121 @@ export async function syncContacts(): Promise<void> {
     // the cursors to a usable baseline. Clear ready so loadContacts actually refetches.
     setContactsReady(false);
     await loadContacts();
+  }
+}
+
+// Refetch one card and apply server truth: upsert it (absorbing any server re-keying/normalization
+// of a just-applied edit), or drop it from the store if the server no longer returns it (destroyed
+// elsewhere). A partial fetch — does NOT advance contactState (the push-driven drain owns that
+// cursor, exactly like emails' reconcileRefused). Throws on a transport/method failure so the
+// caller can fall back; the auth case is surfaced by handleAuthFailure at the call site.
+async function reconcileCard(accountId: string, id: string): Promise<void> {
+  const client = jmap();
+  const got = await client.request(
+    [contactCardGet(accountId, "rc", { ids: [id] })],
+    CONTACTS_USING,
+  );
+  const list = (methodResult(got, "rc").list ?? []) as ContactCard[];
+  setContactCards(
+    produce((s) => {
+      if (list.length === 0) delete s[id];
+      else for (const c of list) s[c.id] = c;
+    }),
+  );
+}
+
+/** The outcome of a {@link saveContact}: ok on success/no-op, else why it didn't persist. */
+export type SaveContactResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: "missing" | "no-account" | "auth" | "refused" | "error";
+      error?: SetError;
+    };
+
+/**
+ * Save edits to an existing contact: build the minimal whole-property patch from the form's working
+ * copy, optimistically apply the rebuilt card to the store, issue ONE `ContactCard/set update`, then
+ * reconcile to server truth. ContactCard content is mutable (unlike Email), so this is an in-place
+ * patch, not a create+destroy. Resolves with a {@link SaveContactResult} (never rejects) so the form
+ * can surface a failure inline.
+ *
+ * Discipline mirrors the email mutations ([[jmap-set-quirks]] / [[qelo-review-checklist]]):
+ * `requireNewState:false` (an all-failed /set omits newState on Stalwart; this path never persists
+ * that cursor — sync owns it via ContactCard/changes); on a per-item refusal OR a transport error we
+ * refetch the card so the view shows server truth rather than reverting to a possibly-stale local
+ * snapshot, falling back to the pre-optimistic snapshot only if that refetch also fails. An empty
+ * patch (nothing actually changed) is a no-op success.
+ */
+export async function saveContact(id: string, edits: EditableContact): Promise<SaveContactResult> {
+  const card = contactCards[id];
+  if (!card) return { ok: false, reason: "missing" };
+  const accountId = contactsAccountId();
+  if (!accountId) return { ok: false, reason: "no-account" };
+
+  const patch = editableToPatch(card, edits);
+  if (Object.keys(patch).length === 0) return { ok: true }; // nothing changed
+
+  // Snapshot the pre-optimistic card (a plain clone, not the live store proxy) for the last-resort
+  // revert, and compute the optimistic card BEFORE mutating the store (both read `card`).
+  const snapshot = structuredClone(unwrap(card)) as ContactCard;
+  const optimistic = editableToCard(card, edits);
+  setContactCards(
+    produce((s) => {
+      s[id] = optimistic;
+    }),
+  );
+
+  const client = jmap();
+  let refused: SetError | undefined;
+  try {
+    const responses = await client.request(
+      [contactCardSet(accountId, "set", { update: { [id]: patch } })],
+      CONTACTS_USING,
+    );
+    refused = setResult<ContactCard>(responses, "set", { requireNewState: false }).notUpdated[id];
+  } catch (err) {
+    if (handleAuthFailure(err)) return { ok: false, reason: "auth" };
+    // The /set never applied — revert the optimistic write to server truth (or the snapshot if the
+    // refetch also fails), then report the error.
+    await revertOptimistic(accountId, id, snapshot);
+    console.error("ContactCard/set update failed:", err);
+    return { ok: false, reason: "error" };
+  }
+
+  // The /set applied (fully, or with a per-item refusal). Reconcile to server truth: on success this
+  // absorbs any re-keying/normalization; on a refusal it authoritatively undoes the optimistic write.
+  try {
+    await reconcileCard(accountId, id);
+  } catch (err) {
+    // A refetch blip: keep the optimistic write on success (it ≈ server truth), but on a refusal we
+    // couldn't fetch truth to revert to — fall back to the pre-optimistic snapshot.
+    if (!handleAuthFailure(err) && refused) {
+      setContactCards(
+        produce((s) => {
+          s[id] = snapshot;
+        }),
+      );
+    }
+  }
+  return refused ? { ok: false, reason: "refused", error: refused } : { ok: true };
+}
+
+// Best-effort revert of an optimistic write after the /set itself failed: refetch server truth, or
+// restore the pre-optimistic snapshot if even the refetch fails (so the view isn't stuck on a guess).
+async function revertOptimistic(
+  accountId: string,
+  id: string,
+  snapshot: ContactCard,
+): Promise<void> {
+  try {
+    await reconcileCard(accountId, id);
+  } catch {
+    setContactCards(
+      produce((s) => {
+        s[id] = snapshot;
+      }),
+    );
   }
 }
 

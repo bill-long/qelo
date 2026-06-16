@@ -7,7 +7,19 @@
 // whose keys are server-assigned (not meaningful) — so we iterate values in insertion order, never
 // keys, and guard every access (noUncheckedIndexedAccess makes map reads `T | undefined`).
 
-import type { AddressBook, CardEmail, ContactCard } from "@/jmap/types";
+import type { ContactCardPatch } from "@/jmap/methods";
+import type {
+  AddressBook,
+  CardAddress,
+  CardEmail,
+  CardName,
+  CardNote,
+  CardOnlineService,
+  CardOrganization,
+  CardPhone,
+  CardTitle,
+  ContactCard,
+} from "@/jmap/types";
 
 /**
  * Assemble a name string from the card's structured `name.components` (RFC 9553 §2.2.1). Components
@@ -144,4 +156,214 @@ export function compareAddressBooks(a: AddressBook, b: AddressBook): number {
   if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
   const byName = a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
   return byName !== 0 ? byName : a.id.localeCompare(b.id);
+}
+
+/**
+ * Whether the card can be edited: at least one of the address books it belongs to grants
+ * `mayWrite`. The single gate the edit affordance uses, so a card in only read-only books shows no
+ * edit UI rather than letting the user hit a server refusal. Reactive callers pass the live
+ * `addressBooks` store. (Branch 5's delete will mirror this on `mayDelete`.)
+ */
+export function cardMayWrite(card: ContactCard, books: Record<string, AddressBook>): boolean {
+  return Object.keys(card.addressBookIds ?? {}).some((id) => books[id]?.myRights.mayWrite === true);
+}
+
+// ---------------------------------------------------------------------------
+// Editable contact model — the form's working copy of a card, and the pure
+// transforms that turn it back into (a) a full card for an optimistic store
+// write and (b) a minimal JSON-pointer patch for ContactCard/set update.
+// ---------------------------------------------------------------------------
+
+/**
+ * One editable entry of a single-value JSContact map (emails/phones/addresses/…). `key` is the
+ * card's original server-assigned map key, or `null` for an entry the user just added: keeping it
+ * lets a rebuild patch the entry IN PLACE — preserving the original sub-object's un-edited fields
+ * (`pref`, `contexts`, address `components`, …) and avoiding a needless re-key — while a new entry
+ * gets a fresh key. `value` is the one leaf the form edits (the address / number / name / note / …).
+ */
+export interface ValueEntry {
+  key: string | null;
+  value: string;
+}
+
+/** An editable {@link CardOnlineService} entry: a label plus a user handle and/or a URI. */
+export interface ServiceEntry {
+  key: string | null;
+  service: string;
+  user: string;
+  uri: string;
+}
+
+/**
+ * The form's working copy of a card: every rendered property as a flat, editable shape. Postal
+ * `addresses` edit only their `full` one-line string here (a component-only address shows empty and
+ * its components are preserved untouched — see {@link cardToEditable}); the structured component
+ * editor is a later refinement.
+ */
+export interface EditableContact {
+  nameFull: string;
+  nicknames: ValueEntry[];
+  emails: ValueEntry[];
+  phones: ValueEntry[];
+  addresses: ValueEntry[];
+  organizations: ValueEntry[];
+  titles: ValueEntry[];
+  notes: ValueEntry[];
+  onlineServices: ServiceEntry[];
+}
+
+/** Derive the form's working copy from a card. Map keys are preserved (see {@link ValueEntry}). */
+export function cardToEditable(card: ContactCard): EditableContact {
+  const single = <T>(
+    map: Record<string, T> | undefined,
+    leaf: (v: T) => string | undefined,
+  ): ValueEntry[] => Object.entries(map ?? {}).map(([key, v]) => ({ key, value: leaf(v) ?? "" }));
+  return {
+    nameFull: card.name?.full ?? "",
+    nicknames: single(card.nicknames, (v) => v?.name),
+    emails: single(card.emails, (v) => v?.address),
+    phones: single(card.phones, (v) => v?.number),
+    // Only `full` is editable; a component-only address shows empty and keeps its components.
+    addresses: single(card.addresses, (v) => v?.full),
+    organizations: single(card.organizations, (v) => v?.name),
+    titles: single(card.titles, (v) => v?.name),
+    notes: single(card.notes, (v) => v?.note),
+    onlineServices: Object.entries(card.onlineServices ?? {}).map(([key, v]) => ({
+      key,
+      service: v?.service ?? "",
+      user: v?.user ?? "",
+      uri: v?.uri ?? "",
+    })),
+  };
+}
+
+// An empty/blank edit becomes "no entry"; a missing map becomes the property's removal. Set a
+// non-empty value, delete an emptied one (so a cleared field drops the carried-through leaf too).
+function setOrDelete(obj: Record<string, unknown>, key: string, value: string): void {
+  if (value) obj[key] = value;
+  else delete obj[key];
+}
+
+// A key not already in `used`, recorded so successive new entries in one rebuild don't collide.
+function freshKey(used: Set<string>): string {
+  let i = 0;
+  while (used.has(`c${i}`)) i += 1;
+  const key = `c${i}`;
+  used.add(key);
+  return key;
+}
+
+// Rebuild a single-value map from its editable entries: drop blank entries, patch each surviving
+// entry IN PLACE onto its original sub-object (carrying `pref`/`contexts`/etc. through) under its
+// original key, and assign new entries a fresh key. Returns undefined when nothing survives, which
+// the callers turn into the property's removal.
+function rebuildSingle<T extends object>(
+  entries: ValueEntry[],
+  original: Record<string, T> | undefined,
+  leaf: string,
+): Record<string, T> | undefined {
+  const out: Record<string, T> = {};
+  const used = new Set(entries.map((e) => e.key).filter((k): k is string => k !== null));
+  for (const entry of entries) {
+    const value = entry.value.trim();
+    if (value === "") continue;
+    const base = (entry.key ? original?.[entry.key] : undefined) ?? ({} as T);
+    out[entry.key ?? freshKey(used)] = { ...base, [leaf]: value } as T;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function rebuildServices(
+  entries: ServiceEntry[],
+  original: Record<string, CardOnlineService> | undefined,
+): Record<string, CardOnlineService> | undefined {
+  const out: Record<string, CardOnlineService> = {};
+  const used = new Set(entries.map((e) => e.key).filter((k): k is string => k !== null));
+  for (const entry of entries) {
+    const service = entry.service.trim();
+    const user = entry.user.trim();
+    const uri = entry.uri.trim();
+    // A bare label with neither a handle nor a URI isn't a usable service entry — drop it.
+    if (user === "" && uri === "") continue;
+    const obj: Record<string, unknown> = {
+      ...((entry.key ? original?.[entry.key] : undefined) ?? {}),
+    };
+    setOrDelete(obj, "service", service);
+    setOrDelete(obj, "user", user);
+    setOrDelete(obj, "uri", uri);
+    out[entry.key ?? freshKey(used)] = obj as CardOnlineService;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+// Rebuild the name: keep the original components/isOrdered, set/clear `full`. An emptied name
+// object (no full, no components) becomes undefined → the property's removal.
+function rebuildName(nameFull: string, original: CardName | undefined): CardName | undefined {
+  const next: CardName = { ...(original ?? {}) };
+  const full = nameFull.trim();
+  if (full) next.full = full;
+  else delete next.full;
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
+// The editable properties rebuilt back into their card shapes (undefined = property removed). One
+// source of truth so the optimistic card and the patch can't drift.
+interface RebuiltProps {
+  name: CardName | undefined;
+  nicknames: Record<string, { name: string }> | undefined;
+  emails: Record<string, CardEmail> | undefined;
+  phones: Record<string, CardPhone> | undefined;
+  addresses: Record<string, CardAddress> | undefined;
+  organizations: Record<string, CardOrganization> | undefined;
+  titles: Record<string, CardTitle> | undefined;
+  notes: Record<string, CardNote> | undefined;
+  onlineServices: Record<string, CardOnlineService> | undefined;
+}
+
+function rebuild(card: ContactCard, e: EditableContact): RebuiltProps {
+  return {
+    name: rebuildName(e.nameFull, card.name),
+    nicknames: rebuildSingle(e.nicknames, card.nicknames, "name"),
+    emails: rebuildSingle(e.emails, card.emails, "address"),
+    phones: rebuildSingle(e.phones, card.phones, "number"),
+    addresses: rebuildSingle(e.addresses, card.addresses, "full"),
+    organizations: rebuildSingle(e.organizations, card.organizations, "name"),
+    titles: rebuildSingle(e.titles, card.titles, "name"),
+    notes: rebuildSingle(e.notes, card.notes, "note"),
+    onlineServices: rebuildServices(e.onlineServices, card.onlineServices),
+  };
+}
+
+/**
+ * Apply the form's working copy onto the card, producing the full card for an OPTIMISTIC store
+ * write. Properties the form doesn't expose (photos, kind, addressBookIds, version, …) are carried
+ * through untouched; an emptied editable property is removed.
+ */
+export function editableToCard(card: ContactCard, e: EditableContact): ContactCard {
+  const next = { ...card };
+  const view = next as unknown as Record<string, unknown>;
+  for (const [key, value] of Object.entries(rebuild(card, e))) {
+    if (value === undefined) delete view[key];
+    else view[key] = value;
+  }
+  return next;
+}
+
+/**
+ * Build the MINIMAL `ContactCard/set update` patch from the form's working copy: a whole-property
+ * JSON pointer per editable property that actually changed (deep-compared against the original),
+ * set to its rebuilt value or `null` to remove it. Unchanged properties — and every property the
+ * form doesn't expose — are absent, so the patch never rewrites or clobbers them. An all-unchanged
+ * edit yields `{}` (the store action treats that as a no-op).
+ */
+export function editableToPatch(card: ContactCard, e: EditableContact): ContactCardPatch {
+  const patch: ContactCardPatch = {};
+  const original = card as unknown as Record<string, unknown>;
+  for (const [key, rebuilt] of Object.entries(rebuild(card, e))) {
+    // Stable deep compare: rebuildSingle preserves the original keys + sub-field order for unchanged
+    // entries, so an untouched property serializes identically and stays out of the patch.
+    if (JSON.stringify(original[key] ?? null) === JSON.stringify(rebuilt ?? null)) continue;
+    patch[key] = rebuilt ?? null;
+  }
+  return patch;
 }
