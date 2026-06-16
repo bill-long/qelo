@@ -16,11 +16,19 @@ import { basicAuth } from "@/jmap/auth";
 import { JmapClient } from "@/jmap/client";
 import { CAP_CORE, CAP_MAIL, methodResult } from "@/jmap/methods";
 import type { Id, MethodCall } from "@/jmap/types";
-import { adoptClient } from "@/stores/account";
+import { adoptClient, setSession } from "@/stores/account";
+import { resetContacts } from "@/stores/contacts";
 import { emails, setEmails, setPageSize, setThread, setThreadList } from "@/stores/emails";
 import { mailboxes, setMailboxes } from "@/stores/mailboxes";
 import { resetRecipients } from "@/stores/recipients";
-import { setSelectedEmailId, setSelectedMailboxId, setSelectedThreadId } from "@/stores/ui";
+import {
+  setActiveView,
+  setSelectedAddressBookId,
+  setSelectedContactId,
+  setSelectedEmailId,
+  setSelectedMailboxId,
+  setSelectedThreadId,
+} from "@/stores/ui";
 
 export const JMAP_BASE = (process.env.QELO_JMAP_BASE ?? "https://localhost").replace(/\/$/, "");
 const EMAIL = process.env.QELO_TEST_EMAIL ?? process.env.QELO_SEED_EMAIL ?? "test@example.test";
@@ -76,12 +84,16 @@ export async function connectTestClient(): Promise<InstrumentedClient> {
   await c.connect();
   client = c;
   adoptClient(c);
+  // Mirror what connect() does in the real app: publish the session signal too, so store code that
+  // reads it (e.g. the contacts account resolution / capability gate) sees the live session, not null.
+  setSession(c.session);
   return c;
 }
 
 /** Drop the adopted client. Call in `afterAll`. */
 export function disconnectTestClient(): void {
   adoptClient(null);
+  setSession(null);
   client = null;
 }
 
@@ -107,6 +119,11 @@ export function resetStores(): void {
   setSelectedMailboxId(null);
   setSelectedThreadId(null);
   setSelectedEmailId(null);
+  // Contacts-view UI selection signals — reset so a contacts/view test can't leak activeView or a
+  // contact/book selection into the next case.
+  setActiveView("mail");
+  setSelectedContactId(null);
+  setSelectedAddressBookId(null);
   setPageSize(50);
   // Recipient autocomplete keeps a module-level load-once guard + index that otherwise leak across
   // tests in the shared worker (openWith fires loadRecipientSuggestions), so reset it here too.
@@ -114,6 +131,9 @@ export function resetStores(): void {
   // importing it would pull lib/sanitize's load-time DOMPurify.addHook into the node-env suites
   // (only compose.itest.ts runs under jsdom). Compose-touching suites call resetCompose() directly.
   resetRecipients();
+  // Contacts load lazily + keep their own cursors/load-once guard; reset so they don't leak across
+  // tests in the shared worker. Safe to import (no DOMPurify load-time hook, unlike compose).
+  resetContacts();
 }
 
 // --- Server-side fixtures --------------------------------------------------
