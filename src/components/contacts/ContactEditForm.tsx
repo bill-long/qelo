@@ -104,7 +104,7 @@ export function ContactEditForm(props: ContactEditFormProps) {
       setError(
         result.reason === "refused"
           ? "The server refused the change. It may be read-only or have changed elsewhere."
-          : "Couldn’t save the contact. Please try again.",
+          : "Couldn't save the contact. Please try again.",
       );
       return;
     }
@@ -126,7 +126,7 @@ export function ContactEditForm(props: ContactEditFormProps) {
     setError(
       result.reason === "refused"
         ? "The server refused the new contact. The address book may be read-only."
-        : "Couldn’t create the contact. Please try again.",
+        : "Couldn't create the contact. Please try again.",
     );
   }
 
