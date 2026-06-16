@@ -9,11 +9,17 @@ import {
   contactInBook,
   contactMatchesQuery,
   contactNominalName,
+  createContactBody,
+  createdCardFor,
+  defaultWritableBookId,
   type EditableContact,
+  editableHasContent,
   editableToCard,
   editableToPatch,
+  emptyEditableContact,
   primaryEmail,
   sortedEmails,
+  writableBooks,
 } from "./contacts";
 
 function card(partial: Partial<ContactCard>): ContactCard {
@@ -459,5 +465,127 @@ describe("editableToCard", () => {
       }),
     );
     expect(next.phones).toBeUndefined();
+  });
+});
+
+// Build a blank working copy, then apply a mutation before round-tripping (the create analog of
+// editableOf, which seeds from an existing card).
+function newEditable(mutate: (e: EditableContact) => void): EditableContact {
+  const e = emptyEditableContact();
+  mutate(e);
+  return e;
+}
+
+describe("emptyEditableContact", () => {
+  it("is a blank working copy with no content", () => {
+    const e = emptyEditableContact();
+    expect(e.nameFull).toBe("");
+    expect(e.emails).toEqual([]);
+    expect(e.onlineServices).toEqual([]);
+    expect(editableHasContent(e)).toBe(false);
+  });
+});
+
+describe("editableHasContent", () => {
+  it("is false for an empty form, and for one holding only blank/whitespace entries", () => {
+    expect(editableHasContent(emptyEditableContact())).toBe(false);
+    // Rows the user added but never filled (blank, or whitespace-only) don't count — they're dropped
+    // by the rebuild, so an all-blank form is still "no content" (the Save gate stays disabled).
+    expect(
+      editableHasContent(
+        newEditable((e) => {
+          e.nameFull = "   ";
+          e.emails = [{ key: null, value: "" }];
+          e.phones = [{ key: null, value: "  " }];
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("is true once any field carries a real value", () => {
+    expect(editableHasContent(newEditable((e) => (e.nameFull = "Ada")))).toBe(true);
+    expect(
+      editableHasContent(newEditable((e) => (e.emails = [{ key: null, value: "ada@x.test" }]))),
+    ).toBe(true);
+  });
+});
+
+describe("createContactBody", () => {
+  it("carries the structural JSContact fields, the chosen books, and the filled props — no id", () => {
+    const body = createContactBody(
+      newEditable((e) => {
+        e.nameFull = "Ada Lovelace";
+        e.emails = [{ key: null, value: "ada@x.test" }];
+      }),
+      { b: true },
+    );
+    expect(body["@type"]).toBe("Card");
+    expect(body.version).toBe("1.0");
+    expect(body.addressBookIds).toEqual({ b: true });
+    expect(body.name).toEqual({ full: "Ada Lovelace" });
+    // A new entry gets a fresh server-less key (c0); the value is trimmed into the leaf.
+    expect(body.emails).toEqual({ c0: { address: "ada@x.test" } });
+    expect("id" in body).toBe(false);
+  });
+
+  it("drops blank entries — a name-only contact is the minimum (the create no-op invariant)", () => {
+    const body = createContactBody(
+      newEditable((e) => {
+        e.nameFull = "Solo";
+        e.emails = [{ key: null, value: "" }]; // an added-but-empty row
+        e.phones = [{ key: null, value: "  " }];
+      }),
+      { b: true },
+    );
+    expect(body.name).toEqual({ full: "Solo" });
+    expect("emails" in body).toBe(false);
+    expect("phones" in body).toBe(false);
+    // Only the three structural keys plus name survived.
+    expect(Object.keys(body).sort()).toEqual(["@type", "addressBookIds", "name", "version"]);
+  });
+});
+
+describe("createdCardFor", () => {
+  it("seeds a full card under the server id with book membership and the edits overlaid", () => {
+    const c = createdCardFor(
+      "srv1",
+      newEditable((e) => {
+        e.nameFull = "Ada";
+        e.phones = [{ key: null, value: "+1-555-0100" }];
+      }),
+      { b: true },
+    );
+    expect(c.id).toBe("srv1");
+    expect(c["@type"]).toBe("Card");
+    expect(c.addressBookIds).toEqual({ b: true });
+    expect(c.name?.full).toBe("Ada");
+    expect(Object.values(c.phones ?? {})[0]?.number).toBe("+1-555-0100");
+  });
+});
+
+describe("writableBooks / defaultWritableBookId", () => {
+  const writable = (id: string, extra: Partial<AddressBook> = {}) =>
+    book({
+      id,
+      myRights: { mayRead: true, mayWrite: true, mayDelete: true, mayShare: true },
+      ...extra,
+    });
+  const readonly = (id: string) => book({ id });
+
+  it("keeps only writable books, sorted (default first)", () => {
+    const books = {
+      ro: readonly("ro"),
+      w2: writable("w2", { name: "Beta", sortOrder: 2 }),
+      w1: writable("w1", { name: "Alpha", isDefault: true }),
+    };
+    expect(writableBooks(books).map((b) => b.id)).toEqual(["w1", "w2"]);
+  });
+
+  it("picks the default writable book, else the first; null when there are none", () => {
+    const w1 = writable("w1", { name: "Alpha" });
+    const def = writable("w2", { name: "Beta", isDefault: true });
+    expect(defaultWritableBookId([w1, def])).toBe("w2");
+    expect(defaultWritableBookId([w1])).toBe("w1");
+    expect(defaultWritableBookId([])).toBeNull();
   });
 });

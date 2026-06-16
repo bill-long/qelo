@@ -1,15 +1,16 @@
 import { createEffect, createMemo, createSignal, For, type JSX, on, Show } from "solid-js";
 import { ContactEditForm } from "@/components/contacts/ContactEditForm";
 import type { CardAddress, ContactCard } from "@/jmap/types";
-import { cardMayWrite, contactDisplayName, sortedEmails } from "@/lib/contacts";
+import { cardMayWrite, contactDisplayName, sortedEmails, writableBooks } from "@/lib/contacts";
 import { addressBooks, contactCards } from "@/stores/contacts";
-import { selectedContactId } from "@/stores/ui";
+import { creatingContact, selectedContactId, setCreatingContact } from "@/stores/ui";
 
 /**
  * The contact detail (column 3, where ThreadView sits in mail view): a focused-complete render of
  * the selected JSContact card — name, emails, phones, postal addresses, organizations/titles, online
  * services, notes. An Edit affordance (gated on the card's address books granting `mayWrite`) swaps
- * in {@link ContactEditForm} in place; a read-only card shows no edit UI.
+ * in {@link ContactEditForm} in place; a read-only card shows no edit UI. The "+ New contact"
+ * affordance puts the same form in create mode over this pane (regardless of selection).
  */
 export function ContactView() {
   const [editing, setEditing] = createSignal(false);
@@ -17,27 +18,41 @@ export function ContactView() {
     const id = selectedContactId();
     return id ? contactCards[id] : undefined;
   };
-  // Leave edit mode whenever the selected contact changes or clears, so a stale form can't outlive
-  // its card (runs once on mount setting false, which is harmless).
-  createEffect(on(selectedContactId, () => setEditing(false)));
+  // Leave edit AND create mode whenever the selected contact changes or clears, so a stale form can't
+  // outlive its context (runs once on mount setting false, harmless). A successful create selects the
+  // new card, which lands here and closes the create form onto the new contact's detail.
+  createEffect(
+    on(selectedContactId, () => {
+      setEditing(false);
+      setCreatingContact(false);
+    }),
+  );
+  const books = createMemo(() => writableBooks(addressBooks));
 
   return (
     <div class="contact-view">
-      <Show when={card()} fallback={<p class="contact-empty">Select a contact</p>}>
-        {(c) => (
-          <Show
-            when={editing()}
-            fallback={
-              <ContactDetail
-                card={c()}
-                canEdit={cardMayWrite(c(), addressBooks)}
-                onEdit={() => setEditing(true)}
-              />
-            }
-          >
-            <ContactEditForm card={c()} onClose={() => setEditing(false)} />
+      <Show
+        when={creatingContact()}
+        fallback={
+          <Show when={card()} fallback={<p class="contact-empty">Select a contact</p>}>
+            {(c) => (
+              <Show
+                when={editing()}
+                fallback={
+                  <ContactDetail
+                    card={c()}
+                    canEdit={cardMayWrite(c(), addressBooks)}
+                    onEdit={() => setEditing(true)}
+                  />
+                }
+              >
+                <ContactEditForm mode="edit" card={c()} onClose={() => setEditing(false)} />
+              </Show>
+            )}
           </Show>
-        )}
+        }
+      >
+        <ContactEditForm mode="create" books={books()} onClose={() => setCreatingContact(false)} />
       </Show>
     </div>
   );

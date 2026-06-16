@@ -3,6 +3,7 @@ import { Composer } from "@/components/composer/Composer";
 import { AddressBookList } from "@/components/contacts/AddressBookList";
 import { ContactList } from "@/components/contacts/ContactList";
 import { ContactView } from "@/components/contacts/ContactView";
+import { NewContactButton } from "@/components/contacts/NewContactButton";
 import { SyncStatus } from "@/components/layout/SyncStatus";
 import { ToastHost } from "@/components/layout/ToastHost";
 import { ViewSwitch } from "@/components/layout/ViewSwitch";
@@ -32,7 +33,15 @@ export function Shell() {
           landmark. The switch replaces the old static brand label. */}
       <aside class="shell-folders">
         <ViewSwitch />
-        <Show when={isMail()} fallback={<AddressBookList />}>
+        <Show
+          when={isMail()}
+          fallback={
+            <>
+              <NewContactButton />
+              <AddressBookList />
+            </>
+          }
+        >
           <button type="button" class="compose-button" onClick={() => openComposer()}>
             <span aria-hidden="true">✎</span> Compose
           </button>

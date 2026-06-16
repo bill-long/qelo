@@ -13,12 +13,20 @@ import {
   contactCardSet,
   idsFromContactQuery,
   methodResult,
+  type SetResult,
   setResult,
 } from "@/jmap/methods";
-import type { AddressBook, ContactCard, MethodCall, SetError } from "@/jmap/types";
+import type { AddressBook, ContactCard, Id, MethodCall, SetError } from "@/jmap/types";
 import type { EditableContact } from "@/lib/contacts";
-import { editableToCard, editableToPatch } from "@/lib/contacts";
+import {
+  createContactBody,
+  createdCardFor,
+  editableHasContent,
+  editableToCard,
+  editableToPatch,
+} from "@/lib/contacts";
 import { handleAuthFailure, jmap, session } from "./account";
+import { setSelectedContactId } from "./ui";
 
 export const [addressBooks, setAddressBooks] = createStore<Record<string, AddressBook>>({});
 export const [contactCards, setContactCards] = createStore<Record<string, ContactCard>>({});
@@ -318,6 +326,79 @@ async function revertOptimistic(
       }),
     );
   }
+}
+
+/** The outcome of a {@link createContact}: the new server id on success, else why it didn't persist. */
+export type CreateContactResult =
+  | { ok: true; id: Id }
+  | {
+      ok: false;
+      reason: "empty" | "no-account" | "auth" | "refused" | "error";
+      error?: SetError;
+    };
+
+/**
+ * Create a new contact from the form's working copy in the chosen address book(s). Issued as ONE
+ * `ContactCard/set create`; the server assigns the id and re-keys our creation id (`new` →
+ * server id), exactly like the Email create path. On success the new card is written into the store
+ * under its server id (seeded from the form, then reconciled to server truth to absorb any
+ * normalization) and selected, so the contact opens immediately. Resolves with a
+ * {@link CreateContactResult} (never rejects) so the form can surface a failure inline.
+ *
+ * Discipline mirrors saveContact / the email mutations ([[jmap-set-quirks]] / [[qelo-review-checklist]]):
+ * `requireNewState:false` (an all-failed /set omits newState on Stalwart; this path never persists
+ * that cursor — sync owns it via ContactCard/changes). A contentless working copy (no savable field
+ * once blanks drop) is rejected without a round trip — the create-form analog of saveContact's empty
+ * patch no-op (the form also gates Save on this). Nothing is written to the store until the server
+ * confirms the create, so a refusal or transport error needs no rollback.
+ */
+export async function createContact(
+  edits: EditableContact,
+  addressBookIds: Record<string, true>,
+): Promise<CreateContactResult> {
+  if (!editableHasContent(edits)) return { ok: false, reason: "empty" };
+  const accountId = contactsAccountId();
+  if (!accountId) return { ok: false, reason: "no-account" };
+
+  const body = createContactBody(edits, addressBookIds);
+  const client = jmap();
+  let result: SetResult<ContactCard>;
+  try {
+    const responses = await client.request(
+      [contactCardSet(accountId, "set", { create: { new: body } })],
+      CONTACTS_USING,
+    );
+    result = setResult<ContactCard>(responses, "set", { requireNewState: false });
+  } catch (err) {
+    if (handleAuthFailure(err)) return { ok: false, reason: "auth" };
+    console.error("ContactCard/set create failed:", err);
+    return { ok: false, reason: "error" };
+  }
+
+  const refused = result.notCreated.new;
+  if (refused) return { ok: false, reason: "refused", error: refused };
+  const id = result.created.new?.id;
+  if (!id) {
+    // Created without a refusal but the server returned no id — it can't be addressed. Treat as an
+    // error rather than guessing; the next Contacts-view open re-syncs and surfaces it.
+    console.error("ContactCard/set create returned no id");
+    return { ok: false, reason: "error" };
+  }
+
+  // Seed the store from the form so the new contact renders at once, select it, then reconcile to
+  // server truth (best-effort — a refetch blip leaves the seeded card, which the next sync corrects).
+  setContactCards(
+    produce((s) => {
+      s[id] = createdCardFor(id, edits, addressBookIds);
+    }),
+  );
+  setSelectedContactId(id);
+  try {
+    await reconcileCard(accountId, id);
+  } catch (err) {
+    handleAuthFailure(err);
+  }
+  return { ok: true, id };
 }
 
 /** Test seam: drop all contacts state so a suite starts clean (wired into the harness resetStores). */

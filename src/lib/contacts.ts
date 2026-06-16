@@ -406,3 +406,89 @@ export function editableToPatch(card: ContactCard, e: EditableContact): ContactC
   }
   return patch;
 }
+
+// ---------------------------------------------------------------------------
+// Create — a blank working copy, plus the transform that turns the form into a
+// `ContactCard/set create` body (branch 4). A create has no original card to
+// carry leaves through, so every entry is "new": rebuildSingle drops blanks and
+// assigns fresh keys (the same drop-blanks invariant the edit path obeys).
+// ---------------------------------------------------------------------------
+
+// An empty card, the rebuild "original" for a create: it has none of the maps, so rebuildSingle sees
+// no original sub-objects and treats every form entry as new. `{}` typed as ContactCard reads only
+// the (all-undefined) optional maps here — a deliberate, contained cast.
+const EMPTY_CARD = {} as ContactCard;
+
+/** A blank working copy for the create form — every field empty. The {@link editableHasContent}
+ * gate keeps a totally-empty one from being saved, so an actual create always carries something. */
+export function emptyEditableContact(): EditableContact {
+  return {
+    nameFull: "",
+    nicknames: [],
+    emails: [],
+    phones: [],
+    addresses: [],
+    organizations: [],
+    titles: [],
+    notes: [],
+    onlineServices: [],
+  };
+}
+
+/**
+ * Whether the working copy carries at least one savable property once blanks are dropped (the same
+ * rebuild the create/patch transforms run). The create form gates Save on this — an empty form, or
+ * one holding only whitespace, isn't a contact worth creating — and {@link createContactBody}'s
+ * caller treats a contentless body as a no-op. Mirrors the edit path's "empty patch = no-op".
+ */
+export function editableHasContent(e: EditableContact): boolean {
+  return Object.values(rebuild(EMPTY_CARD, e)).some((v) => v !== undefined);
+}
+
+/**
+ * Build the `ContactCard/set create` body from the form's working copy: the structural JSContact
+ * fields (`@type`, `version`, the chosen `addressBookIds`) plus every editable property that
+ * survives the rebuild (blanks dropped, fresh keys assigned). No `id` — the server assigns it and
+ * re-keys the creation id (mirrors the Email create path). Properties the form doesn't expose are
+ * simply absent (a fresh card has no photos/kind/etc.).
+ */
+export function createContactBody(
+  e: EditableContact,
+  addressBookIds: Record<string, true>,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = { "@type": "Card", version: "1.0", addressBookIds };
+  for (const [key, value] of Object.entries(rebuild(EMPTY_CARD, e))) {
+    if (value !== undefined) body[key] = value;
+  }
+  return body;
+}
+
+/**
+ * Seed a full local {@link ContactCard} for the optimistic store write after a create: the structural
+ * fields under the server-assigned `id` + book membership, with the form's edits overlaid. Reconciled
+ * to server truth straight after (absorbing any normalization), but gives the new contact an instant
+ * render. Same rebuild as {@link createContactBody}, so the two can't drift.
+ */
+export function createdCardFor(
+  id: string,
+  e: EditableContact,
+  addressBookIds: Record<string, true>,
+): ContactCard {
+  const seed = { "@type": "Card", version: "1.0", id, addressBookIds } as unknown as ContactCard;
+  return editableToCard(seed, e);
+}
+
+/** The address books this account can write a new card into (`myRights.mayWrite`), sorted for the
+ * picker. The "+ New contact" affordance is gated on this being non-empty; the create form's book
+ * picker lists them (and skips the picker when there's exactly one). */
+export function writableBooks(books: Record<string, AddressBook>): AddressBook[] {
+  return Object.values(books)
+    .filter((b) => b.myRights.mayWrite === true)
+    .sort(compareAddressBooks);
+}
+
+/** The default destination among writable `books` (already filtered/sorted by {@link writableBooks}):
+ * the server-default book if it's writable, else the first. Null only when there are none. */
+export function defaultWritableBookId(books: AddressBook[]): string | null {
+  return (books.find((b) => b.isDefault) ?? books[0])?.id ?? null;
+}
