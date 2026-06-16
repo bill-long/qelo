@@ -125,8 +125,11 @@ async function syncCollection<T extends { id: string }>(
     if (!destroyed.has(id)) changed.add(id);
   }
   if (changed.size > 0) {
-    const got = await client.request([getCall([...changed])], CONTACTS_USING);
-    upsert((methodResult(got, "get").list ?? []) as T[]);
+    // Read the response by the built call's own id (call[2]) rather than a hardcoded "get", so a
+    // getCall that uses a different call id can't silently read the wrong method response.
+    const call = getCall([...changed]);
+    const got = await client.request([call], CONTACTS_USING);
+    upsert((methodResult(got, call[2]).list ?? []) as T[]);
   }
   if (destroyed.size > 0) remove([...destroyed]);
   return result.newState;
