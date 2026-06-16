@@ -545,8 +545,10 @@ function currentDraftCreate(draftsId: string, identity: Identity): Record<string
 
 // The `Email/set` args for one draft attempt. Always a fresh `create` — Email content is immutable
 // (see {@link pendingDraftId}), so a retry can't edit the prior draft in place. When retrying after a
-// refusal (`orphanId` set) it also `destroy`s that orphan in the SAME request, so the replacement
-// supersedes it atomically rather than leaving a duplicate behind.
+// refusal (`orphanId` set) it also `destroy`s that orphan in the SAME Email/set request, so the
+// replacement and the cleanup ride one round trip rather than leaving a duplicate behind. (JMAP
+// processes the create and destroy independently — not all-or-nothing — so nextOrphanId reconciles
+// what actually happened from the response.)
 export function draftSetArgs(
   create: Record<string, unknown>,
   orphanId: string | null,
@@ -562,6 +564,14 @@ export function draftSetArgs(
 // drop it once its destroy applied OR the server reports it already gone (notFound) — mirroring
 // deleteForever, which counts a notFound destroy as gone — so pendingDraftId can't stick on a
 // non-existent id.
+//
+// Accepted bound: tracking only the latest draft means that if a retry's create succeeds but the
+// destroy of the prior orphan fails with a *non-notFound* error, that orphan is dropped from
+// tracking and lingers in Drafts. That requires the server to refuse destroying the user's OWN
+// just-created draft (forbidden/serverFail) — which real JMAP servers don't do for an owned draft —
+// so a multi-orphan list would be defensive code for an unreachable state (and wouldn't close the
+// equivalent on the success path, which closes the composer without re-checking the destroy). The
+// residual is at most one recoverable draft the user can delete.
 export function nextOrphanId(result: SetResult, orphanId: string | null): string | null {
   const created = result.created.draft?.id;
   if (created) return created;
