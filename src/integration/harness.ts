@@ -21,7 +21,14 @@ import { resetContacts } from "@/stores/contacts";
 import { emails, setEmails, setPageSize, setThread, setThreadList } from "@/stores/emails";
 import { mailboxes, setMailboxes } from "@/stores/mailboxes";
 import { resetRecipients } from "@/stores/recipients";
-import { setSelectedEmailId, setSelectedMailboxId, setSelectedThreadId } from "@/stores/ui";
+import {
+  setActiveView,
+  setSelectedAddressBookId,
+  setSelectedContactId,
+  setSelectedEmailId,
+  setSelectedMailboxId,
+  setSelectedThreadId,
+} from "@/stores/ui";
 
 export const JMAP_BASE = (process.env.QELO_JMAP_BASE ?? "https://localhost").replace(/\/$/, "");
 const EMAIL = process.env.QELO_TEST_EMAIL ?? process.env.QELO_SEED_EMAIL ?? "test@example.test";
@@ -112,6 +119,11 @@ export function resetStores(): void {
   setSelectedMailboxId(null);
   setSelectedThreadId(null);
   setSelectedEmailId(null);
+  // Contacts-view UI selection signals — reset so a contacts/view test can't leak activeView or a
+  // contact/book selection into the next case.
+  setActiveView("mail");
+  setSelectedContactId(null);
+  setSelectedAddressBookId(null);
   setPageSize(50);
   // Recipient autocomplete keeps a module-level load-once guard + index that otherwise leak across
   // tests in the shared worker (openWith fires loadRecipientSuggestions), so reset it here too.

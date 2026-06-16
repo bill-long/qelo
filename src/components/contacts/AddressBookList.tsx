@@ -1,7 +1,7 @@
 import { createMemo, For } from "solid-js";
 import { compareAddressBooks } from "@/lib/contacts";
 import { addressBooks } from "@/stores/contacts";
-import { selectedAddressBookId, setSelectedAddressBookId } from "@/stores/ui";
+import { selectedAddressBookId, setSelectedAddressBookId, setSelectedContactId } from "@/stores/ui";
 
 /**
  * The contacts-view sidebar (column 1, where MailboxList sits in mail view): an "All contacts"
@@ -26,7 +26,12 @@ function AddressBookRow(props: { id: string | null; name: string }) {
       class="addressbook-row"
       classList={{ "is-selected": isSelected() }}
       aria-current={isSelected() ? "true" : undefined}
-      onClick={() => setSelectedAddressBookId(props.id)}
+      // Clear the open contact when switching books — the previously-selected card may not be in the
+      // newly-filtered list, which would leave the detail pane showing a contact the list doesn't.
+      onClick={() => {
+        setSelectedAddressBookId(props.id);
+        setSelectedContactId(null);
+      }}
     >
       <span class="addressbook-name">{props.name}</span>
     </button>

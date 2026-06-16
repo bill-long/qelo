@@ -10,6 +10,7 @@ import type { Id } from "@/jmap/types";
 import {
   addressBooks,
   contactCards,
+  contactsAccountId,
   contactsReady,
   loadContacts,
   resetContacts,
@@ -18,6 +19,15 @@ import {
 import { connectTestClient, disconnectTestClient, resetStores, testClient } from "./harness";
 
 const CONTACTS_USING = [CAP_CORE, CAP_CONTACTS];
+
+// Resolve the CONTACTS primary account exactly as the store does (primaryAccounts[contacts]), not
+// the mail account — they coincide on the dev server, but the fixtures must target the same account
+// the store reads so the test stays correct if they ever differ.
+function contactsAcct(): Id {
+  const id = contactsAccountId();
+  if (!id) throw new Error("session exposes no contacts account");
+  return id;
+}
 
 interface CardSpec {
   fullName: string;
@@ -43,7 +53,7 @@ describe("read-only contacts", () => {
   async function defaultBookId(): Promise<Id> {
     const client = testClient();
     const resp = await client.request(
-      [["AddressBook/get", { accountId: client.accountId, ids: null }, "ab"]],
+      [["AddressBook/get", { accountId: contactsAcct(), ids: null }, "ab"]],
       CONTACTS_USING,
     );
     const books = (methodResult(resp, "ab").list ?? []) as Array<{ id: Id; isDefault: boolean }>;
@@ -67,7 +77,7 @@ describe("read-only contacts", () => {
       };
     });
     const resp = await client.request(
-      [["ContactCard/set", { accountId: client.accountId, create }, "cs"]],
+      [["ContactCard/set", { accountId: contactsAcct(), create }, "cs"]],
       CONTACTS_USING,
     );
     const result = methodResult(resp, "cs");
@@ -89,7 +99,7 @@ describe("read-only contacts", () => {
     if (ids.length === 0) return;
     const client = testClient();
     await client.request(
-      [["ContactCard/set", { accountId: client.accountId, destroy: ids }, "cd"]],
+      [["ContactCard/set", { accountId: contactsAcct(), destroy: ids }, "cd"]],
       CONTACTS_USING,
     );
   }
