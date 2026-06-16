@@ -5,10 +5,12 @@ import {
   CAP_MAIL,
   CAP_SUBMISSION,
   type EmailPatch,
+  type EmailSetOptions,
   emailSet,
   emailSubmissionSet,
   identityGet,
   methodResult,
+  type SetResult,
   setResult,
 } from "@/jmap/methods";
 import type { Email, EmailAddress, EmailBodyPart, EmailSubmission, Identity } from "@/jmap/types";
@@ -333,6 +335,16 @@ export const [busy, setBusy] = createSignal<null | "send" | "save">(null);
 export const [uploading, setUploading] = createSignal(false);
 export const [composeError, setComposeError] = createSignal<string | null>(null);
 
+// The server id of a draft that was created but whose submission the server REFUSED. The draft is
+// left sitting in Drafts (recoverable if the user gives up — what "saved to Drafts" promises); on a
+// Send/Save retry it's destroyed in the very same Email/set that creates its replacement, so a
+// refusal can't pile up duplicate drafts. JMAP Email content is immutable — only keywords and
+// mailboxIds are mutable (RFC 8621 §4) — so a retry carrying the user's edits MUST create a fresh
+// draft and destroy this one rather than update it in place; this mirrors the reference JMAP client
+// (Ltt.rs creates a fresh draft and destroys the old one to edit). Null when there's no orphan to
+// clean up; reset at every session boundary (open/close/discard) so it can't leak across sessions.
+export const [pendingDraftId, setPendingDraftId] = createSignal<string | null>(null);
+
 // Bumped every time the draft is opened or reset. An in-flight attachFiles captures the value at
 // the start and only appends/clears state while it still matches — so an upload that resolves after
 // the user discarded (or reopened) the composer can't graft a stale attachment onto a different
@@ -358,6 +370,7 @@ function closeAndReset(): void {
   setDraft(emptyDraft());
   setUploading(false);
   setComposeError(null);
+  setPendingDraftId(null);
 }
 
 // Open the composer on a specific initial draft, loading identities on first use. Every entry
@@ -370,6 +383,7 @@ function openWith(initial: DraftState): void {
   setDraft(initial);
   setUploading(false);
   setComposeError(null);
+  setPendingDraftId(null);
   setComposeOpen(true);
   if (identities().length === 0) void loadIdentities();
   // Mine past recipients for autocomplete (once per session; self-guarded + fire-and-forget), so
@@ -459,6 +473,7 @@ export function resetCompose(): void {
   setBusy(null);
   setUploading(false);
   setComposeError(null);
+  setPendingDraftId(null);
 }
 
 // The clear "this account can't send" message, shared by every entry point that needs the
@@ -526,6 +541,53 @@ function currentDraftCreate(draftsId: string, identity: Identity): Record<string
     attachments: [...draft.attachments],
     inlineImages: [...draft.inlineImages],
   });
+}
+
+// The `Email/set` args for one draft attempt. Always a fresh `create` — Email content is immutable
+// (see {@link pendingDraftId}), so a retry can't edit the prior draft in place. When retrying after a
+// refusal (`orphanId` set) it also `destroy`s that orphan in the SAME Email/set request, so the
+// replacement and the cleanup ride one round trip rather than leaving a duplicate behind. (JMAP
+// processes the create and destroy independently — not all-or-nothing — so nextOrphanId reconciles
+// what actually happened from the response.)
+export function draftSetArgs(
+  create: Record<string, unknown>,
+  orphanId: string | null,
+): EmailSetOptions {
+  return orphanId
+    ? { create: { draft: create }, destroy: [orphanId] }
+    : { create: { draft: create } };
+}
+
+// After a create(+destroy) attempt that left the composer open (some failure), which draft id should
+// a further retry clean up? A freshly-created draft supersedes the old orphan (which rode along as
+// the destroy), so track it. Otherwise the old orphan is only worth re-tracking if it still exists:
+// drop it once its destroy applied OR the server reports it already gone (notFound) — mirroring
+// deleteForever, which counts a notFound destroy as gone — so pendingDraftId can't stick on a
+// non-existent id.
+//
+// Accepted bound: tracking only the latest draft means that if a retry's create succeeds but the
+// destroy of the prior orphan fails with a *non-notFound* error, that orphan is dropped from
+// tracking and lingers in Drafts. That requires the server to refuse destroying the user's OWN
+// just-created draft (forbidden/serverFail) — which real JMAP servers don't do for an owned draft —
+// so a multi-orphan list would be defensive code for an unreachable state (and wouldn't close the
+// equivalent on the success path, which closes the composer without re-checking the destroy). The
+// residual is at most one recoverable draft the user can delete.
+export function nextOrphanId(result: SetResult, orphanId: string | null): string | null {
+  const created = result.created.draft?.id;
+  if (created) return created;
+  if (!orphanId) return null;
+  if (result.destroyed.includes(orphanId) || result.notDestroyed[orphanId]?.type === "notFound") {
+    return null;
+  }
+  return orphanId;
+}
+
+// Update the orphan-draft tracking after a FAILED send/save, but only if this invocation still owns
+// the session — a send/save superseded by a reopen/discard mid-flight (its generation already
+// bumped) must not clobber the new session's pendingDraftId. Centralized so every failure exit in
+// send()/saveDraft() guards identically rather than re-deriving the check.
+function trackOrphan(generation: number, result: SetResult, orphanId: string | null): void {
+  if (draftGeneration === generation) setPendingDraftId(nextOrphanId(result, orphanId));
 }
 
 /**
@@ -659,15 +721,25 @@ export async function saveDraft(): Promise<boolean> {
   }
   setBusy("save");
   setComposeError(null);
+  const generation = draftGeneration;
+  const orphanId = pendingDraftId();
   try {
     const client = jmap();
     const responses = await client.request([
-      emailSet(client.accountId, "draft", {
-        create: { draft: currentDraftCreate(draftsId, identity) },
-      }),
+      emailSet(
+        client.accountId,
+        "draft",
+        draftSetArgs(currentDraftCreate(draftsId, identity), orphanId),
+      ),
     ]);
-    const failure = setResult(responses, "draft").notCreated.draft;
+    // requireNewState:false — an all-failed Email/set omits the newState cursor (which compose never
+    // persists anyway), and the strict setResult would otherwise throw before we could read it.
+    const result = setResult(responses, "draft", { requireNewState: false });
+    const failure = result.notCreated.draft;
     if (failure) {
+      // The replacement wasn't saved. Keep tracking whichever draft still exists so a later retry
+      // cleans it up (guarded against a superseded session).
+      trackOrphan(generation, result, orphanId);
       setComposeError(`Couldn't save draft: ${failure.description ?? failure.type}`);
       return false;
     }
@@ -724,14 +796,18 @@ export async function send(): Promise<boolean> {
   }
   setBusy("send");
   setComposeError(null);
+  const generation = draftGeneration;
+  const orphanId = pendingDraftId();
   try {
     const client = jmap();
     const sentId = mailboxIdByRole("sent");
     const responses = await client.request(
       [
-        emailSet(client.accountId, "draft", {
-          create: { draft: currentDraftCreate(draftsId, identity) },
-        }),
+        emailSet(
+          client.accountId,
+          "draft",
+          draftSetArgs(currentDraftCreate(draftsId, identity), orphanId),
+        ),
         emailSubmissionSet(client.accountId, "sub", {
           create: { sub: { identityId: identity.id, emailId: "#draft" } },
           onSuccessUpdateEmail: { "#sub": sentFilePatch(draftsId, sentId) },
@@ -739,19 +815,30 @@ export async function send(): Promise<boolean> {
       ],
       [CAP_CORE, CAP_MAIL, CAP_SUBMISSION],
     );
-    // The draft must have been created for the submission to reference it.
-    const draftFailure = setResult(responses, "draft").notCreated.draft;
+    // The draft must have been created for the submission to reference it. requireNewState:false —
+    // an all-failed /set omits newState (compose never persists it); see saveDraft.
+    const draftResult = setResult(responses, "draft", { requireNewState: false });
+    const draftFailure = draftResult.notCreated.draft;
     if (draftFailure) {
+      // The message wasn't created, so the submission had nothing to reference. Keep tracking
+      // whichever draft still exists for a later retry to clean up (generation-guarded).
+      trackOrphan(generation, draftResult, orphanId);
       setComposeError(
         `Couldn't create the message: ${draftFailure.description ?? draftFailure.type}`,
       );
       return false;
     }
-    // setResult matches the FIRST "sub" response — the EmailSubmission/set itself, not the
-    // implicit onSuccessUpdateEmail Email/set that rides under the same call id.
-    const subFailure = setResult<EmailSubmission>(responses, "sub").notCreated.sub;
+    // setResult matches the FIRST "sub" response — the EmailSubmission/set itself, not the implicit
+    // onSuccessUpdateEmail Email/set that rides under the same call id on success. A refused
+    // submission omits newState (Stalwart, on an all-failed /set), hence requireNewState:false.
+    const subFailure = setResult<EmailSubmission>(responses, "sub", { requireNewState: false })
+      .notCreated.sub;
     if (subFailure) {
-      // The draft exists in Drafts but wasn't sent — say so rather than implying it vanished.
+      // The draft was created (and any prior orphan destroyed in the same request), but the server
+      // refused the submission — it sits in Drafts. Remember its id (the freshly-created draft, via
+      // nextOrphanId off draftResult) so a Send/Save retry destroys it as it recreates, instead of
+      // piling up a duplicate draft. Say "saved to Drafts" rather than implying it vanished.
+      trackOrphan(generation, draftResult, orphanId);
       setComposeError(
         `Couldn't send (saved to Drafts): ${subFailure.description ?? subFailure.type}`,
       );

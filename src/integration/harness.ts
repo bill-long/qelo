@@ -110,6 +110,9 @@ export function resetStores(): void {
   setPageSize(50);
   // Recipient autocomplete keeps a module-level load-once guard + index that otherwise leak across
   // tests in the shared worker (openWith fires loadRecipientSuggestions), so reset it here too.
+  // NOTE: compose store state (draft/identities/pendingDraftId) is deliberately NOT reset here —
+  // importing it would pull lib/sanitize's load-time DOMPurify.addHook into the node-env suites
+  // (only compose.itest.ts runs under jsdom). Compose-touching suites call resetCompose() directly.
   resetRecipients();
 }
 

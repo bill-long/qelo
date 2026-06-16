@@ -356,20 +356,35 @@ export interface SetResult<T = Email> {
  * NOTE on `EmailSubmission/set` + `onSuccessUpdateEmail`: the server emits a SECOND response
  * (the implicit `Email/set`) under the SAME call id. `methodResult` matches the FIRST, i.e. the
  * EmailSubmission/set itself — exactly the result a caller wants to inspect for `notCreated`.
+ *
+ * `requireNewState` (default `true`) fails fast when the response omits the `newState` cursor
+ * token, so a caller that PERSISTS it can't save an invalid cursor. Stalwart, however, omits
+ * `newState` on an all-failed `/set` (every create/update/destroy refused — nothing changed, so
+ * no new state). A caller that only inspects the `not*`/`destroyed`/`created` maps and never
+ * advances a cursor from this `/set` (compose's send/save, the optimistic keyword/mailbox/destroy
+ * mutations — all of which sync via `Email/changes`, not this token) must pass
+ * `requireNewState: false`, or that strict check would throw before the refusal can be read.
  */
-export function setResult<T = Email>(responses: MethodResponse[], callId: string): SetResult<T> {
-  // The raw args are the (Email|EmailSubmission)SetResponse wire shape (nullable maps);
+export function setResult<T = Email>(
+  responses: MethodResponse[],
+  callId: string,
+  { requireNewState = true }: { requireNewState?: boolean } = {},
+): SetResult<T> {
+  // The raw args are the (Email|EmailSubmission)SetResponse wire shape (nullable maps). Partial<>
+  // because an all-failed /set legitimately omits newState (and any map) — the typeof/?? guards below
+  // handle the absent cases, so a non-Partial cast would falsely promise a required newState string.
   // SetResult is its normalized form. methodResult has already thrown on a method-level error.
-  const args = methodResult(responses, callId) as unknown as EmailSetResponse;
-  // newState is a required cursor token on a successful /set (RFC 8620 §5.3). A missing/
-  // non-string one signals a malformed response — fail fast rather than hand back "" and let
-  // a caller persist an invalid cursor.
-  if (typeof args.newState !== "string") {
+  const args = methodResult(responses, callId) as unknown as Partial<EmailSetResponse>;
+  const oldState = typeof args.oldState === "string" ? args.oldState : null;
+  // newState is a required cursor token on a *state-changing* /set (RFC 8620 §5.3). A missing one
+  // is fatal only for a caller that persists it (requireNewState); otherwise it just means an
+  // all-failed /set (Stalwart omits it then) and we hand back oldState (or "") — never persisted.
+  if (requireNewState && typeof args.newState !== "string") {
     throw new Error(`/set response for "${callId}" has no string newState`);
   }
   return {
-    oldState: typeof args.oldState === "string" ? args.oldState : null,
-    newState: args.newState,
+    oldState,
+    newState: typeof args.newState === "string" ? args.newState : (oldState ?? ""),
     created: (args.created ?? {}) as Record<Id, Partial<T> | null>,
     updated: (args.updated ?? {}) as Record<Id, Partial<T> | null>,
     destroyed: args.destroyed ?? [],

@@ -16,17 +16,20 @@ import {
   emailSet,
   methodResult,
 } from "@/jmap/methods";
-import type { Email, Id } from "@/jmap/types";
+import type { Email, Id, Identity } from "@/jmap/types";
 import {
   composeError,
   draft,
   identities,
   insertInlineImage,
   loadIdentities,
+  pendingDraftId,
   resetCompose,
   saveDraft,
   selectedIdentity,
   send,
+  setIdentities,
+  setSelectedIdentityId,
   startForward,
   startReply,
   updateDraft,
@@ -262,6 +265,63 @@ describe("compose", () => {
     const inboxIds = await waitForSubject(inboxId, subject);
     const inboxEmail = await serverEmail(inboxIds[0] as Id);
     expect(inboxEmail.mailboxIds[inboxId]).toBe(true);
+  });
+
+  it("a refused submission leaves ONE recoverable draft; a retry cleans it up (no duplicate)", async () => {
+    await loadMailboxes();
+    await loadIdentities();
+    const draftsId = mailboxIdByRole("drafts") as Id;
+    const sentId = mailboxIdByRole("sent") as Id;
+    expect(draftsId, "Drafts mailbox").toBeDefined();
+    expect(sentId, "Sent mailbox").toBeDefined();
+
+    const subject = freshSubject("refuse");
+    updateDraft("to", ACCOUNT_EMAIL);
+    updateDraft("subject", subject);
+    updateDraft("bodyHtml", "<div>This first send will be refused.</div>");
+
+    // Force a genuine server-side EmailSubmission/set refusal without mocking: keep the real
+    // identity's from-address (so the Email/set create still SUCCEEDS and the draft really lands in
+    // Drafts) but point the submission at a non-existent identityId, which Stalwart refuses
+    // (notCreated). That reproduces exactly the orphaned-draft scenario this fix targets.
+    const real = selectedIdentity();
+    expect(real, "a real sending identity").toBeDefined();
+    setIdentities([{ ...(real as Identity), id: "qelo-nonexistent-identity" }]);
+    setSelectedIdentityId(null); // selectedIdentity() then falls back to list[0] = the bogus one
+
+    const before = testClient().requestCount;
+    expect(await send()).toBe(false);
+    expect(testClient().requestCount - before).toBe(1); // one batched round trip, then refused
+    expect(composeError()).toContain("saved to Drafts");
+
+    // The just-created draft sits in Drafts with $draft, and the store remembers its id to clean up.
+    const orphanId = pendingDraftId();
+    expect(orphanId, "the refused draft's id is tracked").toBeTruthy();
+    const orphan = await serverEmail(orphanId as Id);
+    expect(orphan.keywords.$draft).toBe(true);
+    expect(orphan.mailboxIds[draftsId]).toBe(true);
+
+    // Retry with the real identity restored. The retry destroys the orphan in the SAME Email/set
+    // that recreates the draft (Email content is immutable, so it can't be updated in place), then
+    // submits — so no second draft accumulates.
+    setIdentities([real as Identity]);
+    setSelectedIdentityId((real as Identity).id);
+    expect(await send()).toBe(true);
+    expect(pendingDraftId(), "tracking cleared after a successful send").toBeNull();
+
+    // The orphan is GONE from the server — the retry destroyed it rather than leaving a duplicate.
+    // (Email/get by id is immediately consistent, so this is deterministic.)
+    await expect(serverEmail(orphanId as Id)).rejects.toThrow();
+
+    // And exactly one copy made it to Sent: a fresh draft (a NEW id, not the destroyed orphan),
+    // filed Drafts→Sent by onSuccessUpdateEmail.
+    const sentIds = await waitForSubject(sentId, subject, 1);
+    expect(sentIds).toHaveLength(1);
+    expect(sentIds).not.toContain(orphanId);
+    const sent = await serverEmail(sentIds[0] as Id);
+    expect(sent.keywords.$draft).toBeUndefined();
+    expect(sent.mailboxIds[sentId]).toBe(true);
+    expect(sent.mailboxIds[draftsId]).toBeUndefined();
   });
 
   it("startReply → send carries inReplyTo/references and stays in the source's thread", async () => {

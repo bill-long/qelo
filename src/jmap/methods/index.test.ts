@@ -190,6 +190,26 @@ describe("setResult", () => {
     const responses: MethodResponse[] = [["error", { type: "accountNotFound" }, "set"]];
     expect(() => setResult(responses, "set")).toThrow(JmapMethodError);
   });
+
+  it("throws on a missing newState by default (protects cursor-persisting callers)", () => {
+    // An all-failed /set: every record refused, so Stalwart omits the newState cursor token.
+    const responses: MethodResponse[] = [
+      ["EmailSubmission/set", { notCreated: { sub: { type: "invalidProperties" } } }, "set"],
+    ];
+    expect(() => setResult(responses, "set")).toThrow(/no string newState/);
+  });
+
+  it("tolerates a missing newState with requireNewState:false, reading the not* maps", () => {
+    // The refused-submission shape Stalwart actually returns (no newState/oldState). A caller that
+    // never persists the cursor reads notCreated without the strict check throwing first.
+    const responses: MethodResponse[] = [
+      ["EmailSubmission/set", { notCreated: { sub: { type: "invalidProperties" } } }, "set"],
+    ];
+    const r = setResult(responses, "set", { requireNewState: false });
+    expect(r.newState).toBe(""); // defaulted (oldState ?? ""), never persisted by such callers
+    expect(r.oldState).toBeNull();
+    expect(r.notCreated.sub?.type).toBe("invalidProperties");
+  });
 });
 
 describe("identityGet", () => {

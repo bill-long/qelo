@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { SetResult } from "@/jmap/methods";
 import type { EmailBodyPart } from "@/jmap/types";
 import { sanitizeOutboundHtml } from "@/lib/sanitize";
 import {
@@ -7,9 +8,11 @@ import {
   composeError,
   type DraftAttachment,
   type DraftEmailInput,
+  draftSetArgs,
   type InlineImage,
   inlineAttachmentParts,
   insertInlineImage,
+  nextOrphanId,
   referencedInlineImages,
   resetCompose,
   sentFilePatch,
@@ -437,5 +440,67 @@ describe("sentFilePatch", () => {
       "keywords/$draft": null,
       "keywords/$seen": true,
     });
+  });
+});
+
+describe("draftSetArgs", () => {
+  const create = { subject: "Hi" };
+
+  it("is a bare create on the first attempt (no orphan to clean up)", () => {
+    expect(draftSetArgs(create, null)).toEqual({ create: { draft: create } });
+  });
+
+  it("destroys the prior refused draft in the SAME request when retrying", () => {
+    // Atomic create+destroy is what keeps a refusal from piling up a duplicate (Email content is
+    // immutable, so a retry recreates rather than editing in place).
+    expect(draftSetArgs(create, "orphan1")).toEqual({
+      create: { draft: create },
+      destroy: ["orphan1"],
+    });
+  });
+});
+
+describe("nextOrphanId", () => {
+  // A SetResult with just the maps nextOrphanId reads (created/destroyed) populated; the rest of a
+  // /set response is irrelevant to which draft a retry must clean up.
+  function result(over: Partial<SetResult>): SetResult {
+    return {
+      oldState: null,
+      newState: "s1",
+      created: {},
+      updated: {},
+      destroyed: [],
+      notCreated: {},
+      notUpdated: {},
+      notDestroyed: {},
+      ...over,
+    };
+  }
+
+  it("tracks a freshly-created draft (it supersedes any prior orphan)", () => {
+    const r = result({ created: { draft: { id: "new1" } }, destroyed: ["orphan1"] });
+    expect(nextOrphanId(r, "orphan1")).toBe("new1");
+  });
+
+  it("clears the orphan when the create failed but the orphan WAS destroyed (nothing remains)", () => {
+    const r = result({ destroyed: ["orphan1"] });
+    expect(nextOrphanId(r, "orphan1")).toBeNull();
+  });
+
+  it("keeps the orphan when the create failed and its destroy did NOT apply (still in Drafts)", () => {
+    // destroyed is empty (the orphan wasn't removed), so a later retry must still clean it up.
+    const r = result({});
+    expect(nextOrphanId(r, "orphan1")).toBe("orphan1");
+  });
+
+  it("clears the orphan when the server reports its destroy as notFound (already gone)", () => {
+    // notFound means the draft is gone server-side — nothing to clean up, so don't leave
+    // pendingDraftId stuck on a non-existent id (mirrors deleteForever treating notFound as gone).
+    const r = result({ notDestroyed: { orphan1: { type: "notFound" } } });
+    expect(nextOrphanId(r, "orphan1")).toBeNull();
+  });
+
+  it("is null when there is neither a created draft nor an orphan", () => {
+    expect(nextOrphanId(result({}), null)).toBeNull();
   });
 });
