@@ -31,6 +31,7 @@ export async function drainChanges(
   client: JmapClient,
   sinceState: string,
   build: (sinceState: string) => MethodCall,
+  using?: string[],
 ): Promise<ChangesResult> {
   const created: string[] = [];
   const updated: string[] = [];
@@ -39,7 +40,9 @@ export async function drainChanges(
   let more = true;
   for (let guard = 0; more && guard < MAX_WINDOWS; guard += 1) {
     const call = build(state);
-    const responses = await client.request([call]);
+    // `using` lets a non-mail caller (contacts) add its capability; omitted → request()'s
+    // default [core, mail]. A spec-strict server rejects a method whose capability isn't in `using`.
+    const responses = await client.request([call], using);
     const r = methodResult(responses, call[2]);
     for (const id of (r.created ?? []) as string[]) created.push(id);
     for (const id of (r.updated ?? []) as string[]) updated.push(id);

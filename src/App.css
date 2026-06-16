@@ -91,7 +91,7 @@ body,
   cursor: pointer;
 }
 
-.view-switch-tab:hover:not(:disabled) {
+.view-switch-tab:hover:not(.is-disabled) {
   background: var(--hover);
   color: var(--ink);
 }
@@ -106,7 +106,9 @@ body,
   color: var(--accent);
 }
 
-.view-switch-tab:disabled {
+/* Unavailable tabs stay focusable (aria-disabled, not the native attribute) so AT can reach them
+   and announce the reason; only the look + cursor signal the disabled state. */
+.view-switch-tab.is-disabled {
   opacity: 0.4;
   cursor: default;
 }

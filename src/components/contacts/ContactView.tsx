@@ -49,10 +49,19 @@ function trimmedFrom<T>(
     .filter((s): s is string => Boolean(s));
 }
 
+// Build a `tel:` href without percent-encoding: encodeURIComponent would turn the leading `+` into
+// `%2B` (and visual separators into %xx), which many diallers won't parse. Instead reduce the number
+// to the characters a tel URI permits (RFC 3966: digits, a leading `+`, and visual separators), so
+// `+1-555-0100` stays dialable. Untrusted data, so anything outside that set is dropped.
+function telHref(number: string): string {
+  const dial = number.replace(/[^\d+().-]/g, "");
+  return `tel:${dial}`;
+}
+
 // An online-service `uri` is untrusted card data, so only surface it as a clickable link when it's
 // an http(s) URL — a `javascript:`/`data:` scheme would otherwise execute on click. Anything else
-// (or an unparseable value) renders as plain text. mailto:/tel: hrefs are built locally from
-// encodeURIComponent, so they don't need this.
+// (or an unparseable value) renders as plain text. mailto: (encodeURIComponent) and tel: (telHref)
+// are built locally from a fixed scheme + sanitized value, so they don't need this.
 function httpHref(uri: string | undefined): string | null {
   if (!uri) return null;
   try {
@@ -107,7 +116,7 @@ function ContactDetail(props: { card: ContactCard }) {
         <For each={phones()}>
           {(phone) => (
             <DetailRow context={contextLabel(phone.contexts)}>
-              <a href={`tel:${encodeURIComponent(phone.number)}`}>{phone.number}</a>
+              <a href={telHref(phone.number)}>{phone.number}</a>
             </DetailRow>
           )}
         </For>

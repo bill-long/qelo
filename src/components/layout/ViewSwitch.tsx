@@ -1,4 +1,4 @@
-import { For } from "solid-js";
+import { createEffect, For } from "solid-js";
 import { contactsAvailable } from "@/stores/contacts";
 import { activeView, type PrimaryView, setActiveView } from "@/stores/ui";
 
@@ -29,6 +29,14 @@ const TABS: ViewTab[] = [
  * final shape is set now and nothing dead-ends.
  */
 export function ViewSwitch() {
+  // Never leave the shell rendering an unavailable surface: if the active tab becomes unavailable
+  // (signed out/in with the signal persisted, or an account-switch that drops contacts), fall back
+  // to Mail. A reactive effect (not just onMount) so a mid-session availability change is honored.
+  createEffect(() => {
+    const active = TABS.find((t) => t.view === activeView());
+    if (active && active.unavailable() !== null) setActiveView("mail");
+  });
+
   return (
     <nav class="view-switch" aria-label="Views">
       <For each={TABS}>
@@ -39,13 +47,16 @@ export function ViewSwitch() {
             <button
               type="button"
               class="view-switch-tab"
-              classList={{ "is-active": isActive() }}
-              // aria-current marks the live view for AT; disabled removes unavailable tabs from the
-              // tab order and exposes the reason via title for a pointer hover.
+              classList={{ "is-active": isActive(), "is-disabled": reason() !== null }}
+              // aria-current marks the live view for AT. The tab stays focusable when unavailable
+              // (aria-disabled, not the native `disabled` attribute) so keyboard/AT users can reach
+              // it and hear WHY via the title; the click handler is the actual no-op guard.
               aria-current={isActive() ? "page" : undefined}
-              disabled={reason() !== null}
+              aria-disabled={reason() !== null ? "true" : undefined}
               title={reason() ?? undefined}
-              onClick={() => setActiveView(tab.view)}
+              onClick={() => {
+                if (reason() === null) setActiveView(tab.view);
+              }}
             >
               {tab.label}
             </button>

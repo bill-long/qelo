@@ -1,7 +1,7 @@
 import { createSignal } from "solid-js";
 import { type PushHandlers, type PushStatus, subscribeToChanges } from "@/jmap/push";
 import { handleAuthFailure, handlePushAuthFailure, isDesktop, jmap, session } from "./account";
-import { contactsAvailable, syncContacts } from "./contacts";
+import { contactsAccountId, contactsAvailable, syncContacts } from "./contacts";
 import { syncEmails, syncThreadList } from "./emails";
 import { syncMailboxes } from "./mailboxes";
 import { tauriChannelTransport } from "./push-transport";
@@ -80,10 +80,20 @@ export function startSync(): void {
   const accountId = jmap().accountId;
   const handlers: PushHandlers = {
     onChange: (account, changed) => {
-      if (account !== accountId) return;
-      if ("Email" in changed || "Thread" in changed) runSync(syncMail);
-      if ("Mailbox" in changed) runSync(syncFolders);
-      if ("AddressBook" in changed || "ContactCard" in changed) runSync(syncContactsRun);
+      if (account === accountId) {
+        if ("Email" in changed || "Thread" in changed) runSync(syncMail);
+        if ("Mailbox" in changed) runSync(syncFolders);
+      }
+      // Contacts may live in a different account than mail (we resolve it from
+      // primaryAccounts[contacts]); route AddressBook/ContactCard changes by THAT account so a
+      // contacts-on-another-account setup still live-updates. contactsAccountId() reads the live
+      // session; it's null on a contacts-less account, which never matches a real StateChange id.
+      if (
+        account === contactsAccountId() &&
+        ("AddressBook" in changed || "ContactCard" in changed)
+      ) {
+        runSync(syncContactsRun);
+      }
     },
     onStatus: setPushStatus,
     onReopen: () => {

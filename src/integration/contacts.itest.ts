@@ -31,8 +31,7 @@ describe("read-only contacts", () => {
   beforeAll(connectTestClient);
   afterAll(disconnectTestClient);
   beforeEach(() => {
-    resetStores();
-    resetContacts();
+    resetStores(); // also resets contacts state
   });
   afterEach(async () => {
     if (createdIds.length > 0) {

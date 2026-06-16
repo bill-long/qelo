@@ -90,7 +90,7 @@ async function fetchContacts(): Promise<void> {
  * Load contacts once. Idempotent — returns immediately if already loaded, joins an in-flight load
  * otherwise — and never rejects (an auth failure raises the re-auth gate; anything else is logged),
  * so a caller (the Contacts view's onMount, or branch 2's autocomplete source) can fire it freely.
- * A failed load leaves `loaded` false so the next open retries.
+ * A failed load leaves `contactsReady` false so the next open retries.
  */
 export function loadContacts(): Promise<void> {
   if (contactsReady()) return Promise.resolve();
@@ -118,7 +118,7 @@ async function syncCollection<T extends { id: string }>(
   upsert: (list: T[]) => void,
   remove: (ids: string[]) => void,
 ): Promise<string> {
-  const result = await drainChanges(client, sinceState, changesCall);
+  const result = await drainChanges(client, sinceState, changesCall, CONTACTS_USING);
   const destroyed = new Set(result.destroyed);
   const changed = new Set<string>();
   for (const id of [...result.created, ...result.updated]) {
