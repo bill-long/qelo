@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { EmailSubmission, MethodResponse } from "../types";
 import {
+  addressBookChanges,
+  addressBookGet,
   clearKeyword,
+  contactCardChanges,
+  contactCardGet,
+  contactCardQuery,
   DETAIL_PROPERTIES,
   emailGet,
   emailQuery,
@@ -9,6 +14,7 @@ import {
   emailSet,
   emailSubmissionSet,
   identityGet,
+  idsFromContactQuery,
   idsFromQuery,
   JmapMethodError,
   keywordPatch,
@@ -271,6 +277,63 @@ describe("emailSubmissionSet", () => {
     expect(r.created.sub?.id).toBe("b");
     expect(r.updated).toEqual({}); // not the trailing Email/set's `updated`
     expect(r.notCreated).toEqual({});
+  });
+});
+
+describe("contacts builders", () => {
+  it("addressBookGet defaults to all books (ids: null)", () => {
+    expect(addressBookGet("acc", "ab")).toEqual([
+      "AddressBook/get",
+      { accountId: "acc", ids: null },
+      "ab",
+    ]);
+  });
+
+  it("addressBookChanges carries the sinceState cursor", () => {
+    expect(addressBookChanges("acc", "s1", "abc")).toEqual([
+      "AddressBook/changes",
+      { accountId: "acc", sinceState: "s1" },
+      "abc",
+    ]);
+  });
+
+  it("contactCardQuery omits sort by default (server rejects ContactCard sort)", () => {
+    const [name, args, callId] = contactCardQuery("acc", "q");
+    expect(name).toBe("ContactCard/query");
+    expect(callId).toBe("q");
+    expect(args).toEqual({ accountId: "acc" });
+    expect(args).not.toHaveProperty("sort");
+  });
+
+  it("contactCardQuery forwards an explicit filter and windowing", () => {
+    const [, args] = contactCardQuery("acc", "q", {
+      filter: { inAddressBook: "b" },
+      limit: 50,
+      calculateTotal: true,
+    });
+    expect(args).toMatchObject({ filter: { inAddressBook: "b" }, limit: 50, calculateTotal: true });
+  });
+
+  it("contactCardGet builds a #ids back-reference from a query and omits literal ids", () => {
+    const [name, args] = contactCardGet("acc", "g", { idsRef: idsFromContactQuery("q") });
+    expect(name).toBe("ContactCard/get");
+    expect(args["#ids"]).toEqual({ resultOf: "q", name: "ContactCard/query", path: "/ids" });
+    expect(args).not.toHaveProperty("ids");
+    // No `properties` → the server returns the whole card (full-detail read).
+    expect(args).not.toHaveProperty("properties");
+  });
+
+  it("contactCardGet uses literal ids when given", () => {
+    const [, args] = contactCardGet("acc", "g", { ids: ["c1", "c2"] });
+    expect(args.ids).toEqual(["c1", "c2"]);
+    expect(args).not.toHaveProperty("#ids");
+  });
+
+  it("contactCardChanges carries the sinceState and optional maxChanges", () => {
+    const [, noMax] = contactCardChanges("acc", "s1", "cc");
+    expect(noMax).toEqual({ accountId: "acc", sinceState: "s1" });
+    const [, withMax] = contactCardChanges("acc", "s1", "cc", 100);
+    expect(withMax.maxChanges).toBe(100);
   });
 });
 

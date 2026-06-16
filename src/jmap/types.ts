@@ -208,6 +208,132 @@ export interface UploadResponse {
   size: number;
 }
 
+// ---------------------------------------------------------------------------
+// Contacts — JMAP for Contacts + JSContact (RFC 9553). Field names follow the
+// RFC exactly, same rule as the mail types. The dev Stalwart (v0.16) exposes
+// `AddressBook`/`ContactCard` methods over `urn:ietf:params:jmap:contacts`; the
+// card object is a JSContact `"@type":"Card"`. Most card sub-objects are id-keyed
+// maps and most fields are optional — `noUncheckedIndexedAccess` already makes
+// every map access `T | undefined`, so lean into that rather than over-asserting.
+// ---------------------------------------------------------------------------
+
+/** Per-AddressBook permissions (parallel to {@link MailboxRights}). */
+export interface AddressBookRights {
+  mayRead: boolean;
+  mayWrite: boolean;
+  mayDelete: boolean;
+  mayShare: boolean;
+}
+
+/** A JMAP AddressBook: the container a {@link ContactCard} belongs to. */
+export interface AddressBook {
+  id: Id;
+  name: string;
+  description: string | null;
+  sortOrder: number;
+  isDefault: boolean;
+  isSubscribed: boolean;
+  myRights: AddressBookRights;
+}
+
+/**
+ * One component of a structured JSContact `name`/`address` (RFC 9553 §2.2.1/§2.5.1):
+ * a `kind` (e.g. `given`/`surname` for names, `locality`/`region`/`country` for
+ * addresses) and its `value`. Other components a server sends are typed loosely via
+ * the open `kind` string rather than an exhaustive enum (the RFC reserves the set).
+ */
+export interface CardComponent {
+  kind: string;
+  value: string;
+}
+
+/** JSContact `Name` (RFC 9553 §2.2.1): the full string and/or ordered components. */
+export interface CardName {
+  full?: string;
+  components?: CardComponent[];
+  isOrdered?: boolean;
+}
+
+/**
+ * The `contexts` map shared by many JSContact properties (RFC 9553 §1.5.1): keys like
+ * `work`/`private`, each mapped to `true`. A presence map exactly like `keywords`.
+ */
+export type CardContexts = Record<string, true>;
+
+/** JSContact `EmailAddress` (RFC 9553 §2.3.1). `pref` 1 = most preferred. */
+export interface CardEmail {
+  address: string;
+  contexts?: CardContexts;
+  pref?: number;
+}
+
+/** JSContact `Phone` (RFC 9553 §2.3.3). `features` keys e.g. `mobile`/`voice`/`fax`. */
+export interface CardPhone {
+  number: string;
+  contexts?: CardContexts;
+  features?: Record<string, true>;
+  pref?: number;
+}
+
+/** JSContact `Address` (RFC 9553 §2.5.1): a postal address as full string and/or components. */
+export interface CardAddress {
+  full?: string;
+  components?: CardComponent[];
+  contexts?: CardContexts;
+  countryCode?: string;
+  pref?: number;
+}
+
+/** JSContact `Organization` (RFC 9553 §2.2.3): a name and optional org units. */
+export interface CardOrganization {
+  name?: string;
+  units?: Array<{ name: string }>;
+}
+
+/** JSContact `Title` (RFC 9553 §2.2.4): a job title or role. */
+export interface CardTitle {
+  name: string;
+  kind?: string;
+}
+
+/** JSContact `OnlineService` (RFC 9553 §2.6.3): e.g. a social/IM handle. */
+export interface CardOnlineService {
+  service?: string;
+  uri?: string;
+  user?: string;
+  contexts?: CardContexts;
+}
+
+/** JSContact `Note` (RFC 9553 §2.8.1): free-text note plus optional authorship. */
+export interface CardNote {
+  note: string;
+  created?: UtcDate;
+}
+
+/**
+ * A JSContact Card (RFC 9553) as returned by `ContactCard/get`. Only the subset Qelo
+ * reads is fully typed; rarer properties (photos, anniversaries, relations, …) are left
+ * out until a feature needs them rather than guessed. Sub-maps are id-keyed (the keys are
+ * server-assigned strings, not meaningful) — iterate values, not keys.
+ */
+export interface ContactCard {
+  "@type": "Card";
+  version: string;
+  id: Id;
+  addressBookIds?: Record<Id, true>;
+  kind?: string;
+  name?: CardName;
+  nicknames?: Record<string, { name: string }>;
+  emails?: Record<string, CardEmail>;
+  phones?: Record<string, CardPhone>;
+  addresses?: Record<string, CardAddress>;
+  organizations?: Record<string, CardOrganization>;
+  titles?: Record<string, CardTitle>;
+  onlineServices?: Record<string, CardOnlineService>;
+  notes?: Record<string, CardNote>;
+  updated?: UtcDate;
+}
+
 export type MethodCall = [string, Record<string, unknown>, string];
 export type MethodResponse = [string, Record<string, unknown>, string];
 

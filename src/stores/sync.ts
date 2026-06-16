@@ -1,6 +1,7 @@
 import { createSignal } from "solid-js";
 import { type PushHandlers, type PushStatus, subscribeToChanges } from "@/jmap/push";
 import { handleAuthFailure, handlePushAuthFailure, isDesktop, jmap, session } from "./account";
+import { syncContacts } from "./contacts";
 import { syncEmails, syncThreadList } from "./emails";
 import { syncMailboxes } from "./mailboxes";
 import { tauriChannelTransport } from "./push-transport";
@@ -47,6 +48,10 @@ const syncMail = coalesce(async () => {
   await syncEmails();
 });
 const syncFolders = coalesce(syncMailboxes);
+// Contacts own their own cursors and load lazily; syncContacts is a no-op until the Contacts
+// view has been opened, so subscribing always (below) is cheap and just enables live updates
+// once the user is in contacts.
+const syncContactsRun = coalesce(syncContacts);
 
 /**
  * Run a fire-and-forget sync action. A {@link JmapAuthError} (token refresh impossible, or
@@ -78,13 +83,15 @@ export function startSync(): void {
       if (account !== accountId) return;
       if ("Email" in changed || "Thread" in changed) runSync(syncMail);
       if ("Mailbox" in changed) runSync(syncFolders);
+      if ("AddressBook" in changed || "ContactCard" in changed) runSync(syncContactsRun);
     },
     onStatus: setPushStatus,
     onReopen: () => {
-      // We were disconnected and may have missed change notifications — resync both the
-      // mail view and the folder list to catch up.
+      // We were disconnected and may have missed change notifications — resync the mail view,
+      // the folder list, and contacts (a no-op unless contacts were opened) to catch up.
       runSync(syncMail);
       runSync(syncFolders);
+      runSync(syncContactsRun);
     },
     // A push auth failure that survived a forced refresh is a dead session — raise the
     // re-auth gate now (which also stops sync) instead of waiting for the next request.
@@ -98,8 +105,17 @@ export function startSync(): void {
   // the stream through Rust. The browser/PWA build omits the transport to use the default
   // EventSource one (push auth rides on the Vite proxy's injected credentials).
   unsubscribe = isDesktop
-    ? subscribeToChanges(current, ["Mailbox", "Email", "Thread"], handlers, tauriChannelTransport)
-    : subscribeToChanges(current, ["Mailbox", "Email", "Thread"], handlers);
+    ? subscribeToChanges(
+        current,
+        ["Mailbox", "Email", "Thread", "AddressBook", "ContactCard"],
+        handlers,
+        tauriChannelTransport,
+      )
+    : subscribeToChanges(
+        current,
+        ["Mailbox", "Email", "Thread", "AddressBook", "ContactCard"],
+        handlers,
+      );
 }
 
 export function stopSync(): void {

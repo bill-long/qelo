@@ -11,6 +11,10 @@ export const CAP_MAIL = "urn:ietf:params:jmap:mail";
 // Identity and EmailSubmission both live under the submission capability, so any request
 // touching them must add this to `using` (the default `request()` `using` is [core, mail]).
 export const CAP_SUBMISSION = "urn:ietf:params:jmap:submission";
+// AddressBook and ContactCard live under the contacts capability; a request touching them
+// must add this to `using`. The contacts account is `primaryAccounts[CAP_CONTACTS]` (== the
+// mail account on the dev server, but resolve it explicitly rather than assuming).
+export const CAP_CONTACTS = "urn:ietf:params:jmap:contacts";
 
 /** Properties needed to render a row in the conversation list. */
 export const LIST_PROPERTIES = [
@@ -277,6 +281,83 @@ export function emailSubmissionSet(
   if (opts.onSuccessUpdateEmail) args.onSuccessUpdateEmail = opts.onSuccessUpdateEmail;
   if (opts.onSuccessDestroyEmail) args.onSuccessDestroyEmail = opts.onSuccessDestroyEmail;
   return ["EmailSubmission/set", args, callId];
+}
+
+// ---------------------------------------------------------------------------
+// Contacts — AddressBook + ContactCard (JMAP for Contacts / JSContact RFC 9553)
+// ---------------------------------------------------------------------------
+
+export function addressBookGet(
+  accountId: Id,
+  callId: string,
+  opts: { ids?: Id[] | null; properties?: readonly string[] } = {},
+): MethodCall {
+  const args: Record<string, unknown> = { accountId, ids: opts.ids ?? null };
+  if (opts.properties) args.properties = opts.properties;
+  return ["AddressBook/get", args, callId];
+}
+
+export function addressBookChanges(accountId: Id, sinceState: string, callId: string): MethodCall {
+  return ["AddressBook/changes", { accountId, sinceState }, callId];
+}
+
+/** Reference the `/ids` of an earlier ContactCard/query — the query→get chain for cards. */
+export function idsFromContactQuery(queryCallId: string): ResultReference {
+  return { resultOf: queryCallId, name: "ContactCard/query", path: "/ids" };
+}
+
+export interface ContactCardQueryOptions {
+  filter?: Record<string, unknown>;
+  // Stalwart v0.16 rejects every ContactCard sort property we tried (`unsupportedSort` on
+  // `name`/`name/full`), so Qelo sorts cards client-side (lib/contacts.ts compareContacts) and
+  // omits `sort` here by default. The arg is kept for a server that does support it.
+  sort?: ReadonlyArray<{ property: string; isAscending?: boolean }>;
+  position?: number;
+  limit?: number;
+  anchor?: Id;
+  anchorOffset?: number;
+  calculateTotal?: boolean;
+}
+
+export function contactCardQuery(
+  accountId: Id,
+  callId: string,
+  opts: ContactCardQueryOptions = {},
+): MethodCall {
+  const args: Record<string, unknown> = { accountId };
+  if (opts.filter) args.filter = opts.filter;
+  if (opts.sort) args.sort = opts.sort;
+  if (opts.position !== undefined) args.position = opts.position;
+  if (opts.limit !== undefined) args.limit = opts.limit;
+  if (opts.anchor !== undefined) args.anchor = opts.anchor;
+  if (opts.anchorOffset !== undefined) args.anchorOffset = opts.anchorOffset;
+  if (opts.calculateTotal !== undefined) args.calculateTotal = opts.calculateTotal;
+  return ["ContactCard/query", args, callId];
+}
+
+export type ContactCardGetOptions = IdsSelector & { properties?: readonly string[] };
+
+export function contactCardGet(
+  accountId: Id,
+  callId: string,
+  opts: ContactCardGetOptions,
+): MethodCall {
+  const args: Record<string, unknown> = { accountId, ...idsArgs(opts) };
+  // Omitting `properties` returns the whole card — the read-only detail wants every populated
+  // field, and a card is small, so Qelo fetches full cards rather than a list/detail split.
+  if (opts.properties) args.properties = opts.properties;
+  return ["ContactCard/get", args, callId];
+}
+
+export function contactCardChanges(
+  accountId: Id,
+  sinceState: string,
+  callId: string,
+  maxChanges?: number,
+): MethodCall {
+  const args: Record<string, unknown> = { accountId, sinceState };
+  if (maxChanges !== undefined) args.maxChanges = maxChanges;
+  return ["ContactCard/changes", args, callId];
 }
 
 // ---------------------------------------------------------------------------

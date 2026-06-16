@@ -70,13 +70,45 @@ body,
   overflow-y: auto;
 }
 
-.brand {
-  padding: 1.1rem 1.1rem 0.6rem;
-  font-family: var(--font-serif);
-  font-size: 1.5rem;
+/* ---- Top-level view switch (replaces the old brand label) ---------------- */
+
+.view-switch {
+  display: flex;
+  gap: 0.15rem;
+  padding: 0.8rem 0.7rem 0.5rem;
+}
+
+.view-switch-tab {
+  flex: 1;
+  padding: 0.35rem 0.4rem;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  font: inherit;
+  font-size: 0.86rem;
   font-weight: 600;
-  letter-spacing: 0.01em;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.view-switch-tab:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.view-switch-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.view-switch-tab.is-active {
+  background: var(--selection);
   color: var(--accent);
+}
+
+.view-switch-tab:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 /* ---- Mailbox list -------------------------------------------------------- */
@@ -1279,6 +1311,230 @@ body,
   .toast {
     animation: none;
   }
+}
+
+/* ---- Contacts view ------------------------------------------------------- */
+
+/* Address-book sidebar (column 1 in contacts view) — same look as the mailbox list. */
+.addressbook-list {
+  display: flex;
+  flex-direction: column;
+  padding: 0.25rem 0.5rem 0.75rem;
+  gap: 1px;
+}
+
+.addressbook-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  font: inherit;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.addressbook-row:hover {
+  background: var(--hover);
+}
+
+.addressbook-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.addressbook-row.is-selected {
+  background: var(--selection);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.addressbook-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Contact list (column 2): a search box above a scrollable name-sorted list. */
+.contact-list {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.contact-search {
+  flex: none;
+  padding: 0.7rem 0.8rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.contact-search input {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--paper);
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--ink);
+}
+
+.contact-search input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.contact-list-note {
+  padding: 1.1rem 1rem;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+}
+
+.contact-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.contact-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  width: 100%;
+  padding: 0.6rem 1rem;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  font: inherit;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.contact-row:hover {
+  background: var(--hover);
+}
+
+.contact-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.contact-row.is-selected {
+  background: var(--selection);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.contact-row-name {
+  overflow: hidden;
+  font-family: var(--font-serif);
+  font-size: 1.02rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contact-row-email {
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Contact detail (column 3). */
+.contact-view {
+  height: 100%;
+  overflow-y: auto;
+}
+
+.contact-empty {
+  padding: 2rem 1.5rem;
+  color: var(--ink-soft);
+}
+
+.contact-detail {
+  max-width: 44rem;
+  padding: 1.6rem 1.8rem;
+}
+
+.contact-detail-head {
+  margin-bottom: 1.4rem;
+  padding-bottom: 1.1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.contact-detail-name {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 1.7rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.contact-detail-nicknames {
+  margin: 0.25rem 0 0;
+  color: var(--ink-soft);
+  font-style: italic;
+}
+
+.contact-detail-org {
+  margin: 0.3rem 0 0;
+  color: var(--ink-soft);
+  font-size: 0.95rem;
+}
+
+.contact-detail-section {
+  margin-bottom: 1.3rem;
+}
+
+.contact-detail-label {
+  margin: 0 0 0.5rem;
+  color: var(--ink-soft);
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.contact-detail-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.7rem;
+  padding: 0.2rem 0;
+}
+
+.contact-detail-value {
+  min-width: 0;
+  word-break: break-word;
+}
+
+.contact-detail-value a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.contact-detail-value a:hover {
+  text-decoration: underline;
+}
+
+.contact-detail-context {
+  flex: none;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--ink-soft);
+  font-size: 0.7rem;
+  text-transform: lowercase;
+}
+
+.contact-note {
+  margin: 0 0 0.4rem;
+  white-space: pre-wrap;
 }
 
 @media (prefers-color-scheme: dark) {
