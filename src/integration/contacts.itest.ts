@@ -4,9 +4,11 @@
 // create/destroy is picked up incrementally by syncContacts (the AddressBook/ContactCard /changes
 // cursors).
 
+import { unwrap } from "solid-js/store";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { CAP_CONTACTS, CAP_CORE, methodResult } from "@/jmap/methods";
-import type { Id } from "@/jmap/types";
+import type { ContactCard, Id } from "@/jmap/types";
+import { cardToEditable } from "@/lib/contacts";
 import {
   addressBooks,
   contactCards,
@@ -14,6 +16,7 @@ import {
   contactsReady,
   loadContacts,
   resetContacts,
+  saveContact,
   syncContacts,
 } from "@/stores/contacts";
 import { connectTestClient, disconnectTestClient, resetStores, testClient } from "./harness";
@@ -35,7 +38,7 @@ interface CardSpec {
   org?: string;
 }
 
-describe("read-only contacts", () => {
+describe("contacts (live Stalwart)", () => {
   const createdIds: Id[] = [];
 
   beforeAll(connectTestClient);
@@ -158,6 +161,127 @@ describe("read-only contacts", () => {
     createdIds.splice(createdIds.indexOf(firstId), 1);
     await syncUntil(() => !(firstId in contactCards));
     expect(firstId in contactCards).toBe(false);
+  });
+
+  /** The card from the store, or throw — keeps the tests free of `!` non-null assertions. */
+  function requireCard(id: Id): ContactCard {
+    const c = contactCards[id];
+    if (!c) throw new Error(`card ${id} not in the store`);
+    return c;
+  }
+
+  /** Create one card from a raw JSContact body (richer than seedCards); returns its server id. */
+  async function seedRawCard(body: Record<string, unknown>): Promise<Id> {
+    const client = testClient();
+    const resp = await client.request(
+      [["ContactCard/set", { accountId: contactsAcct(), create: { n0: body } }, "cs"]],
+      CONTACTS_USING,
+    );
+    const result = methodResult(resp, "cs");
+    const notCreated = (result.notCreated ?? {}) as Record<string, unknown>;
+    if (Object.keys(notCreated).length > 0) {
+      throw new Error(`ContactCard/set notCreated: ${JSON.stringify(notCreated)}`);
+    }
+    const id = ((result.created ?? {}) as Record<string, { id: Id }>).n0?.id;
+    if (!id) throw new Error("seedRawCard did not create n0");
+    createdIds.push(id);
+    return id;
+  }
+
+  it("saveContact edits a card: name change, leaf carry-through, removal, and a new entry", async () => {
+    const bookId = await defaultBookId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    // A rich card: an email carrying pref + contexts (the un-edited sub-fields a whole-property patch
+    // must carry through), plus an organization we'll remove.
+    const id = await seedRawCard({
+      "@type": "Card",
+      version: "1.0",
+      addressBookIds: { [bookId]: true },
+      name: { full: `Before ${tag}` },
+      emails: { e1: { address: `before-${tag}@auto.test`, pref: 1, contexts: { work: true } } },
+      organizations: { o1: { name: `Org ${tag}` } },
+    });
+    await loadUntil(id);
+
+    const baseline = structuredClone(unwrap(requireCard(id))) as ContactCard;
+    const editable = cardToEditable(baseline);
+    editable.nameFull = `After ${tag}`;
+    const firstEmail = editable.emails[0];
+    if (firstEmail) firstEmail.value = `after-${tag}@auto.test`; // change address, keep pref/contexts
+    editable.organizations = []; // remove the whole organizations property
+    editable.phones.push({ key: null, value: "+1-555-0199" }); // add a new entry
+
+    const result = await saveContact(id, baseline, editable);
+    expect(result).toEqual({ ok: true });
+
+    // saveContact reconciles to server truth after the set, so the store holds the persisted card.
+    const saved = contactCards[id];
+    expect(saved?.name?.full).toBe(`After ${tag}`);
+    const email = Object.values(saved?.emails ?? {})[0];
+    expect(email?.address).toBe(`after-${tag}@auto.test`);
+    expect(email?.pref).toBe(1); // carried through
+    expect(email?.contexts).toEqual({ work: true }); // carried through
+    expect(saved?.organizations).toBeUndefined(); // removed
+    expect(Object.values(saved?.phones ?? {})[0]?.number).toBe("+1-555-0199"); // added
+
+    // Persisted: a fresh reload from the server shows the same edits.
+    await loadUntil(id);
+    expect(contactCards[id]?.name?.full).toBe(`After ${tag}`);
+    expect(contactCards[id]?.organizations).toBeUndefined();
+  });
+
+  it("saveContact patches only the user's delta, merging with a concurrent change to another field", async () => {
+    const bookId = await defaultBookId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    const id = await seedRawCard({
+      "@type": "Card",
+      version: "1.0",
+      addressBookIds: { [bookId]: true },
+      name: { full: `Concurrent ${tag}` },
+      emails: { e1: { address: `before-${tag}@auto.test` } },
+    });
+    await loadUntil(id);
+
+    // The form's baseline + edits: change only the name, never touch the email.
+    const baseline = structuredClone(unwrap(requireCard(id))) as ContactCard;
+    const editable = cardToEditable(baseline);
+    editable.nameFull = `Renamed ${tag}`;
+
+    // A concurrent server-side edit to a DIFFERENT property (the email) lands before we save.
+    await testClient().request(
+      [
+        [
+          "ContactCard/set",
+          {
+            accountId: contactsAcct(),
+            update: { [id]: { "emails/e1/address": `concurrent-${tag}@auto.test` } },
+          },
+          "u",
+        ],
+      ],
+      CONTACTS_USING,
+    );
+
+    const result = await saveContact(id, baseline, editable);
+    expect(result).toEqual({ ok: true });
+
+    // The name is the user's edit; the concurrent email change SURVIVES (the patch never touched it).
+    expect(contactCards[id]?.name?.full).toBe(`Renamed ${tag}`);
+    expect(Object.values(contactCards[id]?.emails ?? {})[0]?.address).toBe(
+      `concurrent-${tag}@auto.test`,
+    );
+  });
+
+  it("saveContact is a clean no-op when nothing changed", async () => {
+    const bookId = await defaultBookId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    const [id] = (await seedCards(bookId, [{ fullName: `Noop ${tag}` }])) as [Id];
+    await loadUntil(id);
+    // An untouched working copy yields an empty patch — saveContact returns ok without a round trip.
+    const baseline = structuredClone(unwrap(requireCard(id))) as ContactCard;
+    const result = await saveContact(id, baseline, cardToEditable(baseline));
+    expect(result).toEqual({ ok: true });
+    expect(contactCards[id]?.name?.full).toBe(`Noop ${tag}`);
   });
 
   /** Run syncContacts until `pred` holds (ContactCard/changes can lag the /set by a beat). */

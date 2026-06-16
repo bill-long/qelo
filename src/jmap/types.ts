@@ -279,6 +279,8 @@ export interface CardPhone {
 export interface CardAddress {
   full?: string;
   components?: CardComponent[];
+  /** Whether `components` are in a meaningful order (RFC 9553 §2.5.1) — Stalwart sets it. */
+  isOrdered?: boolean;
   contexts?: CardContexts;
   countryCode?: string;
   pref?: number;
