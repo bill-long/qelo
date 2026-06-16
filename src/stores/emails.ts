@@ -525,7 +525,10 @@ async function optimisticEmailUpdate(
   try {
     const client = jmap();
     const responses = await client.request([emailSet(client.accountId, "set", { update })]);
-    refused = Object.keys(setResult(responses, "set").notUpdated);
+    // requireNewState:false — a fully-refused update omits newState (Stalwart), which this path
+    // never persists (sync advances emailState via Email/changes); without it setResult would throw
+    // on the all-refused case, dropping into the blunt rollback instead of the per-item reconcile.
+    refused = Object.keys(setResult(responses, "set", { requireNewState: false }).notUpdated);
   } catch (err) {
     // Unknown server outcome (transport/method-level error, or jmap() after sign-out): we can't
     // refetch (the request itself failed), so revert every row we touched — guarded so we don't
@@ -754,7 +757,9 @@ export async function deleteForever(ids: string[]): Promise<void> {
   try {
     const client = jmap();
     const responses = await client.request([emailSet(client.accountId, "set", { destroy: ids })]);
-    const r = setResult(responses, "set");
+    // requireNewState:false — a fully-refused destroy omits newState (Stalwart); this path syncs via
+    // Email/changes, not this token, so tolerate its absence and read the destroyed/notDestroyed maps.
+    const r = setResult(responses, "set", { requireNewState: false });
     for (const id of r.destroyed) gone.add(id);
     for (const [id, err] of Object.entries(r.notDestroyed)) {
       if (err.type === "notFound") gone.add(id);
