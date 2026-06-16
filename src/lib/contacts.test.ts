@@ -135,6 +135,12 @@ describe("contactMatchesQuery", () => {
     expect(contactMatchesQuery(c, "engine")).toBe(true);
     expect(contactMatchesQuery(c, "zzz")).toBe(false);
   });
+
+  it("matches a nickname even when it isn't the display name", () => {
+    const withNick = card({ name: { full: "Augusta King" }, nicknames: { n1: { name: "Ada" } } });
+    expect(contactDisplayName(withNick)).toBe("Augusta King");
+    expect(contactMatchesQuery(withNick, "ada")).toBe(true);
+  });
 });
 
 describe("compareAddressBooks", () => {

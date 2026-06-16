@@ -1,7 +1,7 @@
 import { createSignal } from "solid-js";
 import { type PushHandlers, type PushStatus, subscribeToChanges } from "@/jmap/push";
 import { handleAuthFailure, handlePushAuthFailure, isDesktop, jmap, session } from "./account";
-import { syncContacts } from "./contacts";
+import { contactsAvailable, syncContacts } from "./contacts";
 import { syncEmails, syncThreadList } from "./emails";
 import { syncMailboxes } from "./mailboxes";
 import { tauriChannelTransport } from "./push-transport";
@@ -97,6 +97,12 @@ export function startSync(): void {
     // re-auth gate now (which also stops sync) instead of waiting for the next request.
     onAuthFailure: handlePushAuthFailure,
   };
+  // Only subscribe to the contacts types on an account that actually advertises contacts —
+  // a server without the capability could reject an unknown type and fail the WHOLE stream
+  // (mail push included), so don't request them speculatively.
+  const types = ["Mailbox", "Email", "Thread"];
+  if (contactsAvailable()) types.push("AddressBook", "ContactCard");
+
   // subscribeToChanges emits "connecting" synchronously when it actually opens a stream
   // (and stays silent — pushStatus null — when EventSource is unavailable), so don't
   // pre-set a status here that could strand the UI on "Connecting…".
@@ -105,17 +111,8 @@ export function startSync(): void {
   // the stream through Rust. The browser/PWA build omits the transport to use the default
   // EventSource one (push auth rides on the Vite proxy's injected credentials).
   unsubscribe = isDesktop
-    ? subscribeToChanges(
-        current,
-        ["Mailbox", "Email", "Thread", "AddressBook", "ContactCard"],
-        handlers,
-        tauriChannelTransport,
-      )
-    : subscribeToChanges(
-        current,
-        ["Mailbox", "Email", "Thread", "AddressBook", "ContactCard"],
-        handlers,
-      );
+    ? subscribeToChanges(current, types, handlers, tauriChannelTransport)
+    : subscribeToChanges(current, types, handlers);
 }
 
 export function stopSync(): void {

@@ -38,6 +38,17 @@ function contextLabel(contexts: Record<string, true> | undefined): string | null
   return keys[0] ?? null;
 }
 
+// Collect the trimmed, non-empty string field `pick` from each value of an id-keyed JSContact map
+// (the shape of organizations/titles/notes/nicknames). Centralizes the repeated values→map→filter.
+function trimmedFrom<T>(
+  map: Record<string, T> | undefined,
+  pick: (v: T) => string | undefined,
+): string[] {
+  return Object.values(map ?? {})
+    .map((v) => pick(v)?.trim())
+    .filter((s): s is string => Boolean(s));
+}
+
 // An online-service `uri` is untrusted card data, so only surface it as a clickable link when it's
 // an http(s) URL — a `javascript:`/`data:` scheme would otherwise execute on click. Anything else
 // (or an unparseable value) renders as plain text. mailto:/tel: hrefs are built locally from
@@ -62,28 +73,12 @@ function ContactDetail(props: { card: ContactCard }) {
       .map((a) => ({ label: contextLabel(a?.contexts), text: a ? formatAddress(a) : "" }))
       .filter((a) => a.text !== ""),
   );
-  const organizations = createMemo(() =>
-    Object.values(card().organizations ?? {})
-      .map((o) => o?.name?.trim())
-      .filter((n): n is string => Boolean(n)),
-  );
-  const titles = createMemo(() =>
-    Object.values(card().titles ?? {})
-      .map((t) => t?.name?.trim())
-      .filter((n): n is string => Boolean(n)),
-  );
+  const organizations = createMemo(() => trimmedFrom(card().organizations, (o) => o?.name));
+  const titles = createMemo(() => trimmedFrom(card().titles, (t) => t?.name));
+  const notes = createMemo(() => trimmedFrom(card().notes, (n) => n?.note));
+  const nicknames = createMemo(() => trimmedFrom(card().nicknames, (n) => n?.name));
   const services = createMemo(() =>
     Object.values(card().onlineServices ?? {}).filter((s) => s?.uri || s?.user),
-  );
-  const notes = createMemo(() =>
-    Object.values(card().notes ?? {})
-      .map((n) => n?.note?.trim())
-      .filter((n): n is string => Boolean(n)),
-  );
-  const nicknames = createMemo(() =>
-    Object.values(card().nicknames ?? {})
-      .map((n) => n?.name?.trim())
-      .filter((n): n is string => Boolean(n)),
   );
 
   return (

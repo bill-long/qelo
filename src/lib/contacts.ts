@@ -97,14 +97,19 @@ export function contactInBook(card: ContactCard, bookId: string | null): boolean
 }
 
 /**
- * Whether a card matches a search `query` (case-insensitive substring of its display name, any email
- * address, or any organization name). An empty/whitespace query matches everything — the list shows
- * all contacts until the user types. Pure, so the list's client-side search is unit-tested.
+ * Whether a card matches a search `query` (case-insensitive substring of its display name, any
+ * nickname, email address, or organization name). An empty/whitespace query matches everything —
+ * the list shows all contacts until the user types. Nicknames are searched even when they aren't
+ * the chosen display name, so typing a nickname still finds the contact. (Phones aren't searched:
+ * formatting like `+1-555` makes substring matching on numbers unreliable.) Pure + unit-tested.
  */
 export function contactMatchesQuery(card: ContactCard, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (q === "") return true;
   if (contactDisplayName(card).toLowerCase().includes(q)) return true;
+  for (const nick of Object.values(card.nicknames ?? {})) {
+    if (nick?.name?.toLowerCase().includes(q)) return true;
+  }
   for (const email of Object.values(card.emails ?? {})) {
     if (email?.address?.toLowerCase().includes(q)) return true;
   }

@@ -41,9 +41,9 @@ export function ContactList() {
         <Show
           when={visible().length > 0}
           fallback={
-            <p class="contact-list-note">
-              {Object.keys(contactCards).length === 0 ? "No contacts" : "No matches"}
-            </p>
+            // An empty search never filters anything out, so it can only mean the (selected) book
+            // is empty — "No matches" applies only once a query has actually excluded cards.
+            <p class="contact-list-note">{search().trim() === "" ? "No contacts" : "No matches"}</p>
           }
         >
           <ul class="contact-rows">
