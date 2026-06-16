@@ -23,7 +23,8 @@ export function ContactView() {
   );
 }
 
-// Space-join a structured address (full string if present, else its non-separator components).
+// Render a structured address: the `full` string if present, else its non-separator components
+// comma-joined (street/city/region read naturally on one line).
 function formatAddress(addr: CardAddress): string {
   if (addr.full?.trim()) return addr.full.trim();
   return (addr.components ?? [])
