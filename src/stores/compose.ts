@@ -341,8 +341,8 @@ export const [composeError, setComposeError] = createSignal<string | null>(null)
 // refusal can't pile up duplicate drafts. JMAP Email content is immutable — only keywords and
 // mailboxIds are mutable (RFC 8621 §4) — so a retry carrying the user's edits MUST create a fresh
 // draft and destroy this one rather than update it in place; this mirrors the reference JMAP client
-// (Ltt.rs, which always create+destroys to edit a draft). Null when there's no orphan to clean up;
-// reset at every session boundary (open/close/discard) so it can never leak across composer sessions.
+// (Ltt.rs creates a fresh draft and destroys the old one to edit). Null when there's no orphan to
+// clean up; reset at every session boundary (open/close/discard) so it can't leak across sessions.
 export const [pendingDraftId, setPendingDraftId] = createSignal<string | null>(null);
 
 // Bumped every time the draft is opened or reset. An in-flight attachFiles captures the value at
