@@ -257,13 +257,15 @@ function freshKey(used: Set<string>): string {
 // original sub-object (carrying through fields the form doesn't edit — `pref`/`contexts`, a postal
 // address's `components`, an org's `units`) under its original key; new entries get a fresh key.
 //
-// A blank value means "this leaf is empty", NOT "delete the entry" (removal is the ✕ button, which
-// drops the row from `entries`). So a blanked leaf on an EXISTING entry clears just that leaf and
-// keeps the rest — this is what preserves a component-only address whose editable `full` is blank.
-// The entry is dropped only when nothing survives: a NEW entry with a blank value (never had any
-// content), or an existing entry whose sub-object is empty once the leaf is removed (e.g. an email
-// whose sole field was the now-cleared address). Returns undefined when no entry survives, which the
-// callers turn into the whole property's removal.
+// An entry whose value still equals the card's original leaf is kept VERBATIM — never trimmed,
+// re-keyed, or diffed — so opening and saving without touching it is a true no-op (no whitespace
+// stripping, no spurious patch). Only a value the user actually changed is trimmed.
+//
+// A (changed) blank value means "this leaf is empty", NOT "delete the entry" (removal is the ✕
+// button, which drops the row from `entries`). So clearing an EXISTING entry's leaf keeps the rest —
+// this is what preserves a component-only address whose `full` is blank. The entry is dropped only
+// when nothing survives: a NEW entry with a blank value, or an existing entry whose sub-object is
+// empty once the leaf is removed. Returns undefined when no entry survives → the property's removal.
 function rebuildSingle<T extends object>(
   entries: ValueEntry[],
   original: Record<string, T> | undefined,
@@ -272,8 +274,15 @@ function rebuildSingle<T extends object>(
   const out: Record<string, T> = {};
   const used = new Set(entries.map((e) => e.key).filter((k): k is string => k !== null));
   for (const entry of entries) {
-    const value = entry.value.trim();
     const base = entry.key ? original?.[entry.key] : undefined;
+    const originalLeaf = base ? (base as Record<string, unknown>)[leaf] : undefined;
+    // Unchanged (the editable value still matches the original leaf, both treating absent as "") →
+    // keep the server's sub-object verbatim. cardToEditable does not trim, so this round-trips.
+    if (base && entry.value === (originalLeaf ?? "")) {
+      out[entry.key as string] = base;
+      continue;
+    }
+    const value = entry.value.trim();
     if (value === "") {
       if (!base) continue; // a new (or already-empty) entry with nothing to keep
       const kept = { ...base } as Record<string, unknown>;
@@ -294,14 +303,24 @@ function rebuildServices(
   const out: Record<string, CardOnlineService> = {};
   const used = new Set(entries.map((e) => e.key).filter((k): k is string => k !== null));
   for (const entry of entries) {
+    const base = entry.key ? original?.[entry.key] : undefined;
+    // Unchanged → keep verbatim (preserves contexts, never drops an existing entry, no trim churn).
+    if (
+      base &&
+      entry.service === (base.service ?? "") &&
+      entry.user === (base.user ?? "") &&
+      entry.uri === (base.uri ?? "")
+    ) {
+      out[entry.key as string] = base;
+      continue;
+    }
     const service = entry.service.trim();
     const user = entry.user.trim();
     const uri = entry.uri.trim();
-    // A bare label with neither a handle nor a URI isn't a usable service entry — drop it.
+    // A new or edited entry left with neither a handle nor a URI isn't a usable service — drop it.
+    // (An existing such entry is caught by the unchanged guard above, so it's never silently deleted.)
     if (user === "" && uri === "") continue;
-    const obj: Record<string, unknown> = {
-      ...((entry.key ? original?.[entry.key] : undefined) ?? {}),
-    };
+    const obj: Record<string, unknown> = { ...(base ?? {}) };
     setOrDelete(obj, "service", service);
     setOrDelete(obj, "user", user);
     setOrDelete(obj, "uri", uri);
@@ -310,9 +329,11 @@ function rebuildServices(
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-// Rebuild the name: keep the original components/isOrdered, set/clear `full`. An emptied name
-// object (no full, no components) becomes undefined → the property's removal.
+// Rebuild the name: keep the original components/isOrdered, set/clear `full`. Unchanged `full`
+// (matching the original, absent treated as "") keeps the original name verbatim — no trim churn.
+// An emptied name object (no full, no components) becomes undefined → the property's removal.
 function rebuildName(nameFull: string, original: CardName | undefined): CardName | undefined {
+  if (nameFull === (original?.full ?? "")) return original;
   const next: CardName = { ...(original ?? {}) };
   const full = nameFull.trim();
   if (full) next.full = full;

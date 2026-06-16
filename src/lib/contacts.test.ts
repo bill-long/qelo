@@ -394,6 +394,33 @@ describe("editableToPatch", () => {
     );
     expect(patch).toEqual({});
   });
+
+  it("does not mutate untouched values: open + save is a no-op even with whitespace/odd data", () => {
+    // A note with a trailing newline, an email, a name with a trailing space, and an online service
+    // that has neither user nor uri (a degenerate but real server entry). Saving without editing
+    // anything must produce no patch — no whitespace stripping, no dropped service.
+    const c = card({
+      name: { full: "Ada " },
+      emails: { e1: { address: "ada@x.test" } },
+      notes: { n1: { note: "Met at conf\n" } },
+      onlineServices: { s1: { service: "Old", contexts: { work: true } } },
+    });
+    expect(editableToPatch(c, cardToEditable(c))).toEqual({});
+  });
+
+  it("preserves an existing online service with only a label/contexts when another field changes", () => {
+    const c = card({
+      name: { full: "Ada" },
+      onlineServices: { s1: { service: "Old", contexts: { work: true } } },
+    });
+    const patch = editableToPatch(
+      c,
+      editableOf(c, (e) => {
+        e.nameFull = "Ada Lovelace";
+      }),
+    );
+    expect(patch).toEqual({ name: { full: "Ada Lovelace" } }); // onlineServices untouched
+  });
 });
 
 describe("editableToCard", () => {
