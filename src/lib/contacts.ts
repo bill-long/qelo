@@ -165,7 +165,11 @@ export function compareAddressBooks(a: AddressBook, b: AddressBook): number {
  * `addressBooks` store. (Branch 5's delete will mirror this on `mayDelete`.)
  */
 export function cardMayWrite(card: ContactCard, books: Record<string, AddressBook>): boolean {
-  return Object.keys(card.addressBookIds ?? {}).some((id) => books[id]?.myRights.mayWrite === true);
+  // Check the membership value is true (not just the key's presence), matching contactInBook — a
+  // card carrying an addressBookId mapped to a falsy value isn't actually in that book.
+  return Object.entries(card.addressBookIds ?? {}).some(
+    ([id, present]) => present === true && books[id]?.myRights.mayWrite === true,
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -200,6 +200,12 @@ describe("cardMayWrite", () => {
     expect(cardMayWrite(card({ addressBookIds: { gone: true } }), writable)).toBe(false);
     expect(cardMayWrite(card({}), writable)).toBe(false);
   });
+
+  it("ignores a membership mapped to a falsy value (not actually in the book)", () => {
+    // addressBookIds is a presence map (Record<Id, true>); guard against a server sending false.
+    const c = card({ addressBookIds: { rw: false } as unknown as Record<string, true> });
+    expect(cardMayWrite(c, writable)).toBe(false);
+  });
 });
 
 describe("cardToEditable", () => {
