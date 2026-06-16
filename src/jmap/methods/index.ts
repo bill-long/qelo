@@ -370,9 +370,11 @@ export function setResult<T = Email>(
   callId: string,
   { requireNewState = true }: { requireNewState?: boolean } = {},
 ): SetResult<T> {
-  // The raw args are the (Email|EmailSubmission)SetResponse wire shape (nullable maps);
+  // The raw args are the (Email|EmailSubmission)SetResponse wire shape (nullable maps). Partial<>
+  // because an all-failed /set legitimately omits newState (and any map) — the typeof/?? guards below
+  // handle the absent cases, so a non-Partial cast would falsely promise a required newState string.
   // SetResult is its normalized form. methodResult has already thrown on a method-level error.
-  const args = methodResult(responses, callId) as unknown as EmailSetResponse;
+  const args = methodResult(responses, callId) as unknown as Partial<EmailSetResponse>;
   const oldState = typeof args.oldState === "string" ? args.oldState : null;
   // newState is a required cursor token on a *state-changing* /set (RFC 8620 §5.3). A missing one
   // is fatal only for a caller that persists it (requireNewState); otherwise it just means an

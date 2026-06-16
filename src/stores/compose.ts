@@ -558,12 +558,17 @@ export function draftSetArgs(
 
 // After a create(+destroy) attempt that left the composer open (some failure), which draft id should
 // a further retry clean up? A freshly-created draft supersedes the old orphan (which rode along as
-// the destroy), so track it; if the create itself failed, the old orphan only lingers when its
-// destroy didn't apply (otherwise nothing remains to clean up).
+// the destroy), so track it. Otherwise the old orphan is only worth re-tracking if it still exists:
+// drop it once its destroy applied OR the server reports it already gone (notFound) — mirroring
+// deleteForever, which counts a notFound destroy as gone — so pendingDraftId can't stick on a
+// non-existent id.
 export function nextOrphanId(result: SetResult, orphanId: string | null): string | null {
   const created = result.created.draft?.id;
   if (created) return created;
-  if (orphanId && result.destroyed.includes(orphanId)) return null;
+  if (!orphanId) return null;
+  if (result.destroyed.includes(orphanId) || result.notDestroyed[orphanId]?.type === "notFound") {
+    return null;
+  }
   return orphanId;
 }
 

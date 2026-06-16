@@ -493,6 +493,13 @@ describe("nextOrphanId", () => {
     expect(nextOrphanId(r, "orphan1")).toBe("orphan1");
   });
 
+  it("clears the orphan when the server reports its destroy as notFound (already gone)", () => {
+    // notFound means the draft is gone server-side — nothing to clean up, so don't leave
+    // pendingDraftId stuck on a non-existent id (mirrors deleteForever treating notFound as gone).
+    const r = result({ notDestroyed: { orphan1: { type: "notFound" } } });
+    expect(nextOrphanId(r, "orphan1")).toBeNull();
+  });
+
   it("is null when there is neither a created draft nor an orphan", () => {
     expect(nextOrphanId(result({}), null)).toBeNull();
   });
