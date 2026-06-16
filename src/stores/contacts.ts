@@ -272,10 +272,11 @@ export async function saveContact(
     );
     refused = setResult<ContactCard>(responses, "set", { requireNewState: false }).notUpdated[id];
   } catch (err) {
-    if (handleAuthFailure(err)) return { ok: false, reason: "auth" };
     // The /set never applied — revert the optimistic write to server truth (or the baseline if the
-    // refetch also fails), then report the error.
+    // refetch also fails), independent of the re-auth gate (the change didn't persist either way),
+    // then raise that gate / report the error.
     await revertOptimistic(accountId, id, baseline);
+    if (handleAuthFailure(err)) return { ok: false, reason: "auth" };
     console.error("ContactCard/set update failed:", err);
     return { ok: false, reason: "error" };
   }
@@ -285,9 +286,12 @@ export async function saveContact(
   try {
     await reconcileCard(accountId, id);
   } catch (err) {
-    // A refetch blip: keep the optimistic write on success (it ≈ server truth), but on a refusal we
-    // couldn't fetch truth to revert to — fall back to the baseline.
-    if (!handleAuthFailure(err) && refused) {
+    // A refetch blip. Raise the re-auth gate if applicable, but the gate must NOT skip the revert:
+    // on a refusal the server rejected the optimistic write, so fall back to the baseline regardless
+    // (else a token expiring between the /set and the reconcile leaves rejected data on screen). On
+    // success the optimistic write ≈ server truth, so keep it.
+    handleAuthFailure(err);
+    if (refused) {
       setContactCards(
         produce((s) => {
           s[id] = baseline;
