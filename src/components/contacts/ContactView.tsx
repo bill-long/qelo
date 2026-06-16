@@ -55,8 +55,11 @@ function trimmedFrom<T>(
 // to the characters a tel URI permits (RFC 3966: digits, a leading `+`, and visual separators), so
 // `+1-555-0100` stays dialable. Untrusted data, so anything outside that set is dropped.
 function telHref(number: string): string {
-  const dial = number.replace(/[^\d+().-]/g, "");
-  return `tel:${dial}`;
+  const cleaned = number.replace(/[^\d+().-]/g, "");
+  // RFC 3966 allows `+` only as the leading char (the global-number prefix); keep a leading one,
+  // strip any others so a mid-string `+` (e.g. "1+23") can't produce a non-conformant tel: URI.
+  const prefix = cleaned.startsWith("+") ? "+" : "";
+  return `tel:${prefix}${cleaned.replaceAll("+", "")}`;
 }
 
 // An online-service `uri` is untrusted card data, so only surface it as a clickable link when it's
