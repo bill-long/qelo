@@ -1,9 +1,10 @@
-// Pure helpers for recipient autocomplete (Phase 1: past recipients mined from sent mail).
+// Pure helpers for recipient autocomplete. Suggestions come from TWO sources, merged into one ranked
+// index: past recipients mined from sent mail, and the user's saved contacts (JSContact cards).
 //
 // Two concerns, both string/data → string/data so they're unit-tested in isolation (no SolidJS,
 // no JMAP client):
-//   1. Build a ranked suggestion index from the recipients of sent Email objects, and match a typed
-//      fragment against it.
+//   1. Build a ranked suggestion index from the recipients of sent Email objects + saved contacts,
+//      and match a typed fragment against it.
 //   2. Locate and replace the address fragment the caret sits in within a multi-recipient field, so
 //      picking a suggestion completes only the address being typed and leaves the rest untouched.
 //
@@ -12,7 +13,8 @@
 // display-name form would break parsing/validation. The dropdown shows the rich "Name <email>"
 // label; only `email` is written into the field — and the store's send-time validator still vets it.
 
-import type { Email, EmailAddress } from "@/jmap/types";
+import type { ContactCard, Email, EmailAddress } from "@/jmap/types";
+import { contactNominalName, sortedEmails } from "./contacts";
 
 /** One address the user can complete to: the bare `email`, plus a display `name` when one is known. */
 export interface RecipientSuggestion {
@@ -22,22 +24,34 @@ export interface RecipientSuggestion {
 
 // Internal accumulator: a suggestion plus the signals it's ranked by.
 interface Ranked extends RecipientSuggestion {
-  /** How many sent messages addressed this email (frequency). */
+  /** How many sent messages addressed this email (frequency). 0 for a contact-only address. */
   count: number;
-  /** Encounter order of the FIRST sighting — lower = more recent (the input is newest-first). */
+  /** Encounter order of the FIRST Sent sighting — lower = more recent (input is newest-first);
+   *  +Infinity for a contact-only address (no recency signal → sorted among contacts by name). */
   rank: number;
+  /** A saved contact contributes this address — lifts it above one-off Sent addresses (the floor). */
+  contact: boolean;
 }
 
 /**
- * Build a ranked suggestion index from sent messages' recipients. `emails` MUST be newest-first
- * (the order the Sent `Email/query` returns), so encounter order doubles as a recency signal.
- * Collects every `to`/`cc`/`bcc` address, dedupes by the LOWERCASED email (a content key, like the
- * blob-dedupe elsewhere — `bcc`/`cc` casing varies), keeps the verbatim address of the first sighting
- * for display, fills in a display name from a later sighting if the first lacked one, and counts
- * occurrences. Result is sorted most-frequent-first, ties broken by most-recent — the order the
- * combobox surfaces matches.
+ * Build a ranked suggestion index from two sources: sent messages' recipients and the user's saved
+ * contacts. `emails` MUST be newest-first (the order the Sent `Email/query` returns), so encounter
+ * order doubles as a recency signal. Collects every `to`/`cc`/`bcc` address, dedupes by the
+ * LOWERCASED email (a content key, like the blob-dedupe elsewhere — `bcc`/`cc` casing varies), keeps
+ * the verbatim address of the first sighting for display, fills in a display name from a later
+ * sighting if the first lacked one, and counts occurrences. Saved `contacts` then fold in as a
+ * second source (deduped against Sent by the same lowercased key), contributing addresses the user
+ * may never have emailed and a curated display name that wins on a collision.
+ *
+ * Ranking is blended with contacts as a floor: most-frequent Sent first, but a contact never sinks
+ * below a one-off (count-1) Sent address — real usage stays the stronger signal (someone emailed
+ * often outranks a never-emailed contact), while a saved contact still beats a stranger emailed once.
+ * Ties break by recency, then name, then email — a stable order the combobox surfaces directly.
  */
-export function buildSuggestionIndex(emails: Email[]): RecipientSuggestion[] {
+export function buildSuggestionIndex(
+  emails: Email[],
+  contacts: readonly ContactCard[] = [],
+): RecipientSuggestion[] {
   // A Map (not a plain object) so an exotic local part like "__proto__@x" is just an ordinary key.
   const byEmail = new Map<string, Ranked>();
   let order = 0;
@@ -60,15 +74,55 @@ export function buildSuggestionIndex(emails: Email[]): RecipientSuggestion[] {
         if (!countedThisMessage.has(key)) existing.count += 1;
         if (!existing.name && name) existing.name = name; // backfill a name an earlier sighting lacked
       } else {
-        byEmail.set(key, { email: raw, name, count: 1, rank: order });
+        byEmail.set(key, { email: raw, name, count: 1, rank: order, contact: false });
         order += 1;
       }
       countedThisMessage.add(key);
     }
   }
-  return [...byEmail.values()]
-    .sort((a, b) => b.count - a.count || a.rank - b.rank)
-    .map(({ email, name }) => ({ email, name }));
+  // Second source: saved contacts. Each contact email either marks an existing Sent entry as a
+  // contact (preferring its curated name) or adds a fresh contact-only entry with no Sent frequency.
+  for (const card of contacts) {
+    const name = contactNominalName(card);
+    for (const cardEmail of sortedEmails(card)) {
+      const raw = cardEmail.address.trim();
+      if (!raw) continue;
+      const key = raw.toLowerCase();
+      const existing = byEmail.get(key);
+      if (existing) {
+        existing.contact = true;
+        if (name) existing.name = name; // curated display name preferred on a collision
+      } else {
+        byEmail.set(key, {
+          email: raw,
+          name,
+          count: 0,
+          rank: Number.POSITIVE_INFINITY,
+          contact: true,
+        });
+      }
+    }
+  }
+  return [...byEmail.values()].sort(compareRanked).map(({ email, name }) => ({ email, name }));
+}
+
+// Effective frequency for ranking: a contact floors at 1.5 so it sits ABOVE one-off (count 1) Sent
+// addresses yet BELOW anything sent twice or more — real usage stays the stronger signal. A non-
+// contact uses its raw Sent count (always ≥ 1).
+function effectiveCount(r: Ranked): number {
+  return r.contact ? Math.max(r.count, 1.5) : r.count;
+}
+
+// Order: higher effective frequency first; then Sent recency (lower rank = more recent — both
+// +Infinity for two contact-only entries yields NaN, which `||` treats as a falsy tie → fall
+// through); then display name, then the address itself for a fully deterministic order.
+function compareRanked(a: Ranked, b: Ranked): number {
+  return (
+    effectiveCount(b) - effectiveCount(a) ||
+    a.rank - b.rank ||
+    (a.name ?? a.email).localeCompare(b.name ?? b.email) ||
+    a.email.localeCompare(b.email)
+  );
 }
 
 /**

@@ -53,6 +53,22 @@ export function contactDisplayName(card: ContactCard): string {
   return "(no name)";
 }
 
+/**
+ * The card's nominal display name for an autocomplete label, or null when it has none. Like
+ * {@link contactDisplayName} but WITHOUT its email / "(no name)" fallbacks: a recipient suggestion
+ * already shows the address, so echoing it back as the "name" — or worse, surfacing a *different*
+ * email of a multi-address card as the name — is noise. Returns name.full → components → org →
+ * nickname when present, else null. Reused by the recipient-autocomplete contacts source.
+ */
+export function contactNominalName(card: ContactCard): string | null {
+  const display = contactDisplayName(card);
+  if (display === "(no name)") return null;
+  // contactDisplayName falls back to primaryEmail when the card carries no nominal name; any of the
+  // card's own addresses is an address, not a name — drop it so the label stays the bare email.
+  const addresses = new Set(sortedEmails(card).map((e) => e.address.toLowerCase()));
+  return addresses.has(display.toLowerCase()) ? null : display;
+}
+
 // Order entries carrying an optional JSContact `pref` (1 = most preferred; absent = least). Stable:
 // equal/absent prefs keep their server insertion order (Object.values preserves it).
 function byPref<T extends { pref?: number }>(values: T[]): T[] {

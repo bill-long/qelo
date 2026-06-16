@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Email, EmailAddress } from "@/jmap/types";
+import type { ContactCard, Email, EmailAddress } from "@/jmap/types";
 import {
   activeFragment,
   buildSuggestionIndex,
@@ -18,6 +18,17 @@ function email(parts: { to?: EmailAddress[]; cc?: EmailAddress[]; bcc?: EmailAdd
 }
 
 const addr = (email: string, name: string | null = null): EmailAddress => ({ name, email });
+
+// A minimal JSContact Card with a name + ordered emails (pref 1, 2, …) for the contacts source.
+function contact(name: string | null, ...emails: string[]): ContactCard {
+  return {
+    "@type": "Card",
+    version: "1.0",
+    id: name ?? emails[0] ?? "x",
+    ...(name ? { name: { full: name } } : {}),
+    emails: Object.fromEntries(emails.map((address, i) => [`e${i}`, { address, pref: i + 1 }])),
+  };
+}
 
 describe("buildSuggestionIndex", () => {
   it("collects to/cc/bcc addresses across messages", () => {
@@ -80,6 +91,67 @@ describe("buildSuggestionIndex", () => {
   it("treats an exotic local part as an ordinary key (no prototype pollution)", () => {
     const index = buildSuggestionIndex([email({ to: [addr("__proto__@x.io")] })]);
     expect(index.map((s) => s.email)).toEqual(["__proto__@x.io"]);
+  });
+});
+
+describe("buildSuggestionIndex with the contacts source", () => {
+  it("adds contact addresses the user never emailed", () => {
+    const index = buildSuggestionIndex([], [contact("Ada Lovelace", "ada@x.io")]);
+    expect(index).toEqual<RecipientSuggestion[]>([{ email: "ada@x.io", name: "Ada Lovelace" }]);
+  });
+
+  it("ranks a contact above a one-off Sent address but below a frequently-emailed one", () => {
+    // freq@x.io: emailed twice (count 2). once@x.io: emailed once (count 1). ada: contact, never
+    // emailed (floor 1.5). Expected order: freq (2) > ada (1.5) > once (1).
+    const index = buildSuggestionIndex(
+      [
+        email({ to: [addr("freq@x.io")] }),
+        email({ to: [addr("freq@x.io")] }),
+        email({ to: [addr("once@x.io")] }),
+      ],
+      [contact("Ada Lovelace", "ada@x.io")],
+    );
+    expect(index.map((s) => s.email)).toEqual(["freq@x.io", "ada@x.io", "once@x.io"]);
+  });
+
+  it("dedupes a contact that's also in Sent, keeping Sent frequency and preferring the contact name", () => {
+    // both@x.io: emailed once (with a Sent display name) AND a saved contact. One entry, lifted to
+    // the contact floor (so it leads the count-1 stranger), with the CURATED contact name.
+    const index = buildSuggestionIndex(
+      [email({ to: [addr("both@x.io", "Sent Name")] }), email({ to: [addr("stranger@x.io")] })],
+      [contact("Curated Name", "both@x.io")],
+    );
+    expect(index).toEqual<RecipientSuggestion[]>([
+      { email: "both@x.io", name: "Curated Name" },
+      { email: "stranger@x.io", name: null },
+    ]);
+  });
+
+  it("keeps the Sent name when the contact has no nominal name", () => {
+    // A nameless contact (email-only) must not blank out a name the Sent sighting supplied.
+    const index = buildSuggestionIndex(
+      [email({ to: [addr("x@x.io", "Sent Name")] })],
+      [contact(null, "x@x.io")],
+    );
+    expect(index).toEqual<RecipientSuggestion[]>([{ email: "x@x.io", name: "Sent Name" }]);
+  });
+
+  it("orders two never-emailed contacts deterministically by name", () => {
+    const index = buildSuggestionIndex(
+      [],
+      [contact("Zoe", "zoe@x.io"), contact("Aaron", "aaron@x.io")],
+    );
+    expect(index.map((s) => s.email)).toEqual(["aaron@x.io", "zoe@x.io"]);
+  });
+
+  it("contributes every address of a multi-email contact, deduped by lowercased address", () => {
+    const index = buildSuggestionIndex(
+      [email({ to: [addr("WORK@x.io")] })],
+      [contact("Multi", "work@x.io", "home@x.io")],
+    );
+    expect(index.map((s) => s.email).sort()).toEqual(["WORK@x.io", "home@x.io"]);
+    // The Sent-verbatim casing is kept; both carry the contact name.
+    expect(index.every((s) => s.name === "Multi")).toBe(true);
   });
 });
 
