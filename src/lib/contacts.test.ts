@@ -6,6 +6,7 @@ import {
   contactDisplayName,
   contactInBook,
   contactMatchesQuery,
+  contactNominalName,
   primaryEmail,
   sortedEmails,
 } from "./contacts";
@@ -62,6 +63,35 @@ describe("contactDisplayName", () => {
 
   it("returns a stable fallback when nothing is usable", () => {
     expect(contactDisplayName(card({}))).toBe("(no name)");
+  });
+});
+
+describe("contactNominalName", () => {
+  it("returns a real name (full, components, org, or nickname)", () => {
+    expect(contactNominalName(card({ name: { full: "Ada Lovelace" } }))).toBe("Ada Lovelace");
+    expect(contactNominalName(card({ organizations: { o1: { name: "Acme" } } }))).toBe("Acme");
+    expect(contactNominalName(card({ nicknames: { n1: { name: "Countess" } } }))).toBe("Countess");
+  });
+
+  it("returns null when the card has no nominal name", () => {
+    expect(contactNominalName(card({}))).toBeNull();
+  });
+
+  it("returns null rather than echoing an address back as the name", () => {
+    // contactDisplayName would fall back to the (primary) email here; a suggestion already shows it.
+    const c = card({ emails: { a: { address: "solo@x.test" } } });
+    expect(contactDisplayName(c)).toBe("solo@x.test");
+    expect(contactNominalName(c)).toBeNull();
+  });
+
+  it("nulls the name even when the fallback email is a DIFFERENT address of the card", () => {
+    // No name → contactDisplayName picks the primary (pref 1) email; the other address must not be
+    // surfaced as that address's "name".
+    const c = card({
+      emails: { a: { address: "second@x.test" }, b: { address: "first@x.test", pref: 1 } },
+    });
+    expect(contactDisplayName(c)).toBe("first@x.test");
+    expect(contactNominalName(c)).toBeNull();
   });
 });
 

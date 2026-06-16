@@ -6,8 +6,16 @@
 
 import process from "node:process";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { CAP_CORE, CAP_MAIL, emailQuery, emailSet, methodResult } from "@/jmap/methods";
+import {
+  CAP_CONTACTS,
+  CAP_CORE,
+  CAP_MAIL,
+  emailQuery,
+  emailSet,
+  methodResult,
+} from "@/jmap/methods";
 import type { EmailAddress, Id } from "@/jmap/types";
+import { contactsAccountId, loadContacts, resetContacts } from "@/stores/contacts";
 import { loadMailboxes, mailboxIdByRole } from "@/stores/mailboxes";
 import {
   loadRecipientSuggestions,
@@ -29,6 +37,8 @@ interface SentSpec {
 
 describe("recipient autocomplete", () => {
   const subjectsToClean: string[] = [];
+  const createdCardIds: Id[] = [];
+  const CONTACTS_USING = [CAP_CORE, CAP_CONTACTS];
 
   beforeAll(connectTestClient);
   afterAll(disconnectTestClient);
@@ -41,6 +51,7 @@ describe("recipient autocomplete", () => {
       const subject = subjectsToClean.pop();
       if (subject) await destroyBySubject(subject).catch(() => {});
     }
+    if (createdCardIds.length > 0) await destroyCards(createdCardIds.splice(0)).catch(() => {});
   });
 
   function freshSubject(label: string): string {
@@ -157,5 +168,91 @@ describe("recipient autocomplete", () => {
       s.email.toLowerCase(),
     );
     expect(excludingAlice).toEqual([bob]);
+  });
+
+  // --- Contacts as a second source ------------------------------------------
+
+  function contactsAcct(): Id {
+    const id = contactsAccountId();
+    if (!id) throw new Error("session exposes no contacts account");
+    return id;
+  }
+
+  /** Create a JSContact card in the default address book; returns its server id (tracked for cleanup). */
+  async function seedCard(fullName: string, address: string): Promise<Id> {
+    const client = testClient();
+    const ab = await client.request(
+      [["AddressBook/get", { accountId: contactsAcct(), ids: null }, "ab"]],
+      CONTACTS_USING,
+    );
+    const books = (methodResult(ab, "ab").list ?? []) as Array<{ id: Id; isDefault: boolean }>;
+    const bookId = (books.find((b) => b.isDefault) ?? books[0])?.id;
+    if (!bookId) throw new Error("account exposes no address book");
+    const resp = await client.request(
+      [
+        [
+          "ContactCard/set",
+          {
+            accountId: contactsAcct(),
+            create: {
+              n0: {
+                "@type": "Card",
+                version: "1.0",
+                addressBookIds: { [bookId]: true },
+                name: { full: fullName },
+                emails: { e1: { address } },
+              },
+            },
+          },
+          "cs",
+        ],
+      ],
+      CONTACTS_USING,
+    );
+    const created = (methodResult(resp, "cs").created ?? {}) as Record<string, { id: Id }>;
+    const id = created.n0?.id;
+    if (!id) throw new Error(`ContactCard/set did not create n0: ${JSON.stringify(resp)}`);
+    createdCardIds.push(id);
+    return id;
+  }
+
+  async function destroyCards(ids: Id[]): Promise<void> {
+    if (ids.length === 0) return;
+    await testClient().request(
+      [["ContactCard/set", { accountId: contactsAcct(), destroy: ids }, "cd"]],
+      CONTACTS_USING,
+    );
+  }
+
+  /** (Re)load contacts until `email` is in the merged suggestion index (ContactCard/query lags). */
+  async function loadContactsUntil(email: string, timeoutMs = 20000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    const lc = email.toLowerCase();
+    for (;;) {
+      resetContacts();
+      await loadContacts();
+      if (suggestionIndex().some((s) => s.email.toLowerCase() === lc)) return;
+      if (Date.now() >= deadline)
+        throw new Error(`Suggestion index never included contact ${email}`);
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+
+  it("merges saved contacts into the suggestion index with their curated name", async () => {
+    const tag = Math.random().toString(36).slice(2, 8);
+    const carol = `carol-${tag}@auto.test`;
+    await seedCard(`Carol ${tag}`, carol);
+
+    await loadContactsUntil(carol);
+
+    const entry = suggestionIndex().find((s) => s.email.toLowerCase() === carol);
+    expect(entry, "the saved contact was merged into the index").toBeDefined();
+    expect(entry?.name).toBe(`Carol ${tag}`);
+
+    // The reactive selector surfaces the contact by a substring of either its address or name. (A
+    // substring, not the full address — matchRecipients skips an entry that exactly equals the query,
+    // as there's nothing left to complete once it's fully typed.)
+    expect(recipientSuggestions(`carol-${tag}`).map((s) => s.email.toLowerCase())).toContain(carol);
+    expect(recipientSuggestions(`Carol ${tag}`).map((s) => s.email.toLowerCase())).toContain(carol);
   });
 });
