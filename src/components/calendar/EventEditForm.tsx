@@ -30,7 +30,9 @@ function timeZoneOptions(current: string): string[] {
 }
 
 /** Edit an existing event, or create a fresh one in a chosen writable calendar. The `calendars`
- * (create mode) are the writable calendars — guaranteed non-empty by the affordance's gate. */
+ * (create mode) are the writable calendars the new event can land in — normally non-empty (the
+ * `NewEventButton` affordance only renders when one exists), but the form doesn't rely on that: an
+ * empty list leaves `calendarId()` null, which disables Create and is guarded again at submit. */
 export type EventEditFormProps = { onClose: () => void } & (
   | { mode: "edit"; event: CalendarEvent; occurrenceId: string }
   | { mode: "create"; calendars: Calendar[] }
@@ -73,12 +75,15 @@ export function EventEditForm(props: EventEditFormProps) {
   // The when-validation message (end-before-start, unparseable) — reactive over the form, shown by
   // the end field. In edit mode it only flags a CHANGED when (an untouched event stays submittable,
   // its empty patch a no-op); in create mode any invalid when is flagged (a create needs a concrete
-  // when). Save gating: edit blocks on a when error; create blocks on `editableHasContent` (which
-  // subsumes the when validity AND requires a title).
+  // when). Save gating: edit blocks on a when error; create blocks on `editableHasContent` (title +
+  // valid when) AND a resolved destination calendar — so the button can't enable into a submit that
+  // would always fail with "No writable calendar" (e.g. an empty `calendars`, should rights change).
   const whenError = createMemo(() =>
     baseline ? editableEventError(baseline, form) : createEventError(form),
   );
-  const canSubmit = createMemo(() => (baseline ? whenError() === null : editableHasContent(form)));
+  const canSubmit = createMemo(() =>
+    baseline ? whenError() === null : editableHasContent(form) && calendarId() !== null,
+  );
   const timeZones = createMemo(() => timeZoneOptions(form.timeZone));
   let titleInput: HTMLInputElement | undefined;
   onMount(() => titleInput?.focus());
@@ -174,8 +179,8 @@ export function EventEditForm(props: EventEditFormProps) {
         </h1>
       </header>
 
-      {/* Calendar picker — create mode with a choice. One writable calendar needs no picker (it's
-          implicit); zero is impossible here (the affordance is gated on a writable calendar existing). */}
+      {/* Calendar picker — create mode with a choice (>1). One writable calendar needs no picker
+          (it's implicit); an empty list shows no picker either and disables Create (the gate above). */}
       <Show when={props.mode === "create" && createCalendars.length > 1}>
         <label class="event-edit-field">
           <span class="event-edit-label">Calendar</span>

@@ -142,4 +142,14 @@ describe("EventEditForm create mode", () => {
       true,
     );
   });
+
+  it("keeps Create disabled with no destination calendar, even with a valid title + when", () => {
+    // An empty calendars list (no writable calendar resolved) leaves calendarId() null, so Create
+    // stays disabled rather than enabling into a submit that would always fail "No writable calendar".
+    render(() => <EventEditForm mode="create" calendars={[]} onClose={() => {}} />);
+    fireEvent.input(screen.getByLabelText("Title"), { target: { value: "Lunch" } });
+    expect((screen.getByRole("button", { name: "Create" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+  });
 });
