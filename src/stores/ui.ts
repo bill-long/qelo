@@ -13,6 +13,10 @@ export const [selectedEmailId, setSelectedEmailId] = createSignal<string | null>
 export const [selectedContactId, setSelectedContactId] = createSignal<string | null>(null);
 export const [selectedAddressBookId, setSelectedAddressBookId] = createSignal<string | null>(null);
 
+// Calendar view selection. `selectedCalendarId` null = the "All calendars" pseudo-calendar.
+export const [selectedEventId, setSelectedEventId] = createSignal<string | null>(null);
+export const [selectedCalendarId, setSelectedCalendarId] = createSignal<string | null>(null);
+
 // Whether the create-contact form owns the detail pane (column 3). Set by the "+ New contact"
 // affordance; cleared on save/cancel or when the selected contact changes (ContactView), so the
 // form can't outlive its context. Distinct from the per-card `editing` mode, which is component-local.

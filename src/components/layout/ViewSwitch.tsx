@@ -1,4 +1,5 @@
 import { createEffect, For } from "solid-js";
+import { calendarAvailable } from "@/stores/calendar";
 import { contactsAvailable } from "@/stores/contacts";
 import { activeView, type PrimaryView, setActiveView } from "@/stores/ui";
 
@@ -17,9 +18,12 @@ const TABS: ViewTab[] = [
     // Fails safe to disabled until a contacts-capable session is connected.
     unavailable: () => (contactsAvailable() ? null : "Contacts aren't available on this account"),
   },
-  // Reserved: the Calendar surface is its own later milestone, so the tab is present (fixing the
-  // switch's final shape) but disabled.
-  { view: "calendar", label: "Calendar", unavailable: () => "Calendar is coming soon" },
+  {
+    view: "calendar",
+    label: "Calendar",
+    // Fails safe to disabled until a calendar-capable session is connected.
+    unavailable: () => (calendarAvailable() ? null : "Calendar isn't available on this account"),
+  },
 ];
 
 /**

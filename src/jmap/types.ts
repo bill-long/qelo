@@ -336,6 +336,132 @@ export interface ContactCard {
   updated?: UtcDate;
 }
 
+// ---------------------------------------------------------------------------
+// Calendar — JMAP for Calendars + JSCalendar (RFC 8984). Field names follow the
+// RFC exactly, same rule as the mail/contacts types. The dev Stalwart (v0.16)
+// exposes `Calendar`/`CalendarEvent` methods over `urn:ietf:params:jmap:calendars`;
+// the event object is a JSCalendar `"@type":"Event"`. Most event sub-objects are
+// id-keyed maps and most fields are optional — `noUncheckedIndexedAccess` already
+// makes every map access `T | undefined`, so lean into that.
+// ---------------------------------------------------------------------------
+
+/** Per-Calendar permissions (parallel to {@link MailboxRights}). */
+export interface CalendarRights {
+  mayReadFreeBusy: boolean;
+  mayReadItems: boolean;
+  mayWriteAll: boolean;
+  mayWriteOwn: boolean;
+  mayUpdatePrivate: boolean;
+  mayRSVP: boolean;
+  mayShare: boolean;
+  mayDelete: boolean;
+}
+
+/** A JMAP Calendar: the container a {@link CalendarEvent} belongs to. */
+export interface Calendar {
+  id: Id;
+  name: string;
+  description: string | null;
+  color: string | null;
+  timeZone: string | null;
+  sortOrder: number;
+  isDefault: boolean;
+  isSubscribed: boolean;
+  myRights: CalendarRights;
+}
+
+/** JSContact-style location of an event (RFC 8984 §4.2.5). Qelo reads `name`. */
+export interface EventLocation {
+  "@type"?: "Location";
+  name?: string;
+  description?: string;
+  coordinates?: string;
+}
+
+/**
+ * A JSCalendar Participant (RFC 8984 §4.4.6). `sendTo` maps a method (e.g. `imip`)
+ * to a URI (`mailto:…`); some servers also surface a bare `email`. Read-only in Qelo
+ * — and note: dev Stalwart silently DROPS participants sent on a JMAP create, so this
+ * only populates for iCal-imported events.
+ */
+export interface EventParticipant {
+  "@type"?: "Participant";
+  name?: string;
+  email?: string;
+  sendTo?: Record<string, string>;
+  kind?: string;
+  roles?: Record<string, true>;
+  participationStatus?: string;
+  expectReply?: boolean;
+}
+
+/**
+ * One BYDAY entry of a {@link RecurrenceRule} (RFC 8984 §4.3.3): a weekday code
+ * (`mo`/`tu`/…) with an optional ordinal (`nthOfPeriod`, e.g. 2 = "2nd Tuesday").
+ */
+export interface NDay {
+  "@type"?: "NDay";
+  day: string;
+  nthOfPeriod?: number;
+}
+
+/**
+ * A JSCalendar recurrence rule (RFC 8984 §4.3.3).
+ *
+ * WIRE NOTE: dev Stalwart v0.16 exposes this as the SINGULAR `recurrenceRule` on an
+ * event and REJECTS the RFC-8984 plural `recurrenceRules` array (`invalidProperties`).
+ * Qelo types/writes what the server accepts (per CLAUDE.md "types follow the wire"),
+ * but a spec-strict server / Fastmail uses the plural array — keep that in mind if
+ * recurrence ever becomes writable or this client targets another server.
+ */
+export interface RecurrenceRule {
+  "@type"?: "RecurrenceRule";
+  frequency: string;
+  interval?: number;
+  byDay?: NDay[];
+  byMonthDay?: number[];
+  count?: number;
+  until?: string;
+  firstDayOfWeek?: string;
+}
+
+/**
+ * A JSCalendar Event (RFC 8984) as returned by `CalendarEvent/get`. Only the subset
+ * Qelo reads is fully typed; rarer properties (alerts, links, virtualLocations, …) are
+ * left out until a feature needs them rather than guessed.
+ *
+ * `start` is a LOCAL date-time string (no `Z`/offset) interpreted in `timeZone`; an
+ * all-day event is `showWithoutTime: true` with a null `timeZone` and a date-valued
+ * `duration` (e.g. `P1D`). An expanded recurrence occurrence (from a `CalendarEvent/query`
+ * with `expandRecurrences`) carries its own `start` plus a `recurrenceId` marking which
+ * occurrence it is — see [[qelo-calendar-milestone-status]].
+ */
+export interface CalendarEvent {
+  "@type": "Event";
+  id: Id;
+  uid?: string;
+  calendarIds?: Record<Id, true>;
+  title?: string;
+  description?: string;
+  start?: string;
+  timeZone?: string | null;
+  duration?: string;
+  showWithoutTime?: boolean;
+  status?: string;
+  freeBusyStatus?: string;
+  privacy?: string;
+  color?: string | null;
+  keywords?: Record<string, true>;
+  locations?: Record<string, EventLocation>;
+  participants?: Record<string, EventParticipant>;
+  recurrenceRule?: RecurrenceRule;
+  recurrenceId?: string;
+  recurrenceIdTimeZone?: string;
+  isDraft?: boolean;
+  isOrigin?: boolean;
+  updated?: UtcDate;
+}
+
 export type MethodCall = [string, Record<string, unknown>, string];
 export type MethodResponse = [string, Record<string, unknown>, string];
 
