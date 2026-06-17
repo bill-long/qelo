@@ -32,6 +32,10 @@ export function EventView() {
   const [editOccurrenceId, setEditOccurrenceId] = createSignal<string | null>(null);
   const [resolving, setResolving] = createSignal(false);
   const [resolveError, setResolveError] = createSignal<string | null>(null);
+  // Monotonic token identifying the latest resolve. A resolve superseded by a newer one (the user
+  // re-clicked Edit, possibly on a different event) must not touch shared edit state when it finally
+  // settles — in particular its `finally` must not clear `resolving` out from under the newer resolve.
+  let resolveSeq = 0;
   const event = () => {
     const id = selectedEventId();
     return id ? calendarEvents[id] : undefined;
@@ -56,14 +60,15 @@ export function EventView() {
   async function handleEdit() {
     const id = selectedEventId();
     if (!id) return;
+    const token = ++resolveSeq;
     setResolveError(null);
     setResolving(true);
     try {
       const base = await resolveBaseEvent(id);
-      // The user may have selected a different event during the await — if so, the on(selectedEventId)
-      // effect already tore down edit mode; abort rather than open the form seeded from `id` over a
-      // now-different selection (which would edit one event while overlaying another's occurrence).
-      if (selectedEventId() !== id) return;
+      // Bail if this resolve was superseded (a newer Edit click) or the selection moved on during the
+      // await — either way, don't open the form seeded from `id` (which would edit one event while
+      // overlaying another's occurrence) and don't surface a stale result.
+      if (token !== resolveSeq || selectedEventId() !== id) return;
       if (base) {
         setEditBase(base);
         setEditOccurrenceId(id);
@@ -72,6 +77,7 @@ export function EventView() {
         setResolveError("Couldn't open this event for editing. It may have been deleted.");
       }
     } catch (err) {
+      if (token !== resolveSeq) return; // superseded — let the newer resolve own the outcome
       // resolveBaseEvent issues raw requests, so an auth failure surfaces here — raise the global
       // re-auth gate and stay on the detail; otherwise report inline.
       if (!handleAuthFailure(err)) {
@@ -79,7 +85,9 @@ export function EventView() {
         setResolveError("Couldn't open this event for editing. Please try again.");
       }
     } finally {
-      setResolving(false);
+      // Only the latest resolve clears the in-flight flag — a superseded one must not re-enable the
+      // Edit button while the newer resolve is still running.
+      if (token === resolveSeq) setResolving(false);
     }
   }
 

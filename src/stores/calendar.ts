@@ -247,23 +247,52 @@ export async function syncCalendar(): Promise<void> {
 export async function resolveBaseEvent(syntheticId: string): Promise<CalendarEvent | null> {
   const accountId = calendarAccountId();
   if (!accountId) return null;
-  const client = jmap();
-  const queryResponses = await client.request(
-    // Explicitly non-expanded: this MUST return base ids (the ones CalendarEvent/set accepts), not the
-    // synthetic per-occurrence ids the agenda's expandRecurrences query yields. Don't rely on the
-    // server's default for expandRecurrences.
-    [calendarEventQuery(accountId, "bq", { expandRecurrences: false })],
-    CALENDAR_USING,
-  );
-  const baseIds = (methodResult(queryResponses, "bq").ids ?? []) as string[];
+  const baseIds = await fetchAllBaseEventIds(accountId);
   const candidates = baseEventIdCandidates(syntheticId, baseIds);
   if (candidates.length === 0) return null;
+  const client = jmap();
   const getResponses = await client.request(
     [calendarEventGet(accountId, "bg", { ids: candidates })],
     CALENDAR_USING,
   );
   const list = (methodResult(getResponses, "bg").list ?? []) as CalendarEvent[];
   return pickBaseEvent(calendarEvents[syntheticId], list);
+}
+
+// The page size for the base-id sweep. CalendarEvent/query is paginated and a server may cap the page,
+// so we advance by the ACTUAL number returned (not PAGE) to tolerate a smaller-than-requested page.
+const BASE_ID_PAGE = 256;
+
+// Fetch EVERY base event id (non-expanded) by paging the query to completion. resolveBaseEvent suffix-
+// matches against this set, so a truncated list would make a real event fail to resolve (a blocked
+// edit). `calculateTotal` gives the stop condition; we also stop on an empty page (a server that
+// ignores `position` won't loop forever) and cap the sweep defensively.
+async function fetchAllBaseEventIds(accountId: string): Promise<string[]> {
+  const client = jmap();
+  const ids: string[] = [];
+  let position = 0;
+  for (let page = 0; page < 1000; page += 1) {
+    const responses = await client.request(
+      [
+        calendarEventQuery(accountId, "bq", {
+          // Explicitly non-expanded: this MUST return base ids (the ones CalendarEvent/set accepts),
+          // not the synthetic per-occurrence ids the agenda's expandRecurrences query yields.
+          expandRecurrences: false,
+          position,
+          limit: BASE_ID_PAGE,
+          calculateTotal: true,
+        }),
+      ],
+      CALENDAR_USING,
+    );
+    const result = methodResult(responses, "bq");
+    const pageIds = (result.ids ?? []) as string[];
+    ids.push(...pageIds);
+    const total = typeof result.total === "number" ? result.total : ids.length;
+    position += pageIds.length;
+    if (pageIds.length === 0 || ids.length >= total) break;
+  }
+  return ids;
 }
 
 /** The outcome of a {@link saveEvent}: ok on success/no-op, else why it didn't persist. */
