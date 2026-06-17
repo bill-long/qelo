@@ -7,6 +7,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { CAP_CALENDARS, CAP_CORE, methodResult } from "@/jmap/methods";
 import type { Id } from "@/jmap/types";
+import { eventToEditable } from "@/lib/calendar";
 import {
   calendarAccountId,
   calendarEvents,
@@ -15,6 +16,8 @@ import {
   eventIds,
   loadCalendar,
   resetCalendar,
+  resolveBaseEvent,
+  saveEvent,
   syncCalendar,
 } from "@/stores/calendar";
 import { connectTestClient, disconnectTestClient, resetStores, testClient } from "./harness";
@@ -211,5 +214,59 @@ describe("calendar (live Stalwart)", () => {
     createdIds.splice(createdIds.indexOf(firstId), 1);
     await syncUntil(() => countByTitle(`First ${tag}`) === 0);
     expect(countByTitle(`First ${tag}`)).toBe(0);
+  });
+
+  /** A loaded synthetic agenda id for the (only) event carrying `title`, or throw. */
+  function occurrenceIdFor(title: string): Id {
+    const id = eventIds().find((eid) => calendarEvents[eid]?.title === title);
+    if (!id) throw new Error(`no loaded occurrence titled "${title}"`);
+    return id;
+  }
+
+  it("resolves a synthetic occurrence to its base event and edits it, preserving recurrence", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    // A weekly event: every agenda row is a synthetic occurrence id, and the base carries the rule.
+    await seedEvents(calId, [{ title: `Edit ${tag}`, start: localDateTime(4, 9), weekly: true }]);
+    await loadUntil(() => countByTitle(`Edit ${tag}`) >= 2);
+
+    // Resolve the base event behind a synthetic occurrence id (the Phase-2 blocker path).
+    const occId = occurrenceIdFor(`Edit ${tag}`);
+    const base = await resolveBaseEvent(occId);
+    expect(base).toBeTruthy();
+    if (!base) throw new Error("unreachable");
+    // The base id is NOT the synthetic occurrence id, and the base carries the recurrence rule.
+    expect(base.id).not.toBe(occId);
+    expect(base.recurrenceRule?.frequency).toBe("weekly");
+
+    // Edit the title + add a description via the real store action (one CalendarEvent/set update).
+    const edits = { ...eventToEditable(base), title: `Edit ${tag} RENAMED`, description: "added" };
+    const result = await saveEvent(occId, base.id, base, edits);
+    expect(result.ok).toBe(true);
+
+    // The change persisted (reload from scratch), the old title is gone, and the recurrence survived
+    // (still expands to multiple occurrences → recurrenceRule was carried through the patch untouched).
+    await loadUntil(() => countByTitle(`Edit ${tag} RENAMED`) >= 2);
+    expect(countByTitle(`Edit ${tag}`)).toBe(0);
+    const renamed = await resolveBaseEvent(occurrenceIdFor(`Edit ${tag} RENAMED`));
+    expect(renamed?.description).toBe("added");
+    expect(renamed?.recurrenceRule?.frequency).toBe("weekly");
+  });
+
+  it("treats open + save with no edits as a no-op success", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    await seedEvents(calId, [{ title: `Noop ${tag}`, start: localDateTime(7, 13) }]);
+    await loadUntil(() => countByTitle(`Noop ${tag}`) >= 1);
+
+    const occId = occurrenceIdFor(`Noop ${tag}`);
+    const base = await resolveBaseEvent(occId);
+    if (!base) throw new Error("base event did not resolve");
+    // An unchanged working copy → empty patch → ok without a round trip; the event is untouched.
+    const result = await saveEvent(occId, base.id, base, eventToEditable(base));
+    expect(result.ok).toBe(true);
+
+    await loadUntil(() => countByTitle(`Noop ${tag}`) >= 1);
+    expect(countByTitle(`Noop ${tag}`)).toBe(1);
   });
 });

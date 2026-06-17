@@ -8,7 +8,8 @@
 // wall-clock value) — we parse the components verbatim and only use UTC date math (Date.UTC) so the
 // displayed day/time matches what the server sent, regardless of where the client runs.
 
-import type { Calendar, CalendarEvent, RecurrenceRule } from "@/jmap/types";
+import type { CalendarEventPatch } from "@/jmap/methods";
+import type { Calendar, CalendarEvent, EventLocation, RecurrenceRule } from "@/jmap/types";
 
 /** A calendar date-time broken into its literal components (no timezone applied). */
 export interface DateParts {
@@ -315,4 +316,370 @@ export function recurrenceSummary(rule: RecurrenceRule | undefined): string | nu
     if (until) summary += `, until ${monthDay(until)}`;
   }
   return summary;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — base-event id resolution for the EXPANDED agenda.
+//
+// The agenda is a `CalendarEvent/query` with `expandRecurrences:true`, so the store is keyed by
+// SYNTHETIC per-occurrence ids (even non-recurring events are rewritten — Branch 1 finding). But a
+// `CalendarEvent/set update` must target the BASE event id (Stalwart rejects a synthetic id with
+// `invalidProperties: "Updating synthetic ids is not yet supported"`), and the synthetic occurrence
+// carries `recurrenceId` but NOT `uid` on Stalwart — so there's no explicit base pointer to read.
+//
+// Probed live (2026-06-17): a synthetic id is `<occurrence-prefix><baseId>` and ALWAYS ends with the
+// base id. The prefix is VARIABLE width (5 chars for early occurrences, 6+ for later ones — e.g.
+// `eaaaabc`/`baaaaabc` both for base `bc`), so a fixed-width slice would be wrong. Instead resolve by
+// matching the LONGEST base id (from a non-expanded `CalendarEvent/query`, which returns base ids)
+// that is a suffix of the synthetic id — robust to the variable prefix and to base ids that are
+// suffixes of one another. A non-expanded id resolves to itself (it ends with itself).
+// ---------------------------------------------------------------------------
+
+/**
+ * The base ids that could be the base of `syntheticId` — every id in `baseIds` that is a suffix of it
+ * — longest first. `baseIds` must come from a non-expanded `CalendarEvent/query` (the real base ids
+ * `CalendarEvent/set` accepts). Usually exactly one matches; MORE than one is possible and ambiguous,
+ * because the synthetic prefix is an opaque encoding (probed: it always ends in `a`), so a base id `X`
+ * and another base id `aX` (or any longer id ending in `…<prefix-tail>X`) both qualify for an
+ * occurrence of `X`. {@link pickBaseEvent} disambiguates by fetching the candidates and matching the
+ * viewed occurrence's content.
+ */
+export function baseEventIdCandidates(syntheticId: string, baseIds: readonly string[]): string[] {
+  return baseIds.filter((id) => syntheticId.endsWith(id)).sort((a, b) => b.length - a.length);
+}
+
+/**
+ * Resolve a (possibly synthetic) event id to its single most-likely BASE event id (the longest base-id
+ * suffix), or null. The simple form used where the candidate is unambiguous; the store's edit path
+ * uses {@link baseEventIdCandidates} + {@link pickBaseEvent} to disambiguate the rare collision.
+ */
+export function resolveBaseEventId(syntheticId: string, baseIds: readonly string[]): string | null {
+  return baseEventIdCandidates(syntheticId, baseIds)[0] ?? null;
+}
+
+/**
+ * Choose which fetched base event actually backs `occurrence` from the suffix-collision `candidates`.
+ * With one candidate it's that one; with several (the `X` vs `aX` ambiguity above) prefer a base whose
+ * `title` matches the occurrence's, then — for a recurring occurrence — one carrying a `recurrenceRule`,
+ * falling back to the longest id. Returns null only when there are no candidates. Pure; the store
+ * fetches the candidate events and passes them here. This makes "edit the wrong event" require two
+ * base events that are both suffix-compatible AND share a title — far less likely than a bare suffix
+ * clash — and otherwise resolves correctly.
+ */
+export function pickBaseEvent(
+  occurrence: CalendarEvent | undefined,
+  candidates: CalendarEvent[],
+): CalendarEvent | null {
+  if (candidates.length <= 1) return candidates[0] ?? null;
+  const longest = (events: CalendarEvent[]): CalendarEvent =>
+    events.reduce((best, e) => (e.id.length > best.id.length ? e : best));
+  const titled = occurrence?.title;
+  const byTitle = titled ? candidates.filter((c) => c.title === titled) : [];
+  const pool = byTitle.length > 0 ? byTitle : candidates;
+  if (occurrence?.recurrenceId) {
+    const recurring = pool.filter((c) => c.recurrenceRule);
+    if (recurring.length > 0) return longest(recurring);
+  }
+  return longest(pool);
+}
+
+/**
+ * Whether the event can be edited: at least one calendar it belongs to grants write rights
+ * (`myRights.mayWriteAll` or `mayWriteOwn`). The single gate the Edit affordance uses, so an event in
+ * only read-only calendars shows no edit UI rather than letting the user hit a server refusal. Gates
+ * on the SELECTED (possibly synthetic) event's `calendarIds` — which the expanded occurrence carries,
+ * so no base-id resolution is needed just to decide visibility. Mirrors `cardMayWrite`. Reactive
+ * callers pass the live `calendars` store. (Branch 4's delete will mirror this on `mayDelete`.)
+ */
+export function eventMayWrite(event: CalendarEvent, cals: Record<string, Calendar>): boolean {
+  return Object.entries(event.calendarIds ?? {}).some(([id, present]) => {
+    const rights = present === true ? cals[id]?.myRights : undefined;
+    return rights?.mayWriteAll === true || rights?.mayWriteOwn === true;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Editable event model — the edit form's working copy of a BASE event, and the pure transforms that
+// turn it back into (a) a full event for an optimistic store write and (b) a minimal JSON-pointer
+// patch for CalendarEvent/set update. Recurrence + participants are present-but-uneditable: they're
+// NOT in the working copy and NOT in the rebuilt property set, so a patch never names them and they
+// carry through untouched (the same way the contacts form carried `photos`/`kind`).
+//
+// The governing invariant (carried verbatim from the contacts edit form): open the form and save with
+// NO edits ⇒ empty patch / true no-op. Every normalization (trim, duration recompute) runs ONLY on a
+// value the user actually changed; an unchanged value is carried VERBATIM. The when-group is the
+// subtle case: deriving an end-time from `start + duration` and recomputing `duration` from it is
+// LOSSY (e.g. "PT90M" → end → "PT1H30M"), so when the when-fields are unchanged we carry the original
+// `start`/`duration`/`timeZone`/`showWithoutTime` verbatim and only recompute when they changed.
+// ---------------------------------------------------------------------------
+
+/**
+ * The edit form's working copy of a base event: every editable property as a flat shape. Dates are
+ * the literal `<input>` values — `"YYYY-MM-DD"` (all-day) or `"YYYY-MM-DDTHH:mm"` (timed,
+ * `datetime-local`) — interpreted in the event's own `timeZone` (no UTC conversion). `location` is
+ * the first location's name (a single-line editor, like the contacts postal `full`); other locations
+ * and any other location sub-fields carry through untouched. The enum scalars use `""` for "unset"
+ * (the server default), distinct from an explicit value.
+ */
+export interface EditableEvent {
+  title: string;
+  description: string;
+  location: string;
+  allDay: boolean;
+  start: string;
+  end: string;
+  timeZone: string;
+  status: string;
+  freeBusyStatus: string;
+  privacy: string;
+}
+
+function dateInput(p: DateParts): string {
+  return `${p.year}-${pad2(p.month)}-${pad2(p.day)}`;
+}
+
+function dateTimeInput(p: DateParts): string {
+  return `${dateInput(p)}T${pad2(p.hour)}:${pad2(p.minute)}`;
+}
+
+/** The first location's name (insertion order), or "" — the single leaf the form edits. */
+function firstLocationName(event: CalendarEvent): string {
+  for (const loc of Object.values(event.locations ?? {})) {
+    if (loc) return loc.name ?? "";
+  }
+  return "";
+}
+
+/**
+ * Derive the form's working copy from a base event. Pure + deterministic, so re-deriving from an
+ * unchanged event reproduces identical field values — the foundation of the no-op invariant (a
+ * round-trip `eventToEditable` → save with no edits emits an empty patch).
+ */
+export function eventToEditable(event: CalendarEvent): EditableEvent {
+  const allDay = isAllDay(event);
+  const start = eventStartParts(event);
+  const end = eventEndParts(event) ?? start;
+  return {
+    title: event.title ?? "",
+    description: event.description ?? "",
+    location: firstLocationName(event),
+    allDay,
+    // All-day end is exclusive of the last date (P1D = one day), so show the INCLUSIVE last day —
+    // matching formatTimeRange. Timed events show the wall-clock end.
+    start: start ? (allDay ? dateInput(start) : dateTimeInput(start)) : "",
+    end: end ? (allDay ? dateInput(stepDays(end, -1)) : dateTimeInput(end)) : "",
+    timeZone: event.timeZone ?? "",
+    status: event.status ?? "",
+    freeBusyStatus: event.freeBusyStatus ?? "",
+    privacy: event.privacy ?? "",
+  };
+}
+
+function partsFromInput(value: string, allDay: boolean): DateParts | null {
+  // A date input is "YYYY-MM-DD"; a datetime-local input is "YYYY-MM-DDTHH:mm" (no seconds). Normalize
+  // to what parseDateParts accepts (which range-validates by round-tripping through Date.UTC).
+  return parseDateParts(allDay ? value : value.length === 16 ? `${value}:00` : value);
+}
+
+function utcMs(p: DateParts): number {
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+}
+
+// Format a positive millisecond span as an ISO-8601 time duration ("PT1H30M"). Only ever called on a
+// when the user CHANGED, so it need not reproduce the server's original duration string verbatim (an
+// unchanged when carries the original through untouched) — it just has to be a valid round-trippable
+// duration.
+function formatMsDuration(ms: number): string | undefined {
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds <= 0) return undefined;
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  return `PT${h ? `${h}H` : ""}${m ? `${m}M` : ""}${s ? `${s}S` : ""}`;
+}
+
+/** The four JSCalendar temporal properties a {@link EditableEvent}'s when-fields map to. */
+interface WhenProps {
+  start: string;
+  duration: string | undefined;
+  timeZone: string | null | undefined;
+  showWithoutTime: true | undefined;
+}
+
+/**
+ * Compute the JSCalendar temporal properties (`start`/`duration`/`timeZone`/`showWithoutTime`) from
+ * the form's when-fields, or null when invalid (unparseable, or end before start). All-day → a
+ * `T00:00:00` start, a `P{n}D` inclusive-day duration, and a null `timeZone`; timed → a wall-clock
+ * start, a `PT…` duration (omitted when zero-length), and the chosen tz (null when floating). Pure.
+ */
+export function editableWhen(edits: EditableEvent): WhenProps | null {
+  const start = partsFromInput(edits.start, edits.allDay);
+  if (!start) return null;
+  const end = partsFromInput(edits.end, edits.allDay);
+  if (!end) return null;
+  if (edits.allDay) {
+    // Inclusive last day → exclusive duration is +1 day. End before start is invalid.
+    const days = Math.round((utcMs(end) - utcMs(start)) / 86_400_000) + 1;
+    if (days < 1) return null;
+    return {
+      start: `${dateInput(start)}T00:00:00`,
+      duration: `P${days}D`,
+      timeZone: null,
+      showWithoutTime: true,
+    };
+  }
+  const ms = utcMs(end) - utcMs(start);
+  if (ms < 0) return null;
+  return {
+    start: dateTimeInput(start).replace(/T(\d{2}:\d{2})$/, "T$1:00"),
+    duration: formatMsDuration(ms),
+    timeZone: edits.timeZone.trim() || null,
+    showWithoutTime: undefined,
+  };
+}
+
+// Whether the user changed any when-field versus the baseline's derived editable form. Used to decide
+// "carry the original temporal props verbatim" (unchanged — preserves the exact duration string) vs
+// "recompute from the inputs" (changed) — the lossy-duration guard.
+function whenChanged(baseline: CalendarEvent, edits: EditableEvent): boolean {
+  const b = eventToEditable(baseline);
+  return (
+    edits.allDay !== b.allDay ||
+    edits.start !== b.start ||
+    edits.end !== b.end ||
+    edits.timeZone !== b.timeZone
+  );
+}
+
+// Trim/normalize a scalar ONLY when the user changed it; otherwise carry the original verbatim (which
+// may be undefined). A changed-to-blank value removes the property (undefined). This keeps an
+// untouched title/description/status out of the patch even if it had odd whitespace.
+function rebuildScalar(editValue: string, original: string | undefined): string | undefined {
+  if (editValue === (original ?? "")) return original;
+  const trimmed = editValue.trim();
+  return trimmed === "" ? undefined : trimmed;
+}
+
+// Rebuild the `locations` map from the single editable name. Unchanged (the edited name still equals
+// the first location's name) → carry the original map verbatim, preserving every location and every
+// non-name sub-field. Changed → set the first location's name in place (keeping its `@type`/other
+// fields and any other locations); a cleared name drops only the name leaf, and the whole location
+// only if name was its sole field; a name added where there was none creates a fresh location.
+function rebuildLocations(
+  editValue: string,
+  original: Record<string, EventLocation> | undefined,
+): Record<string, EventLocation> | undefined {
+  const entries = Object.entries(original ?? {});
+  const firstName = entries.length > 0 ? (entries[0]?.[1]?.name ?? "") : "";
+  if (editValue === firstName) return original;
+  const value = editValue.trim();
+  const out: Record<string, EventLocation> = {};
+  const first = entries[0];
+  if (value === "") {
+    if (!first) return undefined; // nothing existed and nothing typed
+    const kept = { ...first[1] };
+    delete kept.name;
+    if (Object.keys(kept).length > 0) out[first[0]] = kept;
+    for (const [k, v] of entries.slice(1)) out[k] = v;
+  } else if (first) {
+    out[first[0]] = { ...first[1], name: value };
+    for (const [k, v] of entries.slice(1)) out[k] = v;
+  } else {
+    out.l1 = { "@type": "Location", name: value };
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+// The editable properties rebuilt back into their JSCalendar shapes (undefined = property removed).
+// One source of truth so the optimistic event and the patch can't drift. recurrenceRule/participants/
+// keywords/color/uid/calendarIds are absent here → never touched → carried through.
+interface RebuiltEventProps {
+  title: string | undefined;
+  description: string | undefined;
+  locations: Record<string, EventLocation> | undefined;
+  status: string | undefined;
+  freeBusyStatus: string | undefined;
+  privacy: string | undefined;
+  start: string | undefined;
+  duration: string | undefined;
+  timeZone: string | null | undefined;
+  showWithoutTime: true | undefined;
+}
+
+// Caller MUST ensure the when is valid (editableEventError === null) before rebuilding a CHANGED
+// when; on the unchanged path the original temporal props are carried verbatim regardless.
+function rebuildEvent(baseline: CalendarEvent, edits: EditableEvent): RebuiltEventProps {
+  const when: WhenProps = whenChanged(baseline, edits)
+    ? (editableWhen(edits) ?? {
+        // Unreachable when the form/store gate on editableEventError, but stay total: carry verbatim.
+        start: baseline.start ?? "",
+        duration: baseline.duration,
+        timeZone: baseline.timeZone,
+        showWithoutTime: baseline.showWithoutTime ? true : undefined,
+      })
+    : {
+        start: baseline.start ?? "",
+        duration: baseline.duration,
+        timeZone: baseline.timeZone,
+        showWithoutTime: baseline.showWithoutTime ? true : undefined,
+      };
+  return {
+    title: rebuildScalar(edits.title, baseline.title),
+    description: rebuildScalar(edits.description, baseline.description),
+    locations: rebuildLocations(edits.location, baseline.locations),
+    status: rebuildScalar(edits.status, baseline.status),
+    freeBusyStatus: rebuildScalar(edits.freeBusyStatus, baseline.freeBusyStatus),
+    privacy: rebuildScalar(edits.privacy, baseline.privacy),
+    start: when.start,
+    duration: when.duration,
+    timeZone: when.timeZone,
+    showWithoutTime: when.showWithoutTime,
+  };
+}
+
+/**
+ * A validation message for the form's when-fields, or null when valid. Only flags a when the user
+ * actually CHANGED (an unchanged event is always valid — it loaded from the server), so opening a
+ * malformed-looking event and saving without touching the time never blocks. The store action gates
+ * on this too (enforcement at the boundary, not just the UI).
+ */
+export function editableEventError(baseline: CalendarEvent, edits: EditableEvent): string | null {
+  if (whenChanged(baseline, edits) && editableWhen(edits) === null) {
+    return "Enter a valid start and end; the end can't be before the start.";
+  }
+  return null;
+}
+
+/**
+ * Apply the form's working copy onto the base event, producing the full event for an OPTIMISTIC store
+ * write. Properties the form doesn't expose (recurrenceRule, participants, keywords, color, uid,
+ * calendarIds, …) are carried through untouched; an emptied editable property is removed.
+ */
+export function editableToEvent(baseline: CalendarEvent, edits: EditableEvent): CalendarEvent {
+  const next = { ...baseline };
+  const view = next as unknown as Record<string, unknown>;
+  for (const [key, value] of Object.entries(rebuildEvent(baseline, edits))) {
+    if (value === undefined) delete view[key];
+    else view[key] = value;
+  }
+  return next;
+}
+
+/**
+ * Build the MINIMAL `CalendarEvent/set update` patch from the form's working copy: a whole-property
+ * JSON pointer per editable property that actually changed (deep-compared against the baseline), set
+ * to its rebuilt value or `null` to remove it. Unchanged properties — and every property the form
+ * doesn't expose (recurrenceRule, participants, …) — are absent, so the patch never rewrites or
+ * clobbers them. An all-unchanged edit yields `{}` (the store action treats that as a no-op).
+ */
+export function editableToPatch(baseline: CalendarEvent, edits: EditableEvent): CalendarEventPatch {
+  const patch: CalendarEventPatch = {};
+  const original = baseline as unknown as Record<string, unknown>;
+  for (const [key, rebuilt] of Object.entries(rebuildEvent(baseline, edits))) {
+    // Stable deep compare: an untouched property serializes identically (the unchanged paths return
+    // the baseline's own values), so it stays out of the patch.
+    if (JSON.stringify(original[key] ?? null) === JSON.stringify(rebuilt ?? null)) continue;
+    patch[key] = rebuilt ?? null;
+  }
+  return patch;
 }

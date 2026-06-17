@@ -122,3 +122,37 @@ describe("EventView", () => {
     expect(screen.getByText("↻ Repeating event")).toBeTruthy();
   });
 });
+
+const readonlyRights: Calendar["myRights"] = {
+  mayReadFreeBusy: true,
+  mayReadItems: true,
+  mayWriteAll: false,
+  mayWriteOwn: false,
+  mayUpdatePrivate: false,
+  mayRSVP: false,
+  mayShare: false,
+  mayDelete: false,
+};
+
+describe("EventView edit affordance", () => {
+  it("shows the Edit button when the event's calendar grants write rights", () => {
+    reset();
+    setCalendars({ b: calendar({}) }); // default rights include mayWriteAll
+    setCalendarEvents({ e: event({ id: "e", title: "Standup", start: "2026-09-07T09:00:00" }) });
+    setSelectedEventId("e");
+
+    render(() => <EventView />);
+    expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
+  });
+
+  it("hides the Edit button for an event in a read-only calendar", () => {
+    reset();
+    setCalendars({ b: calendar({ myRights: readonlyRights }) });
+    setCalendarEvents({ e: event({ id: "e", title: "Standup", start: "2026-09-07T09:00:00" }) });
+    setSelectedEventId("e");
+
+    render(() => <EventView />);
+    expect(screen.getByRole("heading", { name: "Standup", level: 1 })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+  });
+});

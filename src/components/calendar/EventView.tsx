@@ -1,30 +1,113 @@
-import { createMemo, For, type JSX, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, type JSX, on, Show } from "solid-js";
+import { EventEditForm } from "@/components/calendar/EventEditForm";
 import type { CalendarEvent } from "@/jmap/types";
 import {
   dayKey,
   eventDisplayTitle,
+  eventMayWrite,
   formatDayHeading,
   formatTimeRange,
   recurrenceSummary,
 } from "@/lib/calendar";
-import { calendarEvents, calendars } from "@/stores/calendar";
+import { handleAuthFailure } from "@/stores/account";
+import { calendarEvents, calendars, resolveBaseEvent } from "@/stores/calendar";
 import { selectedEventId } from "@/stores/ui";
 
 /**
  * The event detail (column 3, where ThreadView sits in mail view): a focused-complete render of the
  * selected event — title, when (day + time range + time zone), calendar, location(s), description,
  * status/free-busy/privacy, participants (read-only), and a recurrence badge. Empty-state when no
- * event is selected. Read-only this milestone (edit/create/delete are Phase 2).
+ * event is selected. An Edit affordance (gated on the event's calendar granting write rights) resolves
+ * the BASE event behind the selected occurrence and swaps in {@link EventEditForm} in place;
+ * create + delete are later Phase-2 branches. Recurrence + participant editing stay deferred.
  */
 export function EventView() {
+  const [editing, setEditing] = createSignal(false);
+  // The resolved base event the form edits (an expanded occurrence's `id` is synthetic and can't be
+  // updated — resolveBaseEvent maps it to the editable base event), paired with the synthetic
+  // occurrence id it was resolved FROM. The pair is captured together so the form's edit target and
+  // optimistic-overlay target can't drift apart across the async resolve (see handleEdit). Null until
+  // resolved.
+  const [editBase, setEditBase] = createSignal<CalendarEvent | null>(null);
+  const [editOccurrenceId, setEditOccurrenceId] = createSignal<string | null>(null);
+  const [resolving, setResolving] = createSignal(false);
+  const [resolveError, setResolveError] = createSignal<string | null>(null);
   const event = () => {
     const id = selectedEventId();
     return id ? calendarEvents[id] : undefined;
   };
+  // Leave edit mode whenever the selected event changes or clears, so a stale form can't outlive its
+  // context (runs once on mount setting false, harmless). Edit state is component-local, so it also
+  // resets naturally when the Calendar surface unmounts — no global cleanup needed (unlike contacts'
+  // create mode).
+  createEffect(
+    on(selectedEventId, () => {
+      setEditing(false);
+      setEditBase(null);
+      setEditOccurrenceId(null);
+      setResolveError(null);
+    }),
+  );
+
+  async function handleEdit() {
+    const id = selectedEventId();
+    if (!id) return;
+    setResolveError(null);
+    setResolving(true);
+    try {
+      const base = await resolveBaseEvent(id);
+      // The user may have selected a different event during the await — if so, the on(selectedEventId)
+      // effect already tore down edit mode; abort rather than open the form seeded from `id` over a
+      // now-different selection (which would edit one event while overlaying another's occurrence).
+      if (selectedEventId() !== id) return;
+      if (base) {
+        setEditBase(base);
+        setEditOccurrenceId(id);
+        setEditing(true);
+      } else {
+        setResolveError("Couldn't open this event for editing. It may have been deleted.");
+      }
+    } catch (err) {
+      // resolveBaseEvent issues raw requests, so an auth failure surfaces here — raise the global
+      // re-auth gate and stay on the detail; otherwise report inline.
+      if (!handleAuthFailure(err)) {
+        console.error("resolveBaseEvent failed:", err);
+        setResolveError("Couldn't open this event for editing. Please try again.");
+      }
+    } finally {
+      setResolving(false);
+    }
+  }
+
   return (
     <div class="event-view">
       <Show when={event()} fallback={<p class="event-empty">Select an event</p>}>
-        {(e) => <EventDetail event={e()} />}
+        {(e) => (
+          <Show
+            when={editing() && editBase()}
+            fallback={
+              <EventDetail
+                event={e()}
+                canEdit={eventMayWrite(e(), calendars)}
+                resolving={resolving()}
+                resolveError={resolveError()}
+                onEdit={() => void handleEdit()}
+              />
+            }
+          >
+            {(base) => (
+              <EventEditForm
+                event={base()}
+                occurrenceId={editOccurrenceId() as string}
+                onClose={() => {
+                  setEditing(false);
+                  setEditBase(null);
+                  setEditOccurrenceId(null);
+                }}
+              />
+            )}
+          </Show>
+        )}
       </Show>
     </div>
   );
@@ -51,7 +134,13 @@ function participantLabel(p: {
   return uri ? uri.replace(/^mailto:/i, "") : null;
 }
 
-function EventDetail(props: { event: CalendarEvent }) {
+function EventDetail(props: {
+  event: CalendarEvent;
+  canEdit: boolean;
+  resolving: boolean;
+  resolveError: string | null;
+  onEdit: () => void;
+}) {
   const event = () => props.event;
   const title = createMemo(() => eventDisplayTitle(event()));
   const heading = createMemo(() => {
@@ -89,7 +178,26 @@ function EventDetail(props: { event: CalendarEvent }) {
   return (
     <article class="event-detail">
       <header class="event-detail-head">
-        <h1 class="event-detail-title">{title()}</h1>
+        <div class="event-detail-headline">
+          <h1 class="event-detail-title">{title()}</h1>
+          <Show when={props.canEdit}>
+            <button
+              type="button"
+              class="event-edit-button"
+              disabled={props.resolving}
+              onClick={() => props.onEdit()}
+            >
+              {props.resolving ? "Opening…" : "Edit"}
+            </button>
+          </Show>
+        </div>
+        <Show when={props.resolveError}>
+          {(message) => (
+            <p class="event-edit-error" role="alert">
+              {message()}
+            </p>
+          )}
+        </Show>
         <p class="event-detail-when">
           <Show when={heading()}>
             <span class="event-detail-date">{heading()}</span>
