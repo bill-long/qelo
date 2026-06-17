@@ -216,6 +216,11 @@ describe("editableToPatch — the no-op invariant", () => {
     const base = timedEvent({ title: "Standup ", description: "note\n" });
     expect(editableToPatch(base, eventToEditable(base))).toEqual({});
   });
+
+  it("carries a startless baseline through without emitting a spurious start", () => {
+    const base = event({ id: "u", title: "Untimed" }); // no start/duration
+    expect(editableToPatch(base, eventToEditable(base))).toEqual({});
+  });
 });
 
 describe("editableToPatch — minimal, scoped changes", () => {

@@ -498,9 +498,11 @@ function formatMsDuration(ms: number): string | undefined {
   return `PT${h ? `${h}H` : ""}${m ? `${m}M` : ""}${s ? `${s}S` : ""}`;
 }
 
-/** The four JSCalendar temporal properties a {@link EditableEvent}'s when-fields map to. */
+/** The four JSCalendar temporal properties a {@link EditableEvent}'s when-fields map to. `start` is
+ * optional so the unchanged path can carry a startless baseline's `start` (undefined) through verbatim,
+ * keeping the no-op invariant; editableWhen always produces a concrete start. */
 interface WhenProps {
-  start: string;
+  start: string | undefined;
   duration: string | undefined;
   timeZone: string | null | undefined;
   showWithoutTime: true | undefined;
@@ -614,20 +616,18 @@ interface RebuiltEventProps {
 // Caller MUST ensure the when is valid (editableEventError === null) before rebuilding a CHANGED
 // when; on the unchanged path the original temporal props are carried verbatim regardless.
 function rebuildEvent(baseline: CalendarEvent, edits: EditableEvent): RebuiltEventProps {
+  // The baseline's temporal props carried VERBATIM (start included — a startless baseline carries
+  // `undefined`, not `""`, so an untouched startless event emits no spurious `start` patch). Used both
+  // for the unchanged-when path and as the (form/store-gated, so unreachable) invalid-when fallback.
+  const carryVerbatim: WhenProps = {
+    start: baseline.start,
+    duration: baseline.duration,
+    timeZone: baseline.timeZone,
+    showWithoutTime: baseline.showWithoutTime ? true : undefined,
+  };
   const when: WhenProps = whenChanged(baseline, edits)
-    ? (editableWhen(edits) ?? {
-        // Unreachable when the form/store gate on editableEventError, but stay total: carry verbatim.
-        start: baseline.start ?? "",
-        duration: baseline.duration,
-        timeZone: baseline.timeZone,
-        showWithoutTime: baseline.showWithoutTime ? true : undefined,
-      })
-    : {
-        start: baseline.start ?? "",
-        duration: baseline.duration,
-        timeZone: baseline.timeZone,
-        showWithoutTime: baseline.showWithoutTime ? true : undefined,
-      };
+    ? (editableWhen(edits) ?? carryVerbatim)
+    : carryVerbatim;
   return {
     title: rebuildScalar(edits.title, baseline.title),
     description: rebuildScalar(edits.description, baseline.description),
