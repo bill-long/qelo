@@ -19,20 +19,32 @@ export interface DateParts {
   minute: number;
 }
 
-const LOCAL_DT = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?)?/;
+// End-anchored: a JSCalendar LocalDateTime carries NO trailing `Z`/offset (RFC 8984 §1.4.5), so a
+// value like "2026-09-07T09:00:00Z" or any trailing garbage is malformed and must be rejected, not
+// silently truncated. Seconds (with optional fraction) are allowed but not captured.
+const LOCAL_DT = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?)?$/;
 
-/** Parse a JSCalendar local date-time ("2026-09-07T09:00:00" or a bare date) into its parts. */
+/**
+ * Parse a JSCalendar local date-time ("2026-09-07T09:00:00" or a bare date) into its parts, or null
+ * for malformed input. Rejects trailing characters (the regex is end-anchored) AND out-of-range
+ * components — otherwise the downstream UTC date math would silently normalize e.g. "2026-13-40" into
+ * a wrong-but-plausible date, which is worse than showing nothing.
+ */
 export function parseDateParts(s: string | undefined): DateParts | null {
   if (!s) return null;
   const m = LOCAL_DT.exec(s);
   if (!m) return null;
-  return {
+  const parts: DateParts = {
     year: Number(m[1]),
     month: Number(m[2]),
     day: Number(m[3]),
     hour: m[4] ? Number(m[4]) : 0,
     minute: m[5] ? Number(m[5]) : 0,
   };
+  if (parts.month < 1 || parts.month > 12) return null;
+  if (parts.day < 1 || parts.day > 31) return null;
+  if (parts.hour > 23 || parts.minute > 59) return null;
+  return parts;
 }
 
 interface Duration {

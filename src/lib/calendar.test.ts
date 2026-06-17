@@ -41,9 +41,27 @@ describe("parseDateParts", () => {
     });
   });
 
-  it("returns null for undefined or malformed input", () => {
+  it("allows seconds and a fractional part", () => {
+    expect(parseDateParts("2026-09-07T09:30:15.500")).toEqual({
+      year: 2026,
+      month: 9,
+      day: 7,
+      hour: 9,
+      minute: 30,
+    });
+  });
+
+  it("returns null for undefined, malformed, trailing, or out-of-range input", () => {
     expect(parseDateParts(undefined)).toBeNull();
     expect(parseDateParts("not a date")).toBeNull();
+    // Trailing characters (a JSCalendar LocalDateTime has no Z/offset) → rejected, not truncated.
+    expect(parseDateParts("2026-09-07T09:00:00Z")).toBeNull();
+    expect(parseDateParts("2026-09-07 garbage")).toBeNull();
+    // Out-of-range components → rejected (would otherwise normalize silently).
+    expect(parseDateParts("2026-13-40")).toBeNull();
+    expect(parseDateParts("2026-00-10")).toBeNull();
+    expect(parseDateParts("2026-09-07T25:00:00")).toBeNull();
+    expect(parseDateParts("2026-09-07T09:60:00")).toBeNull();
   });
 });
 
