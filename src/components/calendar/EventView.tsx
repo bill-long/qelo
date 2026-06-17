@@ -79,9 +79,12 @@ export function EventView() {
     } catch (err) {
       if (token !== resolveSeq) return; // superseded — let the newer resolve own the outcome
       // resolveBaseEvent issues raw requests, so an auth failure surfaces here — raise the global
-      // re-auth gate and stay on the detail; otherwise report inline.
-      if (!handleAuthFailure(err)) {
-        console.error("resolveBaseEvent failed:", err);
+      // re-auth gate (global, so regardless of the current selection) and stay on the detail.
+      if (handleAuthFailure(err)) return;
+      console.error("resolveBaseEvent failed:", err);
+      // Only surface the inline error if the user is still on the event they tried to edit — a
+      // selection change during the await means this banner would otherwise land on a different event.
+      if (selectedEventId() === id) {
         setResolveError("Couldn't open this event for editing. Please try again.");
       }
     } finally {
