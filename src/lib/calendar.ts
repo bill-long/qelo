@@ -41,9 +41,20 @@ export function parseDateParts(s: string | undefined): DateParts | null {
     hour: m[4] ? Number(m[4]) : 0,
     minute: m[5] ? Number(m[5]) : 0,
   };
-  if (parts.month < 1 || parts.month > 12) return null;
-  if (parts.day < 1 || parts.day > 31) return null;
-  if (parts.hour > 23 || parts.minute > 59) return null;
+  // Validate by round-tripping through a UTC date: any impossible field — month 13, an invalid
+  // day-of-month (Feb 31, Apr 31, Feb 29 in a non-leap year), hour 25, minute 60 — normalizes to a
+  // different instant, so a component mismatch means the input was malformed. This subsumes simple
+  // range checks AND honors per-month/leap-year day limits in one pass.
+  const d = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute));
+  if (
+    d.getUTCFullYear() !== parts.year ||
+    d.getUTCMonth() !== parts.month - 1 ||
+    d.getUTCDate() !== parts.day ||
+    d.getUTCHours() !== parts.hour ||
+    d.getUTCMinutes() !== parts.minute
+  ) {
+    return null;
+  }
   return parts;
 }
 

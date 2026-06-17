@@ -62,6 +62,20 @@ describe("parseDateParts", () => {
     expect(parseDateParts("2026-00-10")).toBeNull();
     expect(parseDateParts("2026-09-07T25:00:00")).toBeNull();
     expect(parseDateParts("2026-09-07T09:60:00")).toBeNull();
+    // Impossible calendar days (per-month + leap-year), which UTC math would normalize.
+    expect(parseDateParts("2026-02-31")).toBeNull();
+    expect(parseDateParts("2026-04-31")).toBeNull();
+    expect(parseDateParts("2026-02-29")).toBeNull(); // 2026 is not a leap year
+  });
+
+  it("accepts a valid leap day", () => {
+    expect(parseDateParts("2028-02-29")).toEqual({
+      year: 2028,
+      month: 2,
+      day: 29,
+      hour: 0,
+      minute: 0,
+    });
   });
 });
 
