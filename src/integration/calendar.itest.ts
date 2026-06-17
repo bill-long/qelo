@@ -7,12 +7,13 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { CAP_CALENDARS, CAP_CORE, methodResult } from "@/jmap/methods";
 import type { Id } from "@/jmap/types";
-import { eventToEditable } from "@/lib/calendar";
+import { emptyEditableEvent, eventToEditable } from "@/lib/calendar";
 import {
   calendarAccountId,
   calendarEvents,
   calendarReady,
   calendars,
+  createEvent,
   eventIds,
   loadCalendar,
   resetCalendar,
@@ -251,6 +252,47 @@ describe("calendar (live Stalwart)", () => {
     const renamed = await resolveBaseEvent(occurrenceIdFor(`Edit ${tag} RENAMED`));
     expect(renamed?.description).toBe("added");
     expect(renamed?.recurrenceRule?.frequency).toBe("weekly");
+  });
+
+  it("creates a new event in the default calendar via the store action", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    const title = `Create ${tag}`;
+    // Build the form's working copy the way the create form does: a default slot, then a title + an
+    // in-window when (the editable date inputs are the 16-char datetime-local shape, no seconds).
+    const start = localDateTime(5, 9).slice(0, 16);
+    const end = localDateTime(5, 10).slice(0, 16);
+    const edits = {
+      ...emptyEditableEvent(),
+      title,
+      start,
+      end,
+      timeZone: "America/New_York",
+    };
+
+    const result = await createEvent(edits, { [calId]: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("create failed");
+    createdIds.push(result.id); // the BASE id, for afterEach cleanup
+
+    // The event persisted + is queryable (settle for the indexing lag), with the fields we sent.
+    await loadUntil(() => countByTitle(title) >= 1);
+    expect(countByTitle(title)).toBe(1);
+    const created = Object.values(calendarEvents).find((e) => e?.title === title);
+    expect(created?.timeZone).toBe("America/New_York");
+    expect(created?.start?.slice(0, 16)).toBe(start);
+    expect(created?.duration).toBe("PT1H");
+    // Recurrence/participants weren't sent (not exposed on create) → absent.
+    expect(created?.recurrenceRule).toBeUndefined();
+    expect(created?.participants).toBeUndefined();
+  });
+
+  it("rejects a contentless create without a round trip", async () => {
+    // No title → editableHasContent is false → the store action refuses before any /set.
+    const result = await createEvent(emptyEditableEvent(), { b: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toBe("empty");
   });
 
   it("treats open + save with no edits as a no-op success", async () => {

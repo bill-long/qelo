@@ -1,8 +1,16 @@
 import { createMemo, createSignal, For, type JSX, onMount, Show } from "solid-js";
 import { createStore, produce, unwrap } from "solid-js/store";
-import type { CalendarEvent } from "@/jmap/types";
-import { type EditableEvent, editableEventError, eventToEditable } from "@/lib/calendar";
-import { saveEvent } from "@/stores/calendar";
+import type { Calendar, CalendarEvent } from "@/jmap/types";
+import {
+  createEventError,
+  defaultWritableCalendarId,
+  type EditableEvent,
+  editableEventError,
+  editableHasContent,
+  emptyEditableEvent,
+  eventToEditable,
+} from "@/lib/calendar";
+import { createEvent, saveEvent } from "@/stores/calendar";
 import { notify } from "@/stores/toasts";
 
 // The JSCalendar enum vocabularies the form exposes as <select>s. "" = unset (the server default);
@@ -21,36 +29,61 @@ function timeZoneOptions(current: string): string[] {
   return all;
 }
 
+/** Edit an existing event, or create a fresh one in a chosen writable calendar. The `calendars`
+ * (create mode) are the writable calendars the new event can land in — normally non-empty (the
+ * `NewEventButton` affordance only renders when one exists), but the form doesn't rely on that: an
+ * empty list leaves `calendarId()` null, which disables Create and is guarded again at submit. */
+export type EventEditFormProps = { onClose: () => void } & (
+  | { mode: "edit"; event: CalendarEvent; occurrenceId: string }
+  | { mode: "create"; calendars: Calendar[] }
+);
+
 /**
- * Edit an existing event in place (column 3, replacing the read-only EventDetail). A working copy —
- * seeded from the resolved BASE event (`eventToEditable`) — is edited locally; Save dispatches
- * `saveEvent` (a minimal patch against the open-time baseline), which owns the JMAP round trip + the
- * agenda reconcile. Covers the rendered set MINUS recurrence + participants (those are present but
- * uneditable this milestone and carry through untouched): title, when (start/end/all-day/timeZone),
- * location, description, and the status/free-busy/privacy enums. Errors surface inline (toasts are
- * success-only); a successful save confirms with a toast and closes back to the detail.
+ * Edit an existing event, or create a new one, in place (column 3, replacing the read-only
+ * EventDetail). A working copy — seeded from the resolved BASE event (`eventToEditable`) when editing,
+ * a default one-hour slot (`emptyEditableEvent`) when creating — is edited locally; Save dispatches
+ * `saveEvent` (a minimal patch against the open-time baseline) or `createEvent` (a new event in the
+ * chosen calendar), which own the JMAP round trip + the agenda reconcile. Covers the rendered set
+ * MINUS recurrence + participants (those are present but uneditable this milestone and carry through /
+ * aren't settable on create): title, when (start/end/all-day/timeZone), location, description, and the
+ * status/free-busy/privacy enums. Errors surface inline (toasts are success-only); a successful
+ * save/create confirms with a toast and closes back to the detail.
  */
-export function EventEditForm(props: {
-  event: CalendarEvent;
-  occurrenceId: string;
-  onClose: () => void;
-}) {
-  // Freeze a plain-object snapshot of the base event at open. It seeds the working copy AND is the
-  // baseline saveEvent diffs against, so the patch is exactly the user's delta (and a concurrent
-  // background sync can't shift the baseline out from under the edit). A one-time read: re-deriving
-  // mid-edit would clobber typing, and a selection change unmounts the form (EventView exits editing).
+export function EventEditForm(props: EventEditFormProps) {
+  // Freeze a plain-object snapshot of the base event at open (edit mode only). It seeds the working
+  // copy AND is the baseline saveEvent diffs against, so the patch is exactly the user's delta (and a
+  // concurrent background sync can't shift the baseline out from under the edit). A one-time read:
+  // re-deriving mid-edit would clobber typing, and a selection change unmounts the form (EventView
+  // exits edit/create mode).
   // eslint-disable-next-line solid/reactivity
-  const baseline = structuredClone(unwrap(props.event)) as CalendarEvent;
+  const editEvent = props.mode === "edit" ? props.event : null;
+  const baseline = editEvent ? (structuredClone(unwrap(editEvent)) as CalendarEvent) : null;
   // eslint-disable-next-line solid/reactivity
-  const occurrenceId = props.occurrenceId;
-  const initial = eventToEditable(baseline);
+  const occurrenceId = props.mode === "edit" ? props.occurrenceId : "";
+  const initial = baseline ? eventToEditable(baseline) : emptyEditableEvent();
   const [form, setForm] = createStore<EditableEvent>(initial);
+  // Create mode: which writable calendar the new event lands in. Defaults to the server-default
+  // writable calendar; a `<select>` lets the user pick only when there's more than one. (Static for
+  // the form's life — the list doesn't change under an open form; reading props.calendars once is fine.)
+  // eslint-disable-next-line solid/reactivity
+  const createCalendars = props.mode === "create" ? props.calendars : [];
+  const [calendarId, setCalendarId] = createSignal<string | null>(
+    defaultWritableCalendarId(createCalendars),
+  );
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   // The when-validation message (end-before-start, unparseable) — reactive over the form, shown by
-  // the end field and gating Save. editableEventError only flags a CHANGED when, so an untouched
-  // event is always submittable (its empty patch is a no-op).
-  const whenError = createMemo(() => editableEventError(baseline, form));
+  // the end field. In edit mode it only flags a CHANGED when (an untouched event stays submittable,
+  // its empty patch a no-op); in create mode any invalid when is flagged (a create needs a concrete
+  // when). Save gating: edit blocks on a when error; create blocks on `editableHasContent` (title +
+  // valid when) AND a resolved destination calendar — so the button can't enable into a submit that
+  // would always fail with "No writable calendar" (e.g. an empty `calendars`, should rights change).
+  const whenError = createMemo(() =>
+    baseline ? editableEventError(baseline, form) : createEventError(form),
+  );
+  const canSubmit = createMemo(() =>
+    baseline ? whenError() === null : editableHasContent(form) && calendarId() !== null,
+  );
   const timeZones = createMemo(() => timeZoneOptions(form.timeZone));
   let titleInput: HTMLInputElement | undefined;
   onMount(() => titleInput?.focus());
@@ -88,25 +121,49 @@ export function EventEditForm(props: {
 
   async function handleSubmit(event: Event) {
     event.preventDefault();
-    if (busy() || whenError()) return;
+    if (busy() || !canSubmit()) return;
     setBusy(true);
     setError(null);
+    // unwrap the store proxy to a plain EditableEvent for the pure transforms in the store action.
     const edits = unwrap(form);
-    const result = await saveEvent(occurrenceId, baseline.id, baseline, edits);
-    setBusy(false);
-    if (result.ok) {
-      notify("Event saved");
-      props.onClose();
+    if (baseline) {
+      const result = await saveEvent(occurrenceId, baseline.id, baseline, edits);
+      setBusy(false);
+      if (result.ok) {
+        notify("Event saved");
+        props.onClose();
+        return;
+      }
+      // The auth case raises the global re-auth gate — keep the form as-is and say nothing here.
+      if (result.reason === "auth") return;
+      setError(
+        result.reason === "refused"
+          ? "The server refused the change. The calendar may be read-only, or the event may have changed elsewhere."
+          : result.reason === "invalid"
+            ? "Enter a valid start and end."
+            : "Couldn't save the event. Please try again.",
+      );
       return;
     }
-    // The auth case raises the global re-auth gate — keep the form as-is and say nothing here.
+
+    const cal = calendarId();
+    if (!cal) {
+      setBusy(false);
+      setError("No writable calendar to create the event in.");
+      return;
+    }
+    const result = await createEvent(edits, { [cal]: true });
+    setBusy(false);
+    if (result.ok) {
+      notify("Event created");
+      props.onClose(); // createEvent already selected the new event (when it's in the agenda window)
+      return;
+    }
     if (result.reason === "auth") return;
     setError(
       result.reason === "refused"
-        ? "The server refused the change. The calendar may be read-only, or the event may have changed elsewhere."
-        : result.reason === "invalid"
-          ? "Enter a valid start and end."
-          : "Couldn't save the event. Please try again.",
+        ? "The server refused the new event. The calendar may be read-only."
+        : "Couldn't create the event. Please try again.",
     );
   }
 
@@ -118,9 +175,24 @@ export function EventEditForm(props: {
     >
       <header class="event-edit-head">
         <h1 id="event-edit-title" class="event-detail-title">
-          Edit event
+          {props.mode === "create" ? "New event" : "Edit event"}
         </h1>
       </header>
+
+      {/* Calendar picker — create mode with a choice (>1). One writable calendar needs no picker
+          (it's implicit); an empty list shows no picker either and disables Create (the gate above). */}
+      <Show when={props.mode === "create" && createCalendars.length > 1}>
+        <label class="event-edit-field">
+          <span class="event-edit-label">Calendar</span>
+          <select
+            class="event-edit-input"
+            value={calendarId() ?? ""}
+            onChange={(e) => setCalendarId(e.currentTarget.value)}
+          >
+            <For each={createCalendars}>{(cal) => <option value={cal.id}>{cal.name}</option>}</For>
+          </select>
+        </label>
+      </Show>
 
       <label class="event-edit-field">
         <span class="event-edit-label">Title</span>
@@ -237,8 +309,14 @@ export function EventEditForm(props: {
       </Show>
 
       <footer class="event-edit-actions">
-        <button type="submit" class="event-edit-save" disabled={busy() || Boolean(whenError())}>
-          {busy() ? "Saving…" : "Save"}
+        <button type="submit" class="event-edit-save" disabled={busy() || !canSubmit()}>
+          {busy()
+            ? props.mode === "create"
+              ? "Creating…"
+              : "Saving…"
+            : props.mode === "create"
+              ? "Create"
+              : "Save"}
         </button>
         <button
           type="button"

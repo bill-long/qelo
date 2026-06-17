@@ -12,19 +12,25 @@ import {
   calendarGet,
   idsFromCalendarEventQuery,
   methodResult,
+  type SetResult,
   setResult,
 } from "@/jmap/methods";
-import type { Calendar, CalendarEvent, MethodResponse, SetError } from "@/jmap/types";
+import type { Calendar, CalendarEvent, Id, MethodResponse, SetError } from "@/jmap/types";
 import {
   baseEventIdCandidates,
+  createdEventFor,
+  createEventBody,
   type EditableEvent,
   editableEventError,
+  editableHasContent,
   editableToEvent,
   editableToPatch,
+  freshOccurrenceIdForBase,
   pickBaseEvent,
 } from "@/lib/calendar";
 import { handleAuthFailure, jmap, session } from "./account";
 import { syncCollection } from "./sync-collection";
+import { setSelectedEventId } from "./ui";
 
 export const [calendars, setCalendars] = createStore<Record<string, Calendar>>({});
 export const [calendarEvents, setCalendarEvents] = createStore<Record<string, CalendarEvent>>({});
@@ -447,6 +453,98 @@ async function revertEventOverlay(
       );
     }
   }
+}
+
+/** The outcome of a {@link createEvent}: the new server id on success, else why it didn't persist. */
+export type CreateEventResult =
+  | { ok: true; id: Id }
+  | {
+      ok: false;
+      reason: "empty" | "no-account" | "auth" | "refused" | "error";
+      error?: SetError;
+    };
+
+/**
+ * Create a new event from the form's working copy in the chosen calendar(s). Issued as ONE
+ * `CalendarEvent/set create`; the server assigns the id + uid and re-keys our creation id (`new` →
+ * server BASE id), exactly like the contacts/email create paths. Resolves with a
+ * {@link CreateEventResult} (never rejects) so the form can surface a failure inline.
+ *
+ * Discipline mirrors saveEvent / createContact ([[jmap-set-quirks]] / [[qelo-review-checklist]]):
+ * `requireNewState:false` (an all-failed /set omits newState on Stalwart; this path syncs via
+ * CalendarEvent/changes, not this token). A contentless working copy (no title or an invalid when) is
+ * rejected without a round trip — the create-form analog of saveEvent's empty-patch no-op (the form
+ * gates Save on the same {@link editableHasContent}). Nothing is written until the server confirms, so
+ * a refusal/transport error needs no rollback.
+ *
+ * The agenda is the EXPANDED (synthetic-keyed) view, and the create returns the BASE id (Stalwart's
+ * created map carries only `id`). So after the create: optimistically seed the new base event for an
+ * instant render, then reconcile via a full window re-query ({@link refetchEvents}) — where the new
+ * event re-appears under its SYNTHETIC occurrence id (if it falls in the today→+window range). The
+ * selection is then re-pointed from the base id to that occurrence by a fail-safe suffix match (the
+ * inverse of resolveBaseEvent): a single freshly-appeared occurrence ending in the base id is selected,
+ * otherwise the selection is cleared rather than left dangling on a base id absent from the store. An
+ * event created OUTSIDE the window (far future/past) simply isn't in the agenda — the form closes and
+ * the detail shows the empty state; acceptable (same posture as saveEvent moving an event out of window).
+ */
+export async function createEvent(
+  edits: EditableEvent,
+  calendarIds: Record<string, true>,
+): Promise<CreateEventResult> {
+  if (!editableHasContent(edits)) return { ok: false, reason: "empty" };
+  const accountId = calendarAccountId();
+  if (!accountId) return { ok: false, reason: "no-account" };
+
+  const body = createEventBody(edits, calendarIds);
+  const client = jmap();
+  let result: SetResult<CalendarEvent>;
+  try {
+    const responses = await client.request(
+      [calendarEventSet(accountId, "set", { create: { new: body } })],
+      CALENDAR_USING,
+    );
+    result = setResult<CalendarEvent>(responses, "set", { requireNewState: false });
+  } catch (err) {
+    if (handleAuthFailure(err)) return { ok: false, reason: "auth" };
+    console.error("CalendarEvent/set create failed:", err);
+    return { ok: false, reason: "error" };
+  }
+
+  const refused = result.notCreated.new;
+  if (refused) return { ok: false, reason: "refused", error: refused };
+  const id = result.created.new?.id;
+  if (!id) {
+    // Created without a refusal but the server returned no id — it can't be addressed. Treat as an
+    // error rather than guessing; the next Calendar-view open / sync re-queries and surfaces it.
+    console.error("CalendarEvent/set create returned no id");
+    return { ok: false, reason: "error" };
+  }
+
+  // Snapshot the existing occurrence ids BEFORE the optimistic seed so we can tell the new occurrence
+  // apart after the reconcile (a pre-existing occurrence could coincidentally end in the new base id;
+  // `!before.has` excludes it). Seed the new base event so it renders at once, prepend it to the
+  // agenda order, and select it.
+  const before = new Set(eventIds());
+  setCalendarEvents(
+    produce((s) => {
+      s[id] = createdEventFor(id, edits, calendarIds);
+    }),
+  );
+  setEventIds((ids) => [id, ...ids]);
+  setSelectedEventId(id);
+
+  // Reconcile to server truth (best-effort): replaces the base-id seed with the synthetic-keyed
+  // occurrence, then re-point the selection to it. A reconcile blip leaves the seed selected (it
+  // persisted server-side) until the next sync re-queries.
+  try {
+    await refetchEvents(accountId);
+    // Re-point the selection from the base id to the new synthetic occurrence; fail safe (clear) when
+    // it's out of window (none) or ambiguous (several) rather than strand a dangling base-id selection.
+    setSelectedEventId(freshOccurrenceIdForBase(id, eventIds(), before));
+  } catch (err) {
+    handleAuthFailure(err);
+  }
+  return { ok: true, id };
 }
 
 /** Test seam: drop all calendar state so a suite starts clean (wired into the harness resetStores). */

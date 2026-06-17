@@ -358,6 +358,25 @@ export function resolveBaseEventId(syntheticId: string, baseIds: readonly string
 }
 
 /**
+ * The newly-appeared agenda occurrence id backing a just-created BASE event, or null — the INVERSE of
+ * {@link baseEventIdCandidates}, used to re-point the selection after a create. The agenda is re-queried
+ * (synthetic-keyed) after a create, so the base id the server returned isn't itself a store key; the
+ * new occurrence is the synthetic id ENDING IN the base id that wasn't present `before` the create
+ * (`before` excludes a pre-existing occurrence that coincidentally ends in the new base id — the same
+ * `X`-vs-`aX` suffix overlap {@link pickBaseEvent} guards). Returns the single match, or null when there
+ * are none (the event was created outside the agenda window) or several (ambiguous) — the caller then
+ * clears the selection rather than guess at the wrong event. Pure; the store passes the live ids + set.
+ */
+export function freshOccurrenceIdForBase(
+  baseId: string,
+  occurrenceIds: readonly string[],
+  before: ReadonlySet<string>,
+): string | null {
+  const fresh = occurrenceIds.filter((sid) => sid.endsWith(baseId) && !before.has(sid));
+  return fresh.length === 1 ? (fresh[0] as string) : null;
+}
+
+/**
  * Choose which fetched base event actually backs `occurrence` from the suffix-collision `candidates`.
  * With one candidate it's that one. With several (the `X` vs `aX` ambiguity above) it disambiguates by
  * the occurrence's `title`, then — for a recurring occurrence whose titles still tie — by which base
@@ -642,17 +661,28 @@ function rebuildEvent(baseline: CalendarEvent, edits: EditableEvent): RebuiltEve
   };
 }
 
+const WHEN_ERROR = "Enter a valid start and end; the end can't be before the start.";
+
 /**
- * A validation message for the form's when-fields, or null when valid. Only flags a when the user
- * actually CHANGED (an unchanged event is always valid — it loaded from the server), so opening a
- * malformed-looking event and saving without touching the time never blocks. The store action gates
+ * A validation message for the EDIT form's when-fields, or null when valid. Only flags a when the
+ * user actually CHANGED (an unchanged event is always valid — it loaded from the server), so opening
+ * a malformed-looking event and saving without touching the time never blocks. The store action gates
  * on this too (enforcement at the boundary, not just the UI).
  */
 export function editableEventError(baseline: CalendarEvent, edits: EditableEvent): string | null {
   if (whenChanged(baseline, edits) && editableWhen(edits) === null) {
-    return "Enter a valid start and end; the end can't be before the start.";
+    return WHEN_ERROR;
   }
   return null;
+}
+
+/**
+ * A validation message for the CREATE form's when-fields, or null when valid. Unlike the edit path
+ * (which carries an unchanged baseline through), a create always needs a concrete, valid when — so
+ * this flags any unparseable/end-before-start when outright. Same message as the edit path.
+ */
+export function createEventError(edits: EditableEvent): string | null {
+  return editableWhen(edits) === null ? WHEN_ERROR : null;
 }
 
 /**
@@ -687,4 +717,110 @@ export function editableToPatch(baseline: CalendarEvent, edits: EditableEvent): 
     patch[key] = rebuilt ?? null;
   }
   return patch;
+}
+
+// ---------------------------------------------------------------------------
+// Create — a NEW event from a blank working copy, reusing the same rebuildEvent as the edit path so
+// the two transforms can't drift. The create form exposes the SAME editable set as edit (title, when,
+// location, description, status/free-busy/privacy); recurrence + participants are NOT settable here
+// (the form has no field, and Stalwart drops participants on create anyway — probed live), so they're
+// simply absent from the body. The server assigns `uid` and the id.
+// ---------------------------------------------------------------------------
+
+// The rebuild "original" for a create: an Event with no editable props set, so rebuildEvent treats
+// every form value as new (no verbatim carry-through). `{ "@type": "Event" }` typed as CalendarEvent
+// reads only its (all-undefined) optional props here — a deliberate, contained cast.
+const EMPTY_EVENT = { "@type": "Event" } as CalendarEvent;
+
+/**
+ * A blank working copy for the create form, pre-seeded with a sensible default slot — the next top of
+ * the hour, one hour long, timed (not all-day), floating time zone — so the form opens with a VALID
+ * when and the user typically only types a title (the new-event minimum is a title + a start). Built
+ * in LOCAL wall-clock terms to match the `datetime-local` input shape; `now` is a parameter so tests
+ * are deterministic. The {@link editableHasContent} gate still blocks a save until a title is entered.
+ */
+export function emptyEditableEvent(now: Date = new Date()): EditableEvent {
+  const startD = new Date(now);
+  startD.setMinutes(0, 0, 0);
+  startD.setHours(startD.getHours() + 1);
+  const endD = new Date(startD);
+  endD.setHours(endD.getHours() + 1);
+  const fmt = (d: Date) =>
+    `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(
+      d.getMinutes(),
+    )}`;
+  return {
+    title: "",
+    description: "",
+    location: "",
+    allDay: false,
+    start: fmt(startD),
+    end: fmt(endD),
+    timeZone: "",
+    status: "",
+    freeBusyStatus: "",
+    privacy: "",
+  };
+}
+
+/**
+ * Whether the working copy is worth creating: a non-blank title AND a valid when (both dates parse
+ * and the end isn't before the start). The create form gates Save on this and {@link createEvent}
+ * re-checks it at the store boundary (enforcement isn't just the UI) — the create-form analog of the
+ * edit path's empty-patch no-op. A blank or whitespace-only title, or an invalid when, isn't a
+ * savable event.
+ */
+export function editableHasContent(edits: EditableEvent): boolean {
+  return edits.title.trim() !== "" && editableWhen(edits) !== null;
+}
+
+/**
+ * Build the `CalendarEvent/set create` body from the form's working copy: `@type` + the chosen
+ * `calendarIds` plus every editable property that survives the rebuild (blanks dropped). No `id` or
+ * `uid` — the server assigns both (a client-chosen uid buys nothing here and risks a collision on a
+ * duplicate create). Recurrence/participants are absent (not exposed). Same {@link rebuildEvent} as
+ * the edit/patch transforms, so they can't drift. Caller MUST ensure {@link editableHasContent}.
+ */
+export function createEventBody(
+  edits: EditableEvent,
+  calendarIds: Record<string, true>,
+): Record<string, unknown> {
+  const body: Record<string, unknown> = { "@type": "Event", calendarIds };
+  for (const [key, value] of Object.entries(rebuildEvent(EMPTY_EVENT, edits))) {
+    if (value !== undefined) body[key] = value;
+  }
+  return body;
+}
+
+/**
+ * Seed a full local {@link CalendarEvent} for the optimistic store write after a create: the
+ * structural fields under the server-assigned `id` + calendar membership, with the form's edits
+ * overlaid. Gives the new event an instant render before the reconcile re-query absorbs server truth.
+ * Same {@link rebuildEvent} (via {@link editableToEvent}) as {@link createEventBody}, so they agree.
+ */
+export function createdEventFor(
+  id: string,
+  edits: EditableEvent,
+  calendarIds: Record<string, true>,
+): CalendarEvent {
+  const seed = { "@type": "Event", id, calendarIds } as unknown as CalendarEvent;
+  return editableToEvent(seed, edits);
+}
+
+/**
+ * The calendars this account can create an event in: at least one of `mayWriteAll`/`mayWriteOwn`,
+ * sorted for the picker (default first, then sortOrder/name). The "+ New event" affordance is gated
+ * on this being non-empty; the create form's calendar picker lists them (and skips the picker when
+ * there's exactly one). Mirrors `writableBooks`.
+ */
+export function writableCalendars(cals: Record<string, Calendar>): Calendar[] {
+  return Object.values(cals)
+    .filter((c) => c.myRights.mayWriteAll === true || c.myRights.mayWriteOwn === true)
+    .sort(compareCalendars);
+}
+
+/** The default destination among writable `cals` (already filtered/sorted by {@link writableCalendars}):
+ * the server-default calendar if it's writable, else the first. Null only when there are none. */
+export function defaultWritableCalendarId(cals: Calendar[]): string | null {
+  return (cals.find((c) => c.isDefault) ?? cals[0])?.id ?? null;
 }
