@@ -257,11 +257,16 @@ export async function resolveBaseEvent(syntheticId: string): Promise<CalendarEve
   // occurrence; the base ids resolve to base events. `candidates` may already contain the synthetic id
   // (a non-synthetic id that is its own base), so partition the response by id membership, not equality.
   const getResponses = await client.request(
-    [calendarEventGet(accountId, "bg", { ids: [...candidates, syntheticId] })],
+    [calendarEventGet(accountId, "bg", { ids: [...new Set([...candidates, syntheticId])] })],
     CALENDAR_USING,
   );
   const list = (methodResult(getResponses, "bg").list ?? []) as CalendarEvent[];
-  const occurrence = list.find((e) => e.id === syntheticId) ?? calendarEvents[syntheticId];
+  const fetched = list.find((e) => e.id === syntheticId);
+  // If the id IS itself a base id (a non-expanded id that ends with other base ids — e.g. base `bc`
+  // also ends with base `c`), it's the exact target: return it directly rather than running collision
+  // disambiguation, which could otherwise fail safe on a title tie even though the exact base is known.
+  if (fetched && candidates.includes(syntheticId)) return fetched;
+  const occurrence = fetched ?? calendarEvents[syntheticId];
   const candidateEvents = list.filter((e) => candidates.includes(e.id));
   return pickBaseEvent(occurrence, candidateEvents);
 }
@@ -304,7 +309,10 @@ async function fetchAllBaseEventIds(accountId: string): Promise<string[]> {
     position += pageIds.length;
     if (pageIds.length === 0 || ids.length >= total) break;
   }
-  return ids;
+  // Dedupe at the boundary: a misbehaving server (or overlapping pages) can repeat ids, which would
+  // otherwise bloat the candidate match + the follow-up CalendarEvent/get ids list. Unique ids keep
+  // the resolver work bounded without changing correctness for a well-behaved server.
+  return [...new Set(ids)];
 }
 
 /** The outcome of a {@link saveEvent}: ok on success/no-op, else why it didn't persist. */
