@@ -2097,6 +2097,13 @@ textarea.contact-edit-input {
   border-color: var(--accent);
 }
 
+/* While a delete is in flight (the base-id resolve + destroy), the confirm buttons disable. */
+.event-delete-button:disabled,
+.event-delete-cancel:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
 /* Event edit form (column 3, replacing the read-only detail). */
 .event-edit {
   max-width: 44rem;

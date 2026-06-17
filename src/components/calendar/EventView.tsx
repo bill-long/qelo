@@ -50,6 +50,11 @@ export function EventView() {
   // refusal the occurrence is restored + re-selected (the detail re-mounts) and this error rides down to
   // it as a prop. Held on the always-mounted EventView (not the unmounting detail) so it survives.
   const [deleteError, setDeleteError] = createSignal<string | null>(null);
+  // In-flight guard for the delete. deleteEvent resolves the base id (a round trip) BEFORE the
+  // optimistic prune unmounts the detail, so without this the confirm "Delete" stays clickable during
+  // that window and a re-click would fire a second concurrent destroy + toast. Mirrors the Edit
+  // affordance's `resolving` flag (which disables the Edit button). Owned by handleDelete's try/finally.
+  const [deleting, setDeleting] = createSignal(false);
   // Monotonic token identifying the latest resolve. A resolve superseded by a newer one (the user
   // re-clicked Edit, possibly on a different event) must not touch shared edit state when it finally
   // settles — in particular its `finally` must not clear `resolving` out from under the newer resolve.
@@ -122,8 +127,15 @@ export function EventView() {
   }
 
   async function handleDelete(occurrenceId: string) {
+    if (deleting()) return; // re-entry guard (the confirm stays mounted during the base-id resolve)
     setDeleteError(null);
-    const result = await deleteEvent(occurrenceId);
+    setDeleting(true);
+    let result: Awaited<ReturnType<typeof deleteEvent>>;
+    try {
+      result = await deleteEvent(occurrenceId);
+    } finally {
+      setDeleting(false);
+    }
     if (result.ok) {
       notify("Event deleted");
       return;
@@ -139,7 +151,9 @@ export function EventView() {
       result.reason === "refused"
         ? "The server refused the deletion. The calendar may be read-only, or the event may have changed elsewhere."
         : result.reason === "unresolved"
-          ? "Couldn't delete this event. It may have already been deleted."
+          ? // null base resolution: already destroyed elsewhere OR a suffix-collision the resolver
+            // couldn't narrow to one base — cover both rather than assert it's gone.
+            "Couldn't delete this event — it may have already been deleted, or couldn't be uniquely identified. Please try again."
           : "Couldn't delete the event. Please try again.",
     );
   }
@@ -161,6 +175,7 @@ export function EventView() {
                     resolving={resolving()}
                     resolveError={resolveError()}
                     deleteError={deleteError()}
+                    deleting={deleting()}
                     onEdit={() => void handleEdit()}
                     onDelete={(id) => void handleDelete(id)}
                   />
@@ -221,6 +236,7 @@ function EventDetail(props: {
   resolving: boolean;
   resolveError: string | null;
   deleteError: string | null;
+  deleting: boolean;
   onEdit: () => void;
   onDelete: (occurrenceId: string) => void;
 }) {
@@ -312,13 +328,15 @@ function EventDetail(props: {
               <button
                 type="button"
                 class="event-delete-button"
+                disabled={props.deleting}
                 onClick={() => props.onDelete(props.event.id)}
               >
-                Delete
+                {props.deleting ? "Deleting…" : "Delete"}
               </button>
               <button
                 type="button"
                 class="event-delete-cancel"
+                disabled={props.deleting}
                 onClick={() => setConfirmingDelete(false)}
               >
                 Cancel
