@@ -285,7 +285,13 @@ async function fetchAllBaseEventIds(accountId: string): Promise<string[]> {
   const client = jmap();
   const ids: string[] = [];
   let position = 0;
+  // Unknown until the server reports it. Fall back to Infinity (NOT ids.length) so a server that omits
+  // `total` pages until an empty page instead of stopping after one (which would reintroduce truncation).
+  let total = Number.POSITIVE_INFINITY;
   for (let page = 0; page < 1000; page += 1) {
+    // Only ask the server to compute `total` until we have it — recomputing it on every page is
+    // needless work that adds latency on a large account (this whole sweep runs on the Edit click).
+    const needTotal = total === Number.POSITIVE_INFINITY;
     const responses = await client.request(
       [
         calendarEventQuery(accountId, "bq", {
@@ -294,7 +300,7 @@ async function fetchAllBaseEventIds(accountId: string): Promise<string[]> {
           expandRecurrences: false,
           position,
           limit: BASE_ID_PAGE,
-          calculateTotal: true,
+          ...(needTotal ? { calculateTotal: true } : {}),
         }),
       ],
       CALENDAR_USING,
@@ -302,10 +308,7 @@ async function fetchAllBaseEventIds(accountId: string): Promise<string[]> {
     const result = methodResult(responses, "bq");
     const pageIds = (result.ids ?? []) as string[];
     ids.push(...pageIds);
-    // Fall back to Infinity (NOT ids.length) when the server omits `total` despite calculateTotal —
-    // breaking on ids.length here would stop after one page and reintroduce the truncation this guards
-    // against. With Infinity we page until an empty page (or the defensive cap) instead.
-    const total = typeof result.total === "number" ? result.total : Number.POSITIVE_INFINITY;
+    if (needTotal && typeof result.total === "number") total = result.total;
     position += pageIds.length;
     if (pageIds.length === 0 || ids.length >= total) break;
   }
