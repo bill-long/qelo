@@ -251,12 +251,19 @@ export async function resolveBaseEvent(syntheticId: string): Promise<CalendarEve
   const candidates = baseEventIdCandidates(syntheticId, baseIds);
   if (candidates.length === 0) return null;
   const client = jmap();
+  // Fetch the candidate base events AND the occurrence itself in one get, so pickBaseEvent can
+  // disambiguate a suffix collision on the occurrence's SERVER-truth content rather than depending on
+  // it still being in the (push-synced, evictable) store. The synthetic occurrence id resolves to the
+  // occurrence; the base ids resolve to base events. `candidates` may already contain the synthetic id
+  // (a non-synthetic id that is its own base), so partition the response by id membership, not equality.
   const getResponses = await client.request(
-    [calendarEventGet(accountId, "bg", { ids: candidates })],
+    [calendarEventGet(accountId, "bg", { ids: [...candidates, syntheticId] })],
     CALENDAR_USING,
   );
   const list = (methodResult(getResponses, "bg").list ?? []) as CalendarEvent[];
-  return pickBaseEvent(calendarEvents[syntheticId], list);
+  const occurrence = list.find((e) => e.id === syntheticId) ?? calendarEvents[syntheticId];
+  const candidateEvents = list.filter((e) => candidates.includes(e.id));
+  return pickBaseEvent(occurrence, candidateEvents);
 }
 
 // The page size for the base-id sweep. CalendarEvent/query is paginated and a server may cap the page,
@@ -288,7 +295,10 @@ async function fetchAllBaseEventIds(accountId: string): Promise<string[]> {
     const result = methodResult(responses, "bq");
     const pageIds = (result.ids ?? []) as string[];
     ids.push(...pageIds);
-    const total = typeof result.total === "number" ? result.total : ids.length;
+    // Fall back to Infinity (NOT ids.length) when the server omits `total` despite calculateTotal —
+    // breaking on ids.length here would stop after one page and reintroduce the truncation this guards
+    // against. With Infinity we page until an empty page (or the defensive cap) instead.
+    const total = typeof result.total === "number" ? result.total : Number.POSITIVE_INFINITY;
     position += pageIds.length;
     if (pageIds.length === 0 || ids.length >= total) break;
   }
