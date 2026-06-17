@@ -270,6 +270,20 @@ describe("editableToPatch — minimal, scoped changes", () => {
     });
   });
 
+  it("keys off the first TRUTHY location, not a null entries[0] (no-op holds)", () => {
+    // A degenerate map whose first entry is null: eventToEditable seeds from the first truthy location,
+    // so the location rebuild must compare against THAT, not the null entry — else open+save spuriously
+    // patches.
+    const base = timedEvent({
+      locations: {
+        l0: undefined,
+        l1: { "@type": "Location", name: "Room A" },
+      } as unknown as NonNullable<CalendarEvent["locations"]>,
+    });
+    expect(eventToEditable(base).location).toBe("Room A");
+    expect(editableToPatch(base, eventToEditable(base))).toEqual({});
+  });
+
   it("changes an enum and removes one cleared to the default", () => {
     const base = timedEvent();
     expect(editableToPatch(base, edit(base, { status: "tentative" }))).toEqual({

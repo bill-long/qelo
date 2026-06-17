@@ -570,23 +570,28 @@ function rebuildLocations(
   original: Record<string, EventLocation> | undefined,
 ): Record<string, EventLocation> | undefined {
   const entries = Object.entries(original ?? {});
-  const firstName = entries.length > 0 ? (entries[0]?.[1]?.name ?? "") : "";
-  if (editValue === firstName) return original;
+  // The form edits the FIRST TRUTHY location (matching firstLocationName, which seeds the editable) —
+  // not blindly entries[0], which could be a null/empty map value and desync the no-op comparison.
+  const firstKey = entries.find(([, v]) => Boolean(v))?.[0];
+  const firstLoc = firstKey ? original?.[firstKey] : undefined;
+  if (editValue === (firstLoc?.name ?? "")) return original;
   const value = editValue.trim();
   const out: Record<string, EventLocation> = {};
-  const first = entries[0];
-  if (value === "") {
-    if (!first) return undefined; // nothing existed and nothing typed
-    const kept = { ...first[1] };
-    delete kept.name;
-    if (Object.keys(kept).length > 0) out[first[0]] = kept;
-    for (const [k, v] of entries.slice(1)) out[k] = v;
-  } else if (first) {
-    out[first[0]] = { ...first[1], name: value };
-    for (const [k, v] of entries.slice(1)) out[k] = v;
-  } else {
-    out.l1 = { "@type": "Location", name: value };
+  for (const [k, v] of entries) {
+    if (k === firstKey) {
+      if (value === "") {
+        // Clear just the name leaf; keep the entry only if it has other fields.
+        const kept = { ...(v ?? {}) };
+        delete (kept as { name?: string }).name;
+        if (Object.keys(kept).length > 0) out[k] = kept as EventLocation;
+      } else {
+        out[k] = { ...(v ?? {}), name: value };
+      }
+    } else if (v) {
+      out[k] = v; // preserve every other (truthy) location verbatim
+    }
   }
+  if (!firstKey && value !== "") out.l1 = { "@type": "Location", name: value };
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
