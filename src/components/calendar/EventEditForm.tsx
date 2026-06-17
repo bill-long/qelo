@@ -43,7 +43,8 @@ export function EventEditForm(props: {
   const baseline = structuredClone(unwrap(props.event)) as CalendarEvent;
   // eslint-disable-next-line solid/reactivity
   const occurrenceId = props.occurrenceId;
-  const [form, setForm] = createStore<EditableEvent>(eventToEditable(baseline));
+  const initial = eventToEditable(baseline);
+  const [form, setForm] = createStore<EditableEvent>(initial);
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   // The when-validation message (end-before-start, unparseable) — reactive over the form, shown by
@@ -56,16 +57,31 @@ export function EventEditForm(props: {
 
   // Toggling all-day switches the start/end inputs between `date` and `datetime-local`, whose value
   // formats differ ("YYYY-MM-DD" vs "YYYY-MM-DDTHH:mm"). A mismatched value renders an EMPTY input, so
-  // reformat the existing values to the new shape (drop the time going to all-day; add a default time
-  // coming back) — the user keeps their dates instead of facing blank fields.
+  // reformat to the new shape. Going to all-day we drop the time BUT remember it, so toggling back
+  // restores the original time-of-day (combined with the current date, so a date edited while all-day
+  // is kept) instead of silently forcing a default — only a never-had-a-time field falls back to one.
+  // Seeded from the plain `initial` editable (not the reactive store) — a one-time capture of the
+  // event's original timed values to restore on an all-day round-trip.
+  let rememberedStart = initial.allDay ? "" : initial.start;
+  let rememberedEnd = initial.allDay ? "" : initial.end;
+  function timeOf(value: string, fallback: string): string {
+    return value.length >= 16 ? value.slice(11, 16) : fallback;
+  }
   function setAllDay(checked: boolean) {
-    const toDate = (v: string) => v.slice(0, 10);
-    const toDateTime = (v: string, time: string) => (v.length === 10 ? `${v}T${time}` : v);
     setForm(
       produce((f) => {
+        if (checked && !f.allDay) {
+          rememberedStart = f.start;
+          rememberedEnd = f.end;
+          f.start = f.start.slice(0, 10);
+          f.end = f.end.slice(0, 10);
+        } else if (!checked && f.allDay) {
+          // Re-attach the remembered time-of-day to the (possibly edited) date; default only when the
+          // event never had a time (opened all-day, no remembered value).
+          if (f.start.length === 10) f.start = `${f.start}T${timeOf(rememberedStart, "09:00")}`;
+          if (f.end.length === 10) f.end = `${f.end}T${timeOf(rememberedEnd, "10:00")}`;
+        }
         f.allDay = checked;
-        f.start = checked ? toDate(f.start) : toDateTime(f.start, "09:00");
-        f.end = checked ? toDate(f.end) : toDateTime(f.end, "10:00");
       }),
     );
   }

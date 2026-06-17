@@ -238,11 +238,11 @@ export async function syncCalendar(): Promise<void> {
  * fetched — the caller then keeps the read-only detail rather than opening an edit form on a guess.
  * Throws only via the underlying transport; the caller wraps it.
  *
- * Two small round trips (a base-id query, then a candidate get — almost always a single id) fire on
- * the user's Edit click, so the latency is a one-time cost per edit, not on the agenda load. The
- * base-id query is unfiltered (no date window) so a long-running series whose first occurrence predates
- * the agenda window still resolves — its base event isn't in the windowed agenda query but IS in the
- * full base-id list.
+ * A base-id sweep ({@link fetchAllBaseEventIds} — one query per page, usually a single page) plus a
+ * candidate get (almost always a single id) fire on the user's Edit click, so the latency is a
+ * one-time cost per edit, not on the agenda load. The base-id query is unfiltered (no date window) so a
+ * long-running series whose first occurrence predates the agenda window still resolves — its base event
+ * isn't in the windowed agenda query but IS in the full base-id list.
  */
 export async function resolveBaseEvent(syntheticId: string): Promise<CalendarEvent | null> {
   const accountId = calendarAccountId();
@@ -272,8 +272,10 @@ const BASE_ID_PAGE = 256;
 
 // Fetch EVERY base event id (non-expanded) by paging the query to completion. resolveBaseEvent suffix-
 // matches against this set, so a truncated list would make a real event fail to resolve (a blocked
-// edit). `calculateTotal` gives the stop condition; we also stop on an empty page (a server that
-// ignores `position` won't loop forever) and cap the sweep defensively.
+// edit). Stop conditions: `calculateTotal` (the normal completion — stop once we've collected `total`),
+// and an empty page (a correctly-paging server's natural end when `total` is absent). The hard
+// page-count cap is the backstop for a MISBEHAVING server that ignores `position` and keeps returning a
+// non-empty page forever — that won't loop unbounded, though it will collect duplicates up to the cap.
 async function fetchAllBaseEventIds(accountId: string): Promise<string[]> {
   const client = jmap();
   const ids: string[] = [];

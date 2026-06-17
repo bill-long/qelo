@@ -48,6 +48,14 @@ describe("EventEditForm", () => {
     expect(start.value).toBe("2026-07-06");
   });
 
+  it("restores the original times when all-day is toggled off again", () => {
+    render(() => <EventEditForm event={timed} occurrenceId="eaaaaau" onClose={() => {}} />);
+    fireEvent.click(screen.getByLabelText("All day")); // on → date-only
+    fireEvent.click(screen.getByLabelText("All day")); // off → restore the remembered time-of-day
+    expect((screen.getByLabelText("Start") as HTMLInputElement).value).toBe("2026-07-06T09:00");
+    expect((screen.getByLabelText("End") as HTMLInputElement).value).toBe("2026-07-06T09:30");
+  });
+
   it("blocks save with an inline error when the end is before the start", () => {
     render(() => <EventEditForm event={timed} occurrenceId="eaaaaau" onClose={() => {}} />);
     fireEvent.input(screen.getByLabelText("End"), { target: { value: "2026-07-06T08:00" } });
