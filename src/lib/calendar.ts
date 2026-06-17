@@ -8,7 +8,7 @@
 // wall-clock value) — we parse the components verbatim and only use UTC date math (Date.UTC) so the
 // displayed day/time matches what the server sent, regardless of where the client runs.
 
-import type { CalendarEvent, RecurrenceRule } from "@/jmap/types";
+import type { Calendar, CalendarEvent, RecurrenceRule } from "@/jmap/types";
 
 /** A calendar date-time broken into its literal components (no timezone applied). */
 export interface DateParts {
@@ -82,7 +82,12 @@ export function eventStartParts(event: CalendarEvent): DateParts | null {
 export function eventEndParts(event: CalendarEvent): DateParts | null {
   const start = eventStartParts(event);
   if (!start) return null;
-  const dur = parseDuration(event.duration);
+  // An all-day event with no explicit duration defaults to one day (RFC 8984 §4.1.2) — iCal-imported
+  // all-day events frequently omit `duration`. Without this an all-day event would read as a spurious
+  // two-day range in formatTimeRange (which steps the inclusive end back a day).
+  const dur =
+    parseDuration(event.duration) ??
+    (isAllDay(event) ? { years: 0, months: 0, days: 1, ms: 0 } : null);
   if (!dur) return start;
   const d = new Date(Date.UTC(start.year, start.month - 1, start.day, start.hour, start.minute));
   if (dur.years) d.setUTCFullYear(d.getUTCFullYear() + dur.years);
@@ -187,6 +192,19 @@ export function compareEvents(a: CalendarEvent, b: CalendarEvent): number {
     sensitivity: "base",
   });
   return byTitle !== 0 ? byTitle : a.id.localeCompare(b.id);
+}
+
+/**
+ * Order calendars for the sidebar: the default calendar first, then by the server `sortOrder`, then
+ * by name (locale-aware), tie-broken by id for stability. Mirrors `compareAddressBooks` — the same
+ * isDefault → sortOrder → name → id rule — kept here so the comparator is testable in isolation and
+ * components import it (rather than inlining the rule).
+ */
+export function compareCalendars(a: Calendar, b: Calendar): number {
+  if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1;
+  if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+  const byName = a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  return byName !== 0 ? byName : a.id.localeCompare(b.id);
 }
 
 /** One agenda day group: the date key, its heading, and the day's events (start-sorted). */

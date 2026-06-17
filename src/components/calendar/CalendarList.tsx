@@ -1,4 +1,5 @@
 import { createMemo, For, Show } from "solid-js";
+import { compareCalendars } from "@/lib/calendar";
 import { calendars } from "@/stores/calendar";
 import { selectedCalendarId, setSelectedCalendarId, setSelectedEventId } from "@/stores/ui";
 
@@ -9,15 +10,7 @@ import { selectedCalendarId, setSelectedCalendarId, setSelectedEventId } from "@
  * landmark + row look.
  */
 export function CalendarList() {
-  // Default book first then sortOrder then name — calendars carry the same sortOrder field as books.
-  const sorted = createMemo(() =>
-    Object.values(calendars).sort((a, b) => {
-      if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1;
-      if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
-      const byName = a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
-      return byName !== 0 ? byName : a.id.localeCompare(b.id);
-    }),
-  );
+  const sorted = createMemo(() => Object.values(calendars).sort(compareCalendars));
   return (
     <nav class="calendar-list" aria-label="Calendars">
       <CalendarRow id={null} name="All calendars" color={null} />

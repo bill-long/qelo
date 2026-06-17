@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { CalendarEvent } from "@/jmap/types";
+import type { Calendar, CalendarEvent } from "@/jmap/types";
 import {
+  compareCalendars,
   compareEvents,
   dayKey,
   eventDisplayTitle,
@@ -105,6 +106,11 @@ describe("eventEndParts", () => {
     expect(end).toEqual({ year: 2026, month: 9, day: 7, hour: 9, minute: 0 });
   });
 
+  it("defaults an all-day event with no duration to one day", () => {
+    const end = eventEndParts(event({ start: "2026-09-07T00:00:00", showWithoutTime: true }));
+    expect(end).toEqual({ year: 2026, month: 9, day: 8, hour: 0, minute: 0 });
+  });
+
   it("returns null for an event with no start", () => {
     expect(eventEndParts(event({}))).toBeNull();
   });
@@ -123,6 +129,13 @@ describe("formatTimeRange", () => {
         event({ start: "2026-09-07T00:00:00", showWithoutTime: true, duration: "P1D" }),
       ),
     ).toBe("All day");
+  });
+
+  it("formats an all-day event with no explicit duration as 'All day'", () => {
+    // RFC 8984: a showWithoutTime event with no duration is one day — must not read "Sep 6 – Sep 7".
+    expect(formatTimeRange(event({ start: "2026-09-07T00:00:00", showWithoutTime: true }))).toBe(
+      "All day",
+    );
   });
 
   it("formats a multi-day all-day event with inclusive end", () => {
@@ -189,6 +202,39 @@ describe("compareEvents / groupEventsByDay", () => {
     expect(groups[0]?.heading).toBe("Mon, Sep 7");
     expect(groups[0]?.events.map((e) => e.id)).toEqual(["early", "mid"]);
     expect(groups[1]?.events.map((e) => e.id)).toEqual(["late"]);
+  });
+});
+
+describe("compareCalendars", () => {
+  function cal(partial: Partial<Calendar>): Calendar {
+    return {
+      id: "x",
+      name: "Cal",
+      description: null,
+      color: null,
+      timeZone: null,
+      sortOrder: 0,
+      isDefault: false,
+      isSubscribed: false,
+      myRights: {
+        mayReadFreeBusy: true,
+        mayReadItems: true,
+        mayWriteAll: true,
+        mayWriteOwn: true,
+        mayUpdatePrivate: true,
+        mayRSVP: true,
+        mayShare: true,
+        mayDelete: true,
+      },
+      ...partial,
+    };
+  }
+
+  it("orders default first, then by sortOrder, then name", () => {
+    const def = cal({ id: "d", name: "Zeta", isDefault: true, sortOrder: 9 });
+    const a = cal({ id: "a", name: "Work", sortOrder: 1 });
+    const b = cal({ id: "b", name: "Personal", sortOrder: 0 });
+    expect([a, def, b].sort(compareCalendars).map((c) => c.id)).toEqual(["d", "b", "a"]);
   });
 });
 
