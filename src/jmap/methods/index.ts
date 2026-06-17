@@ -482,8 +482,9 @@ export function calendarEventChanges(
 }
 
 /**
- * A single event's patch for `CalendarEvent/set update`. Keys are JSON pointers into the JSCalendar
- * Event (RFC 8620 §5.3) — a whole-property pointer (`"title"`, `"start"`, `"locations"`) replaces
+ * A single event's patch for `CalendarEvent/set update`. Keys are JSON pointers (the `/set update`
+ * patch mechanism, RFC 8620 §5.3) into the JSCalendar Event (RFC 8984) — a whole-property pointer
+ * (`"title"`, `"start"`, `"locations"`) replaces
  * that property, a leaf pointer (`"locations/<key>/name"`) sets one value, and `null` removes the
  * pointed-at value. A JSCalendar event is a normal mutable JMAP object (unlike Email, whose content
  * is immutable — an Email "edit" is create+destroy), so an in-place patch is the edit path. Qelo

@@ -249,7 +249,10 @@ export async function resolveBaseEvent(syntheticId: string): Promise<CalendarEve
   if (!accountId) return null;
   const client = jmap();
   const queryResponses = await client.request(
-    [calendarEventQuery(accountId, "bq")],
+    // Explicitly non-expanded: this MUST return base ids (the ones CalendarEvent/set accepts), not the
+    // synthetic per-occurrence ids the agenda's expandRecurrences query yields. Don't rely on the
+    // server's default for expandRecurrences.
+    [calendarEventQuery(accountId, "bq", { expandRecurrences: false })],
     CALENDAR_USING,
   );
   const baseIds = (methodResult(queryResponses, "bq").ids ?? []) as string[];
