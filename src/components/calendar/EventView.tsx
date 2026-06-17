@@ -46,6 +46,10 @@ export function EventView() {
       setEditBase(null);
       setEditOccurrenceId(null);
       setResolveError(null);
+      // Also clear the in-flight flag: a resolve for the PREVIOUS selection may still be awaiting (its
+      // own continuation aborts via the selectedEventId guard), but leaving `resolving` true would
+      // wrongly disable + "Opening…" the newly selected event's Edit button until that old call returns.
+      setResolving(false);
     }),
   );
 
