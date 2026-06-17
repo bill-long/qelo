@@ -1563,6 +1563,62 @@ body,
   border-color: var(--accent);
 }
 
+/* Edit + Delete affordances, and the inline two-step delete confirm, in the detail header. */
+.contact-detail-actions,
+.contact-delete-confirm {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+/* The confirm row is a <fieldset> for its implicit group semantics — strip its default chrome. */
+.contact-delete-confirm {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-inline-size: 0;
+}
+
+.contact-delete-prompt {
+  align-self: center;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+}
+
+.contact-delete-button {
+  flex: none;
+  padding: 0.3rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--danger);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.contact-delete-button:hover {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.contact-delete-cancel {
+  flex: none;
+  padding: 0.3rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.contact-delete-cancel:hover {
+  border-color: var(--accent);
+}
+
 /* Contact edit form (column 3, replacing the read-only detail). */
 .contact-edit {
   max-width: 44rem;

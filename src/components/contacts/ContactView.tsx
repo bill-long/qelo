@@ -10,8 +10,15 @@ import {
 } from "solid-js";
 import { ContactEditForm } from "@/components/contacts/ContactEditForm";
 import type { CardAddress, ContactCard } from "@/jmap/types";
-import { cardMayWrite, contactDisplayName, sortedEmails, writableBooks } from "@/lib/contacts";
-import { addressBooks, contactCards } from "@/stores/contacts";
+import {
+  cardMayDelete,
+  cardMayWrite,
+  contactDisplayName,
+  sortedEmails,
+  writableBooks,
+} from "@/lib/contacts";
+import { addressBooks, contactCards, deleteContact } from "@/stores/contacts";
+import { notify } from "@/stores/toasts";
 import { creatingContact, selectedContactId, setCreatingContact } from "@/stores/ui";
 
 /**
@@ -23,19 +30,44 @@ import { creatingContact, selectedContactId, setCreatingContact } from "@/stores
  */
 export function ContactView() {
   const [editing, setEditing] = createSignal(false);
+  // A failed delete surfaces here, ABOVE the detail: deleteContact prunes the card optimistically, so
+  // the ContactDetail that hosted the Delete button unmounts the instant delete is confirmed. On a
+  // refusal the card is restored + re-selected (the detail re-mounts) and this error rides down to it
+  // as a prop. Held on the always-mounted ContactView (not the unmounting detail) so it survives.
+  const [deleteError, setDeleteError] = createSignal<string | null>(null);
   const card = () => {
     const id = selectedContactId();
     return id ? contactCards[id] : undefined;
   };
   // Leave edit AND create mode whenever the selected contact changes or clears, so a stale form can't
   // outlive its context (runs once on mount setting false, harmless). A successful create selects the
-  // new card, which lands here and closes the create form onto the new contact's detail.
+  // new card, which lands here and closes the create form onto the new contact's detail. Also clears a
+  // stale delete error — a genuine selection change drops it; the null→same-id churn of a refused
+  // delete's restore re-runs this before handleDelete sets the error, so the error still wins.
   createEffect(
     on(selectedContactId, () => {
       setEditing(false);
       setCreatingContact(false);
+      setDeleteError(null);
     }),
   );
+
+  async function handleDelete(id: string) {
+    setDeleteError(null);
+    const result = await deleteContact(id);
+    if (result.ok) {
+      notify("Contact deleted");
+      return;
+    }
+    // The auth case raises the global re-auth gate — say nothing here. Otherwise the card has been
+    // restored + re-selected, so report inline on the re-mounted detail.
+    if (result.reason === "auth") return;
+    setDeleteError(
+      result.reason === "refused"
+        ? "The server refused the deletion. The address book may be read-only, or the contact may have changed elsewhere."
+        : "Couldn't delete the contact. Please try again.",
+    );
+  }
   // Clear the create form when the Contacts surface unmounts (the view switch swaps it out when
   // activeView leaves "contacts"), so a half-filled create can't silently resurface on return —
   // `creatingContact` is global UI state, unlike the component-local `editing`.
@@ -55,7 +87,10 @@ export function ContactView() {
                   <ContactDetail
                     card={c()}
                     canEdit={cardMayWrite(c(), addressBooks)}
+                    canDelete={cardMayDelete(c(), addressBooks)}
+                    deleteError={deleteError()}
                     onEdit={() => setEditing(true)}
+                    onDelete={(id) => void handleDelete(id)}
                   />
                 }
               >
@@ -124,8 +159,27 @@ function httpHref(uri: string | undefined): string | null {
   }
 }
 
-function ContactDetail(props: { card: ContactCard; canEdit: boolean; onEdit: () => void }) {
+function ContactDetail(props: {
+  card: ContactCard;
+  canEdit: boolean;
+  canDelete: boolean;
+  deleteError: string | null;
+  onEdit: () => void;
+  onDelete: (id: string) => void;
+}) {
   const card = () => props.card;
+  // The inline two-step delete confirm (Bill's choice): the Delete button swaps the header into a
+  // "Delete X? [Delete] [Cancel]" row. Component-local — confirming, not the deletion itself; the
+  // confirm "Delete" hands off to onDelete (deleteContact), whose optimistic prune unmounts this
+  // detail. Reset when the displayed card changes so a half-armed confirm can't carry to the next
+  // contact (Show doesn't re-mount this between two truthy cards, so reset explicitly).
+  const [confirmingDelete, setConfirmingDelete] = createSignal(false);
+  createEffect(
+    on(
+      () => props.card.id,
+      () => setConfirmingDelete(false),
+    ),
+  );
   const name = createMemo(() => contactDisplayName(card()));
   const emails = createMemo(() => sortedEmails(card()));
   const phones = createMemo(() => Object.values(card().phones ?? {}).filter((p) => p?.number));
@@ -147,12 +201,53 @@ function ContactDetail(props: { card: ContactCard; canEdit: boolean; onEdit: () 
       <header class="contact-detail-head">
         <div class="contact-detail-headline">
           <h1 class="contact-detail-name">{name()}</h1>
-          <Show when={props.canEdit}>
-            <button type="button" class="contact-edit-button" onClick={() => props.onEdit()}>
-              Edit
-            </button>
+          <Show
+            when={confirmingDelete()}
+            fallback={
+              <div class="contact-detail-actions">
+                <Show when={props.canEdit}>
+                  <button type="button" class="contact-edit-button" onClick={() => props.onEdit()}>
+                    Edit
+                  </button>
+                </Show>
+                <Show when={props.canDelete}>
+                  <button
+                    type="button"
+                    class="contact-delete-button"
+                    onClick={() => setConfirmingDelete(true)}
+                  >
+                    Delete
+                  </button>
+                </Show>
+              </div>
+            }
+          >
+            <fieldset class="contact-delete-confirm" aria-label="Confirm delete contact">
+              <span class="contact-delete-prompt">Delete “{name()}”?</span>
+              <button
+                type="button"
+                class="contact-delete-button"
+                onClick={() => props.onDelete(props.card.id)}
+              >
+                Delete
+              </button>
+              <button
+                type="button"
+                class="contact-delete-cancel"
+                onClick={() => setConfirmingDelete(false)}
+              >
+                Cancel
+              </button>
+            </fieldset>
           </Show>
         </div>
+        <Show when={props.deleteError}>
+          {(message) => (
+            <p class="contact-edit-error" role="alert">
+              {message()}
+            </p>
+          )}
+        </Show>
         <Show when={nicknames().length > 0}>
           <p class="contact-detail-nicknames">“{nicknames().join("”, “")}”</p>
         </Show>

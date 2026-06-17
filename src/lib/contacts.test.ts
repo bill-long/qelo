@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AddressBook, ContactCard } from "@/jmap/types";
 import {
+  cardMayDelete,
   cardMayWrite,
   cardToEditable,
   compareAddressBooks,
@@ -211,6 +212,34 @@ describe("cardMayWrite", () => {
     // addressBookIds is a presence map (Record<Id, true>); guard against a server sending false.
     const c = card({ addressBookIds: { rw: false } as unknown as Record<string, true> });
     expect(cardMayWrite(c, writable)).toBe(false);
+  });
+});
+
+describe("cardMayDelete", () => {
+  const base = book({}).myRights;
+  const deletable = { del: book({ id: "del", myRights: { ...base, mayDelete: true } }) };
+  const readonly = { ro: book({ id: "ro" }) }; // mayDelete: false by default
+
+  it("is true when ANY of the card's books grants mayDelete", () => {
+    expect(cardMayDelete(card({ addressBookIds: { del: true } }), deletable)).toBe(true);
+  });
+
+  it("is false when the card's books don't grant delete, or the book is unknown", () => {
+    expect(cardMayDelete(card({ addressBookIds: { ro: true } }), readonly)).toBe(false);
+    expect(cardMayDelete(card({ addressBookIds: { gone: true } }), deletable)).toBe(false);
+    expect(cardMayDelete(card({}), deletable)).toBe(false);
+  });
+
+  it("ignores a membership mapped to a falsy value (not actually in the book)", () => {
+    const c = card({ addressBookIds: { del: false } as unknown as Record<string, true> });
+    expect(cardMayDelete(c, deletable)).toBe(false);
+  });
+
+  it("tracks mayDelete independently of mayWrite", () => {
+    // A book can grant write but not delete (or vice versa) — the delete gate reads only mayDelete.
+    const writeOnly = { w: book({ id: "w", myRights: { ...base, mayWrite: true } }) };
+    expect(cardMayWrite(card({ addressBookIds: { w: true } }), writeOnly)).toBe(true);
+    expect(cardMayDelete(card({ addressBookIds: { w: true } }), writeOnly)).toBe(false);
   });
 });
 
