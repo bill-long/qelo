@@ -13,14 +13,17 @@ import type { CalendarEvent } from "@/jmap/types";
 import {
   dayKey,
   eventDisplayTitle,
+  eventMayDelete,
   eventMayWrite,
   formatDayHeading,
   formatTimeRange,
+  isRecurring,
   recurrenceSummary,
   writableCalendars,
 } from "@/lib/calendar";
 import { handleAuthFailure } from "@/stores/account";
-import { calendarEvents, calendars, resolveBaseEvent } from "@/stores/calendar";
+import { calendarEvents, calendars, deleteEvent, resolveBaseEvent } from "@/stores/calendar";
+import { notify } from "@/stores/toasts";
 import { creatingEvent, selectedEventId, setCreatingEvent } from "@/stores/ui";
 
 /**
@@ -42,6 +45,11 @@ export function EventView() {
   const [editOccurrenceId, setEditOccurrenceId] = createSignal<string | null>(null);
   const [resolving, setResolving] = createSignal(false);
   const [resolveError, setResolveError] = createSignal<string | null>(null);
+  // A failed delete surfaces here, ABOVE the detail: deleteEvent prunes the occurrence optimistically,
+  // so the EventDetail that hosted the Delete button unmounts the instant the delete is confirmed. On a
+  // refusal the occurrence is restored + re-selected (the detail re-mounts) and this error rides down to
+  // it as a prop. Held on the always-mounted EventView (not the unmounting detail) so it survives.
+  const [deleteError, setDeleteError] = createSignal<string | null>(null);
   // Monotonic token identifying the latest resolve. A resolve superseded by a newer one (the user
   // re-clicked Edit, possibly on a different event) must not touch shared edit state when it finally
   // settles — in particular its `finally` must not clear `resolving` out from under the newer resolve.
@@ -60,6 +68,10 @@ export function EventView() {
       setEditBase(null);
       setEditOccurrenceId(null);
       setResolveError(null);
+      // Also clear a stale delete error — a genuine selection change drops it; the null→same-id churn
+      // of a refused delete's restore re-runs this BEFORE handleDelete sets the error, so the error
+      // still wins (same ordering as ContactView).
+      setDeleteError(null);
       setCreatingEvent(false);
       // Also clear the in-flight flag: a resolve for the PREVIOUS selection may still be awaiting (its
       // own continuation aborts via the selectedEventId guard), but leaving `resolving` true would
@@ -109,6 +121,29 @@ export function EventView() {
     }
   }
 
+  async function handleDelete(occurrenceId: string) {
+    setDeleteError(null);
+    const result = await deleteEvent(occurrenceId);
+    if (result.ok) {
+      notify("Event deleted");
+      return;
+    }
+    // The auth case raises the global re-auth gate — say nothing here.
+    if (result.reason === "auth") return;
+    // deleteEvent resolves the base id asynchronously before acting, so the selection can have drifted
+    // by the time it returns (a refusal restores + re-selects the occurrence ONLY if nothing else was
+    // selected meanwhile). Surface the inline error only if the user is still on the event they tried to
+    // delete — else this banner would land on a different event's detail (the PR #34 drift guard).
+    if (selectedEventId() !== occurrenceId) return;
+    setDeleteError(
+      result.reason === "refused"
+        ? "The server refused the deletion. The calendar may be read-only, or the event may have changed elsewhere."
+        : result.reason === "unresolved"
+          ? "Couldn't delete this event. It may have already been deleted."
+          : "Couldn't delete the event. Please try again.",
+    );
+  }
+
   return (
     <div class="event-view">
       <Show
@@ -122,9 +157,12 @@ export function EventView() {
                   <EventDetail
                     event={e()}
                     canEdit={eventMayWrite(e(), calendars)}
+                    canDelete={eventMayDelete(e(), calendars)}
                     resolving={resolving()}
                     resolveError={resolveError()}
+                    deleteError={deleteError()}
                     onEdit={() => void handleEdit()}
+                    onDelete={(id) => void handleDelete(id)}
                   />
                 }
               >
@@ -179,11 +217,27 @@ function participantLabel(p: {
 function EventDetail(props: {
   event: CalendarEvent;
   canEdit: boolean;
+  canDelete: boolean;
   resolving: boolean;
   resolveError: string | null;
+  deleteError: string | null;
   onEdit: () => void;
+  onDelete: (occurrenceId: string) => void;
 }) {
   const event = () => props.event;
+  // The inline two-step delete confirm (Bill's choice, the contacts Branch-5 pattern): the Delete
+  // button swaps the header actions into a "Delete X? [Delete] [Cancel]" row. Component-local —
+  // confirming, not the deletion itself; the confirm "Delete" hands off to onDelete (deleteEvent),
+  // whose optimistic prune unmounts this detail. Reset when the displayed event changes so a half-armed
+  // confirm can't carry to the next event (Show doesn't re-mount this between two truthy events, so
+  // reset explicitly). Keyed on the synthetic occurrence id, which is the store/selection key.
+  const [confirmingDelete, setConfirmingDelete] = createSignal(false);
+  createEffect(
+    on(
+      () => props.event.id,
+      () => setConfirmingDelete(false),
+    ),
+  );
   const title = createMemo(() => eventDisplayTitle(event()));
   const heading = createMemo(() => {
     const key = dayKey(event());
@@ -222,18 +276,64 @@ function EventDetail(props: {
       <header class="event-detail-head">
         <div class="event-detail-headline">
           <h1 class="event-detail-title">{title()}</h1>
-          <Show when={props.canEdit}>
-            <button
-              type="button"
-              class="event-edit-button"
-              disabled={props.resolving}
-              onClick={() => props.onEdit()}
-            >
-              {props.resolving ? "Opening…" : "Edit"}
-            </button>
+          <Show
+            when={confirmingDelete()}
+            fallback={
+              <div class="event-detail-actions">
+                <Show when={props.canEdit}>
+                  <button
+                    type="button"
+                    class="event-edit-button"
+                    disabled={props.resolving}
+                    onClick={() => props.onEdit()}
+                  >
+                    {props.resolving ? "Opening…" : "Edit"}
+                  </button>
+                </Show>
+                <Show when={props.canDelete}>
+                  <button
+                    type="button"
+                    class="event-delete-button"
+                    onClick={() => setConfirmingDelete(true)}
+                  >
+                    Delete
+                  </button>
+                </Show>
+              </div>
+            }
+          >
+            <fieldset class="event-delete-confirm" aria-label="Confirm delete event">
+              <span class="event-delete-prompt">
+                Delete “{title()}”?
+                <Show when={isRecurring(event())}>
+                  <span class="event-delete-note">This deletes the whole repeating series.</span>
+                </Show>
+              </span>
+              <button
+                type="button"
+                class="event-delete-button"
+                onClick={() => props.onDelete(props.event.id)}
+              >
+                Delete
+              </button>
+              <button
+                type="button"
+                class="event-delete-cancel"
+                onClick={() => setConfirmingDelete(false)}
+              >
+                Cancel
+              </button>
+            </fieldset>
           </Show>
         </div>
         <Show when={props.resolveError}>
+          {(message) => (
+            <p class="event-edit-error" role="alert">
+              {message()}
+            </p>
+          )}
+        </Show>
+        <Show when={props.deleteError}>
           {(message) => (
             <p class="event-edit-error" role="alert">
               {message()}

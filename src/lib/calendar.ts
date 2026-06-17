@@ -417,6 +417,22 @@ export function eventMayWrite(event: CalendarEvent, cals: Record<string, Calenda
   });
 }
 
+/**
+ * Whether the event can be deleted: at least one calendar it belongs to grants `myRights.mayDelete`.
+ * The single gate the Delete affordance uses (Branch 4), so an event in only non-deletable calendars
+ * shows no delete UI rather than letting the user hit a server refusal. Mirrors {@link eventMayWrite}
+ * exactly — same "any calendar grants it" + membership-value-`=== true` shape — but on `mayDelete`.
+ * Gates on the SELECTED (possibly synthetic) occurrence's `calendarIds`, which the expanded event
+ * carries, so no base-id resolution is needed just to decide visibility. Reactive callers pass the
+ * live `calendars` store. (Deleting a recurring event removes the whole series — see `deleteEvent`.)
+ */
+export function eventMayDelete(event: CalendarEvent, cals: Record<string, Calendar>): boolean {
+  return Object.entries(event.calendarIds ?? {}).some(([id, present]) => {
+    const rights = present === true ? cals[id]?.myRights : undefined;
+    return rights?.mayDelete === true;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Editable event model — the edit form's working copy of a BASE event, and the pure transforms that
 // turn it back into (a) a full event for an optimistic store write and (b) a minimal JSON-pointer
