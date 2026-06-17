@@ -15,6 +15,10 @@ export const CAP_SUBMISSION = "urn:ietf:params:jmap:submission";
 // must add this to `using`. The contacts account is `primaryAccounts[CAP_CONTACTS]` (== the
 // mail account on the dev server, but resolve it explicitly rather than assuming).
 export const CAP_CONTACTS = "urn:ietf:params:jmap:contacts";
+// Calendar and CalendarEvent live under the calendars capability; a request touching them
+// must add this to `using`. The calendar account is `primaryAccounts[CAP_CALENDARS]` (== the
+// mail account on the dev server, but resolve it explicitly rather than assuming).
+export const CAP_CALENDARS = "urn:ietf:params:jmap:calendars";
 
 /** Properties needed to render a row in the conversation list. */
 export const LIST_PROPERTIES = [
@@ -391,6 +395,90 @@ export function contactCardSet(
   if (opts.update) args.update = opts.update;
   if (opts.destroy) args.destroy = opts.destroy;
   return ["ContactCard/set", args, callId];
+}
+
+// ---------------------------------------------------------------------------
+// Calendar — Calendar + CalendarEvent (JMAP for Calendars / JSCalendar RFC 8984)
+// ---------------------------------------------------------------------------
+
+export function calendarGet(
+  accountId: Id,
+  callId: string,
+  opts: { ids?: Id[] | null; properties?: readonly string[] } = {},
+): MethodCall {
+  const args: Record<string, unknown> = { accountId, ids: opts.ids ?? null };
+  if (opts.properties) args.properties = opts.properties;
+  return ["Calendar/get", args, callId];
+}
+
+export function calendarChanges(accountId: Id, sinceState: string, callId: string): MethodCall {
+  return ["Calendar/changes", { accountId, sinceState }, callId];
+}
+
+/** Reference the `/ids` of an earlier CalendarEvent/query — the query→get chain for events. */
+export function idsFromCalendarEventQuery(queryCallId: string): ResultReference {
+  return { resultOf: queryCallId, name: "CalendarEvent/query", path: "/ids" };
+}
+
+export interface CalendarEventQueryOptions {
+  /** Filter — Qelo's agenda passes `{ after, before }` (a UTC date-time window); both work live. */
+  filter?: Record<string, unknown>;
+  /** Default sort is by `start` ascending — confirmed sortable on Stalwart (`created`/`updated` are not). */
+  sort?: ReadonlyArray<{ property: string; isAscending?: boolean }>;
+  /**
+   * Expand recurring events into one synthetic per-occurrence id within the filter window
+   * (RFC 8620 §5.5 / RFC 8984): a `CalendarEvent/get` on those ids resolves each to the
+   * occurrence's own `start` + `recurrenceId`. The agenda relies on this — no client-side
+   * recurrence math. Bounded by `accountCapabilities.maxExpandedQueryDuration`.
+   */
+  expandRecurrences?: boolean;
+  position?: number;
+  limit?: number;
+  anchor?: Id;
+  anchorOffset?: number;
+  calculateTotal?: boolean;
+}
+
+export function calendarEventQuery(
+  accountId: Id,
+  callId: string,
+  opts: CalendarEventQueryOptions = {},
+): MethodCall {
+  const args: Record<string, unknown> = { accountId };
+  if (opts.filter) args.filter = opts.filter;
+  args.sort = opts.sort ?? [{ property: "start", isAscending: true }];
+  if (opts.expandRecurrences !== undefined) args.expandRecurrences = opts.expandRecurrences;
+  if (opts.position !== undefined) args.position = opts.position;
+  if (opts.limit !== undefined) args.limit = opts.limit;
+  if (opts.anchor !== undefined) args.anchor = opts.anchor;
+  if (opts.anchorOffset !== undefined) args.anchorOffset = opts.anchorOffset;
+  if (opts.calculateTotal !== undefined) args.calculateTotal = opts.calculateTotal;
+  return ["CalendarEvent/query", args, callId];
+}
+
+export type CalendarEventGetOptions = IdsSelector & { properties?: readonly string[] };
+
+export function calendarEventGet(
+  accountId: Id,
+  callId: string,
+  opts: CalendarEventGetOptions,
+): MethodCall {
+  const args: Record<string, unknown> = { accountId, ...idsArgs(opts) };
+  // Omitting `properties` returns the whole event — the read-only detail wants every populated
+  // field, and an event is small, so Qelo fetches full events rather than a list/detail split.
+  if (opts.properties) args.properties = opts.properties;
+  return ["CalendarEvent/get", args, callId];
+}
+
+export function calendarEventChanges(
+  accountId: Id,
+  sinceState: string,
+  callId: string,
+  maxChanges?: number,
+): MethodCall {
+  const args: Record<string, unknown> = { accountId, sinceState };
+  if (maxChanges !== undefined) args.maxChanges = maxChanges;
+  return ["CalendarEvent/changes", args, callId];
 }
 
 // ---------------------------------------------------------------------------

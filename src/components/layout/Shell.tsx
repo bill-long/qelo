@@ -1,4 +1,7 @@
-import { onMount, Show } from "solid-js";
+import { Match, onMount, Show, Switch } from "solid-js";
+import { CalendarList } from "@/components/calendar/CalendarList";
+import { EventList } from "@/components/calendar/EventList";
+import { EventView } from "@/components/calendar/EventView";
 import { Composer } from "@/components/composer/Composer";
 import { AddressBookList } from "@/components/contacts/AddressBookList";
 import { ContactList } from "@/components/contacts/ContactList";
@@ -14,9 +17,10 @@ import { composeOpen, loadIdentities, openComposer } from "@/stores/compose";
 import { activeView } from "@/stores/ui";
 
 /**
- * The app shell: a top-level Mail / Contacts / Calendar switch over the three-pane layout. Mail
- * shows folders | conversations | reading pane; Contacts swaps in address books | contact list |
- * contact detail across the same grid columns. The Composer + ToastHost stay mounted across views.
+ * The app shell: a top-level Mail / Contacts / Calendar switch over the three-pane layout. Each view
+ * swaps a sidebar + two panes across the same grid columns — Mail: folders | conversations | reading
+ * pane; Contacts: address books | contact list | contact detail; Calendar: calendars | agenda |
+ * event detail. The Composer + ToastHost stay mounted across views.
  */
 export function Shell() {
   // Load the sending identities up front (Shell mounts only once connected) so a reply-all can
@@ -25,50 +29,55 @@ export function Shell() {
   // idempotent, doesn't block render (fire-and-forget), and surfaces any error into the composer.
   onMount(() => void loadIdentities());
 
-  const isMail = () => activeView() === "mail";
-
   return (
     <div class="shell">
       {/* The sidebar is an <aside>; ViewSwitch and the inner list each provide their own <nav>
           landmark. The switch replaces the old static brand label. */}
       <aside class="shell-folders">
         <ViewSwitch />
-        <Show
-          when={isMail()}
-          fallback={
-            <>
-              <NewContactButton />
-              <AddressBookList />
-            </>
-          }
-        >
-          <button type="button" class="compose-button" onClick={() => openComposer()}>
-            <span aria-hidden="true">✎</span> Compose
-          </button>
-          <MailboxList />
-        </Show>
+        <Switch>
+          <Match when={activeView() === "mail"}>
+            <button type="button" class="compose-button" onClick={() => openComposer()}>
+              <span aria-hidden="true">✎</span> Compose
+            </button>
+            <MailboxList />
+          </Match>
+          <Match when={activeView() === "contacts"}>
+            <NewContactButton />
+            <AddressBookList />
+          </Match>
+          <Match when={activeView() === "calendar"}>
+            <CalendarList />
+          </Match>
+        </Switch>
         <SyncStatus />
       </aside>
-      <Show
-        when={isMail()}
-        fallback={
-          <>
-            <section class="shell-threads">
-              <ContactList />
-            </section>
-            <section class="shell-view">
-              <ContactView />
-            </section>
-          </>
-        }
-      >
-        <section class="shell-threads">
-          <ThreadList />
-        </section>
-        <section class="shell-view">
-          <ThreadView />
-        </section>
-      </Show>
+      <Switch>
+        <Match when={activeView() === "mail"}>
+          <section class="shell-threads">
+            <ThreadList />
+          </section>
+          <section class="shell-view">
+            <ThreadView />
+          </section>
+        </Match>
+        <Match when={activeView() === "contacts"}>
+          <section class="shell-threads">
+            <ContactList />
+          </section>
+          <section class="shell-view">
+            <ContactView />
+          </section>
+        </Match>
+        <Match when={activeView() === "calendar"}>
+          <section class="shell-threads">
+            <EventList />
+          </section>
+          <section class="shell-view">
+            <EventView />
+          </section>
+        </Match>
+      </Switch>
       <Show when={composeOpen()}>
         <Composer />
       </Show>

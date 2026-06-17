@@ -1,7 +1,5 @@
 import { createSignal } from "solid-js";
 import { createStore, produce, reconcile, unwrap } from "solid-js/store";
-import { drainChanges } from "@/jmap/changes";
-import type { JmapClient } from "@/jmap/client";
 import {
   addressBookChanges,
   addressBookGet,
@@ -16,7 +14,7 @@ import {
   type SetResult,
   setResult,
 } from "@/jmap/methods";
-import type { AddressBook, ContactCard, Id, MethodCall, SetError } from "@/jmap/types";
+import type { AddressBook, ContactCard, Id, SetError } from "@/jmap/types";
 import type { EditableContact } from "@/lib/contacts";
 import {
   createContactBody,
@@ -26,6 +24,7 @@ import {
   editableToPatch,
 } from "@/lib/contacts";
 import { handleAuthFailure, jmap, session } from "./account";
+import { syncCollection } from "./sync-collection";
 import { selectedContactId, setSelectedContactId } from "./ui";
 
 export const [addressBooks, setAddressBooks] = createStore<Record<string, AddressBook>>({});
@@ -117,36 +116,6 @@ export function loadContacts(): Promise<void> {
   return loadInFlight;
 }
 
-// Drain one collection's /changes, refetch the created+updated rows (minus any also destroyed in
-// the same burst — destroyed wins), upsert/remove them, and return the drained newState. Identical
-// shape for AddressBook and ContactCard, so it's written once (mirrors syncMailboxes). The caller
-// advances the module cursor ONLY from the returned value — and only after this resolves — so a
-// throw mid-drain leaves the cursor at its old value and the next sync re-drains (no stranded gap).
-async function syncCollection<T extends { id: string }>(
-  client: JmapClient,
-  sinceState: string,
-  changesCall: (since: string) => MethodCall,
-  getCall: (ids: string[]) => MethodCall,
-  upsert: (list: T[]) => void,
-  remove: (ids: string[]) => void,
-): Promise<string> {
-  const result = await drainChanges(client, sinceState, changesCall, CONTACTS_USING);
-  const destroyed = new Set(result.destroyed);
-  const changed = new Set<string>();
-  for (const id of [...result.created, ...result.updated]) {
-    if (!destroyed.has(id)) changed.add(id);
-  }
-  if (changed.size > 0) {
-    // Read the response by the built call's own id (call[2]) rather than a hardcoded "get", so a
-    // getCall that uses a different call id can't silently read the wrong method response.
-    const call = getCall([...changed]);
-    const got = await client.request([call], CONTACTS_USING);
-    upsert((methodResult(got, call[2]).list ?? []) as T[]);
-  }
-  if (destroyed.size > 0) remove([...destroyed]);
-  return result.newState;
-}
-
 /**
  * Apply server-pushed contact changes incrementally (AddressBook + ContactCard), each with its own
  * cursor. No-op until contacts have been loaded (a push before the view opened is ignored; the lazy
@@ -176,6 +145,7 @@ export async function syncContacts(): Promise<void> {
             for (const id of ids) delete s[id];
           }),
         ),
+      CONTACTS_USING,
     );
     contactState = await syncCollection<ContactCard>(
       client,
@@ -194,6 +164,7 @@ export async function syncContacts(): Promise<void> {
             for (const id of ids) delete s[id];
           }),
         ),
+      CONTACTS_USING,
     );
   } catch (err) {
     if (handleAuthFailure(err)) return;

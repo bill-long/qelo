@@ -1,6 +1,7 @@
 import { createSignal } from "solid-js";
 import { type PushHandlers, type PushStatus, subscribeToChanges } from "@/jmap/push";
 import { handleAuthFailure, handlePushAuthFailure, isDesktop, jmap, session } from "./account";
+import { calendarAccountId, calendarAvailable, syncCalendar } from "./calendar";
 import { contactsAccountId, contactsAvailable, syncContacts } from "./contacts";
 import { syncEmails, syncThreadList } from "./emails";
 import { syncMailboxes } from "./mailboxes";
@@ -52,6 +53,9 @@ const syncFolders = coalesce(syncMailboxes);
 // view has been opened, so subscribing always (below) is cheap and just enables live updates
 // once the user is in contacts.
 const syncContactsRun = coalesce(syncContacts);
+// Calendar owns its own cursors and loads lazily; syncCalendar is a no-op until the Calendar view
+// has been opened, so subscribing always (below) is cheap and just enables live updates once in use.
+const syncCalendarRun = coalesce(syncCalendar);
 
 /**
  * Run a fire-and-forget sync action. A {@link JmapAuthError} (token refresh impossible, or
@@ -94,6 +98,14 @@ export function startSync(): void {
       ) {
         runSync(syncContactsRun);
       }
+      // Calendars may likewise live in a different account than mail — route Calendar/CalendarEvent
+      // changes by the resolved calendar account (null on a calendar-less account, never matches).
+      if (
+        account === calendarAccountId() &&
+        ("Calendar" in changed || "CalendarEvent" in changed)
+      ) {
+        runSync(syncCalendarRun);
+      }
     },
     onStatus: setPushStatus,
     onReopen: () => {
@@ -102,6 +114,7 @@ export function startSync(): void {
       runSync(syncMail);
       runSync(syncFolders);
       runSync(syncContactsRun);
+      runSync(syncCalendarRun);
     },
     // A push auth failure that survived a forced refresh is a dead session — raise the
     // re-auth gate now (which also stops sync) instead of waiting for the next request.
@@ -112,6 +125,7 @@ export function startSync(): void {
   // (mail push included), so don't request them speculatively.
   const types = ["Mailbox", "Email", "Thread"];
   if (contactsAvailable()) types.push("AddressBook", "ContactCard");
+  if (calendarAvailable()) types.push("Calendar", "CalendarEvent");
 
   // subscribeToChanges emits "connecting" synchronously when it actually opens a stream
   // (and stays silent — pushStatus null — when EventSource is unavailable), so don't

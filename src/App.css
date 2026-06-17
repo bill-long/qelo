@@ -1762,6 +1762,248 @@ textarea.contact-edit-input {
   opacity: 0.55;
 }
 
+/* Calendar sidebar (column 1): an "All calendars" entry plus one row per calendar. */
+.calendar-list {
+  display: flex;
+  flex-direction: column;
+  padding: 0.25rem 0.5rem 0.75rem;
+  gap: 1px;
+}
+
+.calendar-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  font: inherit;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.calendar-row:hover {
+  background: var(--hover);
+}
+
+.calendar-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.calendar-row.is-selected {
+  background: var(--selection);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.calendar-swatch {
+  flex: none;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+.calendar-swatch.is-empty {
+  background: var(--line);
+}
+
+.calendar-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Agenda (column 2): events grouped by day, each day a heading + rows. */
+.agenda {
+  height: 100%;
+  overflow-y: auto;
+}
+
+.agenda-note {
+  padding: 1.1rem 1rem;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+}
+
+.agenda-day {
+  padding: 0;
+}
+
+.agenda-day-heading {
+  position: sticky;
+  top: 0;
+  margin: 0;
+  padding: 0.5rem 1rem 0.4rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.agenda-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agenda-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.7rem;
+  width: 100%;
+  padding: 0.6rem 1rem;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  font: inherit;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.agenda-row:hover {
+  background: var(--hover);
+}
+
+.agenda-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.agenda-row.is-selected {
+  background: var(--selection);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.agenda-row-time {
+  flex: none;
+  min-width: 6.5rem;
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.agenda-row-title {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-serif);
+  font-size: 1.02rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agenda-row-recur {
+  color: var(--ink-soft);
+}
+
+/* Event detail (column 3). */
+.event-view {
+  height: 100%;
+  overflow-y: auto;
+}
+
+.event-empty {
+  padding: 2rem 1.5rem;
+  color: var(--ink-soft);
+}
+
+.event-detail {
+  max-width: 44rem;
+  padding: 1.6rem 1.8rem;
+}
+
+.event-detail-head {
+  margin-bottom: 1.4rem;
+  padding-bottom: 1.1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.event-detail-title {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 1.7rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.event-detail-when {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.7rem;
+  margin: 0.4rem 0 0;
+  color: var(--ink);
+}
+
+.event-detail-date {
+  font-weight: 600;
+}
+
+.event-detail-tz {
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+}
+
+.event-detail-recur {
+  margin: 0.35rem 0 0;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+}
+
+.event-detail-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.6rem 0 0;
+}
+
+.event-badge {
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  text-transform: capitalize;
+}
+
+.event-detail-section {
+  margin-bottom: 1.3rem;
+}
+
+.event-detail-label {
+  margin: 0 0 0.5rem;
+  color: var(--ink-soft);
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.event-detail-line {
+  margin: 0.15rem 0;
+  word-break: break-word;
+}
+
+.event-calendar {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.event-description {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --paper: #1b1916;

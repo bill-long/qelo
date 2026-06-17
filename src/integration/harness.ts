@@ -17,6 +17,7 @@ import { JmapClient } from "@/jmap/client";
 import { CAP_CORE, CAP_MAIL, methodResult } from "@/jmap/methods";
 import type { Id, MethodCall } from "@/jmap/types";
 import { adoptClient, setSession } from "@/stores/account";
+import { resetCalendar } from "@/stores/calendar";
 import { resetContacts } from "@/stores/contacts";
 import { emails, setEmails, setPageSize, setThread, setThreadList } from "@/stores/emails";
 import { mailboxes, setMailboxes } from "@/stores/mailboxes";
@@ -24,8 +25,10 @@ import { resetRecipients } from "@/stores/recipients";
 import {
   setActiveView,
   setSelectedAddressBookId,
+  setSelectedCalendarId,
   setSelectedContactId,
   setSelectedEmailId,
+  setSelectedEventId,
   setSelectedMailboxId,
   setSelectedThreadId,
 } from "@/stores/ui";
@@ -124,6 +127,10 @@ export function resetStores(): void {
   setActiveView("mail");
   setSelectedContactId(null);
   setSelectedAddressBookId(null);
+  // Calendar-view UI selection signals — reset so a calendar/view test can't leak an event or
+  // calendar selection into the next case.
+  setSelectedEventId(null);
+  setSelectedCalendarId(null);
   setPageSize(50);
   // Recipient autocomplete keeps a module-level load-once guard + index that otherwise leak across
   // tests in the shared worker (openWith fires loadRecipientSuggestions), so reset it here too.
@@ -134,6 +141,8 @@ export function resetStores(): void {
   // Contacts load lazily + keep their own cursors/load-once guard; reset so they don't leak across
   // tests in the shared worker. Safe to import (no DOMPurify load-time hook, unlike compose).
   resetContacts();
+  // Calendar likewise loads lazily with its own cursors/load-once guard — reset it too.
+  resetCalendar();
 }
 
 // --- Server-side fixtures --------------------------------------------------
