@@ -283,9 +283,12 @@ const BASE_ID_PAGE = 256;
 // non-empty page forever — that won't loop unbounded, though it will collect duplicates up to the cap.
 async function fetchAllBaseEventIds(accountId: string): Promise<string[]> {
   const client = jmap();
-  const ids: string[] = [];
+  // Accumulate into a Set: it dedupes (a server with overlapping pages can't bloat the candidate match
+  // / the follow-up get) AND lets us detect "no forward progress" — a non-empty page that adds zero new
+  // ids means the server is ignoring `position`, so stop rather than loop to the cap.
+  const seen = new Set<string>();
   let position = 0;
-  // Unknown until the server reports it. Fall back to Infinity (NOT ids.length) so a server that omits
+  // Unknown until the server reports it. Fall back to Infinity (NOT seen.size) so a server that omits
   // `total` pages until an empty page instead of stopping after one (which would reintroduce truncation).
   let total = Number.POSITIVE_INFINITY;
   for (let page = 0; page < 1000; page += 1) {
@@ -307,15 +310,15 @@ async function fetchAllBaseEventIds(accountId: string): Promise<string[]> {
     );
     const result = methodResult(responses, "bq");
     const pageIds = (result.ids ?? []) as string[];
-    ids.push(...pageIds);
+    const before = seen.size;
+    for (const id of pageIds) seen.add(id);
     if (needTotal && typeof result.total === "number") total = result.total;
     position += pageIds.length;
-    if (pageIds.length === 0 || ids.length >= total) break;
+    // Stop on: an empty page (a correctly-paging server's natural end), a non-empty page that added no
+    // new ids (no forward progress — the server is ignoring `position`), or once we've collected `total`.
+    if (pageIds.length === 0 || seen.size === before || seen.size >= total) break;
   }
-  // Dedupe at the boundary: a misbehaving server (or overlapping pages) can repeat ids, which would
-  // otherwise bloat the candidate match + the follow-up CalendarEvent/get ids list. Unique ids keep
-  // the resolver work bounded without changing correctness for a well-behaved server.
-  return [...new Set(ids)];
+  return [...seen];
 }
 
 /** The outcome of a {@link saveEvent}: ok on success/no-op, else why it didn't persist. */
