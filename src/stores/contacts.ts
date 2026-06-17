@@ -1,5 +1,5 @@
 import { createSignal } from "solid-js";
-import { createStore, produce, reconcile } from "solid-js/store";
+import { createStore, produce, reconcile, unwrap } from "solid-js/store";
 import { drainChanges } from "@/jmap/changes";
 import type { JmapClient } from "@/jmap/client";
 import {
@@ -26,7 +26,7 @@ import {
   editableToPatch,
 } from "@/lib/contacts";
 import { handleAuthFailure, jmap, session } from "./account";
-import { setSelectedContactId } from "./ui";
+import { selectedContactId, setSelectedContactId } from "./ui";
 
 export const [addressBooks, setAddressBooks] = createStore<Record<string, AddressBook>>({});
 export const [contactCards, setContactCards] = createStore<Record<string, ContactCard>>({});
@@ -399,6 +399,94 @@ export async function createContact(
     handleAuthFailure(err);
   }
   return { ok: true, id };
+}
+
+/** The outcome of a {@link deleteContact}: ok on success, else why it didn't delete. */
+export type DeleteContactResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: "missing" | "no-account" | "auth" | "refused" | "error";
+      error?: SetError;
+    };
+
+/**
+ * Delete a contact. Issued as ONE `ContactCard/set destroy`. The card is pruned from the store
+ * optimistically (and the selection cleared if it pointed at it), then the deletion is confirmed or
+ * reversed against the server. Contacts have NO ordered id-list (unlike email's threadList.ids) — the
+ * store is just the `contactCards` map plus the selection — so the optimistic prune is a map delete +
+ * a selection clear, and a restore is a re-insert + (if still applicable) re-select. Resolves with a
+ * {@link DeleteContactResult} (never rejects) so the caller can surface a failure inline.
+ *
+ * Discipline mirrors the email `deleteForever` ([[jmap-set-quirks]] / [[qelo-review-checklist]]):
+ * `requireNewState:false` (a fully-refused destroy omits newState on Stalwart; this path syncs via
+ * ContactCard/changes, not this token); a `notFound` refusal counts as gone (the card was already
+ * destroyed elsewhere — keep it pruned, that's the desired end state); only a substantive refusal
+ * (forbidden, etc.) or a transport error restores the card. The restore is guarded like
+ * `deleteForever`'s spliceBack: it re-inserts only if a concurrent sync hasn't already re-added the
+ * card, and re-selects only if nothing else was selected across the await.
+ */
+export async function deleteContact(id: string): Promise<DeleteContactResult> {
+  const card = contactCards[id];
+  if (!card) return { ok: false, reason: "missing" };
+  const accountId = contactsAccountId();
+  if (!accountId) return { ok: false, reason: "no-account" };
+
+  // Snapshot the card to a plain object before pruning — the restore value must not be a live store
+  // proxy (which is emptied by the delete). Remember whether it was the selected card so a restore
+  // re-selects only what the prune cleared.
+  const removed = structuredClone(unwrap(card)) as ContactCard;
+  const wasSelected = selectedContactId() === id;
+
+  setContactCards(
+    produce((s) => {
+      delete s[id];
+    }),
+  );
+  if (wasSelected) setSelectedContactId(null);
+
+  const client = jmap();
+  let refused: SetError | undefined;
+  try {
+    const responses = await client.request(
+      [contactCardSet(accountId, "set", { destroy: [id] })],
+      CONTACTS_USING,
+    );
+    const r = setResult<ContactCard>(responses, "set", { requireNewState: false });
+    // A notFound refusal means the card was already gone (destroyed elsewhere) — keep it pruned.
+    // Only a substantive refusal leaves it on the server and warrants a restore.
+    const err = r.notDestroyed[id];
+    if (err && err.type !== "notFound") refused = err;
+  } catch (err) {
+    // The destroy never applied — restore the card + selection, independent of the re-auth gate
+    // (the deletion didn't persist either way), then raise that gate / report the error.
+    restoreContact(removed, wasSelected);
+    if (handleAuthFailure(err)) return { ok: false, reason: "auth" };
+    console.error("ContactCard/set destroy failed:", err);
+    return { ok: false, reason: "error" };
+  }
+
+  if (refused) {
+    restoreContact(removed, wasSelected);
+    return { ok: false, reason: "refused", error: refused };
+  }
+  return { ok: true };
+}
+
+// Reverse an optimistic delete the server refused (or that a transport error left unconfirmed).
+// Guarded like deleteForever's spliceBack: re-insert only if a concurrent sync hasn't already
+// re-added the card (with possibly-newer data), and re-select only if nothing else was selected
+// across the await — so a refusal doesn't clobber newer state or yank the user off a contact they
+// opened in the meantime.
+function restoreContact(card: ContactCard, reselect: boolean): void {
+  if (!contactCards[card.id]) {
+    setContactCards(
+      produce((s) => {
+        s[card.id] = card;
+      }),
+    );
+  }
+  if (reselect && selectedContactId() === null) setSelectedContactId(card.id);
 }
 
 /** Test seam: drop all contacts state so a suite starts clean (wired into the harness resetStores). */

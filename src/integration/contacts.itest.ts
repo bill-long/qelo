@@ -15,6 +15,7 @@ import {
   contactsAccountId,
   contactsReady,
   createContact,
+  deleteContact,
   loadContacts,
   resetContacts,
   saveContact,
@@ -311,6 +312,28 @@ describe("contacts (live Stalwart)", () => {
     // empty check short-circuits before any account resolution or request).
     const result = await createContact(emptyEditableContact(), { b: true });
     expect(result).toEqual({ ok: false, reason: "empty" });
+  });
+
+  it("deleteContact destroys a card, prunes it from the store, and clears the selection", async () => {
+    const bookId = await defaultBookId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    const [id] = (await seedCards(bookId, [{ fullName: `Doomed ${tag}` }])) as [Id];
+    await loadUntil(id);
+    setSelectedContactId(id);
+
+    const result = await deleteContact(id);
+    expect(result).toEqual({ ok: true });
+    // Optimistically pruned + selection cleared, and the destroy actually persisted.
+    expect(id in contactCards).toBe(false);
+    expect(selectedContactId()).toBeNull();
+    // Server-side gone: a fresh reload never re-surfaces it (give the index a beat to settle).
+    await new Promise((r) => setTimeout(r, 500));
+    resetContacts();
+    await loadContacts();
+    expect(id in contactCards).toBe(false);
+
+    // Already destroyed — drop it from the cleanup set so afterEach doesn't double-destroy.
+    createdIds.splice(createdIds.indexOf(id), 1);
   });
 
   it("saveContact is a clean no-op when nothing changed", async () => {

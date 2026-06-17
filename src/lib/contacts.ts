@@ -172,6 +172,19 @@ export function cardMayWrite(card: ContactCard, books: Record<string, AddressBoo
   );
 }
 
+/**
+ * Whether the card can be deleted: at least one of the address books it belongs to grants
+ * `mayDelete`. The single gate the delete affordance uses (branch 5), so a card in only
+ * non-deletable books shows no delete UI rather than letting the user hit a server refusal.
+ * Mirrors {@link cardMayWrite} exactly — same "any book grants it" + membership-value-`=== true`
+ * shape — but on `myRights.mayDelete`. Reactive callers pass the live `addressBooks` store.
+ */
+export function cardMayDelete(card: ContactCard, books: Record<string, AddressBook>): boolean {
+  return Object.entries(card.addressBookIds ?? {}).some(
+    ([id, present]) => present === true && books[id]?.myRights.mayDelete === true,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Editable contact model — the form's working copy of a card, and the pure
 // transforms that turn it back into (a) a full card for an optimistic store
