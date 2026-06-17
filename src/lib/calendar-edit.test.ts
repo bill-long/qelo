@@ -82,6 +82,19 @@ describe("baseEventIdCandidates + pickBaseEvent (suffix-collision disambiguation
     });
     expect(pickBaseEvent(occ, [plain, recurring])).toBe(recurring);
   });
+
+  it("fails safe (null) when collisions can't be disambiguated", () => {
+    const a = event({ id: "abc", title: "A" });
+    const b = event({ id: "bc", title: "B" });
+    // No occurrence → no signal → refuse rather than guess the longest id.
+    expect(pickBaseEvent(undefined, [a, b])).toBeNull();
+    // Occurrence title matches none → refuse.
+    expect(pickBaseEvent(event({ id: "eaaaabc", title: "Z" }), [a, b])).toBeNull();
+    // Two candidates share the title and neither (or both) recurs → refuse.
+    const s1 = event({ id: "abc", title: "Same" });
+    const s2 = event({ id: "bc", title: "Same" });
+    expect(pickBaseEvent(event({ id: "eaaaabc", title: "Same" }), [s1, s2])).toBeNull();
+  });
 });
 
 describe("eventMayWrite", () => {

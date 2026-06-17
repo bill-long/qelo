@@ -359,28 +359,28 @@ export function resolveBaseEventId(syntheticId: string, baseIds: readonly string
 
 /**
  * Choose which fetched base event actually backs `occurrence` from the suffix-collision `candidates`.
- * With one candidate it's that one; with several (the `X` vs `aX` ambiguity above) prefer a base whose
- * `title` matches the occurrence's, then — for a recurring occurrence — one carrying a `recurrenceRule`,
- * falling back to the longest id. Returns null only when there are no candidates. Pure; the store
- * fetches the candidate events and passes them here. This makes "edit the wrong event" require two
- * base events that are both suffix-compatible AND share a title — far less likely than a bare suffix
- * clash — and otherwise resolves correctly.
+ * With one candidate it's that one. With several (the `X` vs `aX` ambiguity above) it disambiguates by
+ * the occurrence's `title`, then — for a recurring occurrence whose titles still tie — by which base
+ * carries a `recurrenceRule`. When NO reliable signal narrows it to exactly one (the occurrence is
+ * absent, its title matches none, or several share a title and recurrence can't break the tie) it
+ * returns null and FAILS SAFE rather than guessing — the caller then keeps the read-only detail
+ * instead of opening the edit form on (and patching) the wrong event/series. Pure; the store fetches
+ * the candidate events and passes them here.
  */
 export function pickBaseEvent(
   occurrence: CalendarEvent | undefined,
   candidates: CalendarEvent[],
 ): CalendarEvent | null {
   if (candidates.length <= 1) return candidates[0] ?? null;
-  const longest = (events: CalendarEvent[]): CalendarEvent =>
-    events.reduce((best, e) => (e.id.length > best.id.length ? e : best));
-  const titled = occurrence?.title;
-  const byTitle = titled ? candidates.filter((c) => c.title === titled) : [];
-  const pool = byTitle.length > 0 ? byTitle : candidates;
-  if (occurrence?.recurrenceId) {
-    const recurring = pool.filter((c) => c.recurrenceRule);
-    if (recurring.length > 0) return longest(recurring);
+  // Several suffix-compatible candidates → we need a signal to pick exactly one, or we refuse.
+  const title = occurrence?.title;
+  const byTitle = title !== undefined ? candidates.filter((c) => c.title === title) : [];
+  if (byTitle.length === 1) return byTitle[0] ?? null;
+  if (byTitle.length > 1 && occurrence?.recurrenceId) {
+    const recurring = byTitle.filter((c) => c.recurrenceRule);
+    if (recurring.length === 1) return recurring[0] ?? null;
   }
-  return longest(pool);
+  return null; // genuinely ambiguous — don't guess
 }
 
 /**
