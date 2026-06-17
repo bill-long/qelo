@@ -1,5 +1,5 @@
 import { createSignal } from "solid-js";
-import { createStore, produce, reconcile } from "solid-js/store";
+import { createStore, produce, reconcile, unwrap } from "solid-js/store";
 import { drainChanges } from "@/jmap/changes";
 import {
   CAP_CALENDARS,
@@ -8,11 +8,21 @@ import {
   calendarEventChanges,
   calendarEventGet,
   calendarEventQuery,
+  calendarEventSet,
   calendarGet,
   idsFromCalendarEventQuery,
   methodResult,
+  setResult,
 } from "@/jmap/methods";
-import type { Calendar, CalendarEvent, MethodResponse } from "@/jmap/types";
+import type { Calendar, CalendarEvent, MethodResponse, SetError } from "@/jmap/types";
+import {
+  baseEventIdCandidates,
+  type EditableEvent,
+  editableEventError,
+  editableToEvent,
+  editableToPatch,
+  pickBaseEvent,
+} from "@/lib/calendar";
 import { handleAuthFailure, jmap, session } from "./account";
 import { syncCollection } from "./sync-collection";
 
@@ -214,6 +224,228 @@ export async function syncCalendar(): Promise<void> {
     // cursors to a usable baseline. Clear ready so loadCalendar actually refetches.
     setCalendarReady(false);
     await loadCalendar();
+  }
+}
+
+/**
+ * Resolve a (possibly synthetic, expanded-occurrence) event id to its editable BASE event. The agenda
+ * stores only synthetic per-occurrence ids, but a `CalendarEvent/set update` needs the base id (and
+ * the synthetic id carries no `uid`/base pointer on Stalwart) — so this fetches the real base ids via
+ * a NON-expanded `CalendarEvent/query`, takes every base id that is a suffix of the synthetic id
+ * ({@link baseEventIdCandidates}), fetches those candidate events, and {@link pickBaseEvent} chooses
+ * the one backing the viewed occurrence (disambiguating the rare `X`-vs-`aX` suffix collision by the
+ * occurrence's content). Returns null when the account is gone, no base id matches, or none can be
+ * fetched — the caller then keeps the read-only detail rather than opening an edit form on a guess.
+ * Throws only via the underlying transport; the caller wraps it.
+ *
+ * A base-id sweep ({@link fetchAllBaseEventIds} — one query per page, usually a single page) plus a
+ * candidate get (almost always a single id) fire on the user's Edit click, so the latency is a
+ * one-time cost per edit, not on the agenda load. The base-id query is unfiltered (no date window) so a
+ * long-running series whose first occurrence predates the agenda window still resolves — its base event
+ * isn't in the windowed agenda query but IS in the full base-id list.
+ */
+export async function resolveBaseEvent(syntheticId: string): Promise<CalendarEvent | null> {
+  const accountId = calendarAccountId();
+  if (!accountId) return null;
+  const baseIds = await fetchAllBaseEventIds(accountId);
+  const candidates = baseEventIdCandidates(syntheticId, baseIds);
+  if (candidates.length === 0) return null;
+  const client = jmap();
+  // Fetch the candidate base events AND the occurrence itself in one get, so pickBaseEvent can
+  // disambiguate a suffix collision on the occurrence's SERVER-truth content rather than depending on
+  // it still being in the (push-synced, evictable) store. The synthetic occurrence id resolves to the
+  // occurrence; the base ids resolve to base events. `candidates` may already contain the synthetic id
+  // (a non-synthetic id that is its own base), so partition the response by id membership, not equality.
+  const getResponses = await client.request(
+    [calendarEventGet(accountId, "bg", { ids: [...new Set([...candidates, syntheticId])] })],
+    CALENDAR_USING,
+  );
+  const list = (methodResult(getResponses, "bg").list ?? []) as CalendarEvent[];
+  const fetched = list.find((e) => e.id === syntheticId);
+  // If the id IS itself a base id (a non-expanded id that ends with other base ids — e.g. base `bc`
+  // also ends with base `c`), it's the exact target: return it directly rather than running collision
+  // disambiguation, which could otherwise fail safe on a title tie even though the exact base is known.
+  if (fetched && candidates.includes(syntheticId)) return fetched;
+  const occurrence = fetched ?? calendarEvents[syntheticId];
+  const candidateEvents = list.filter((e) => candidates.includes(e.id));
+  return pickBaseEvent(occurrence, candidateEvents);
+}
+
+// The page size for the base-id sweep. CalendarEvent/query is paginated and a server may cap the page,
+// so we advance by the ACTUAL number returned (not PAGE) to tolerate a smaller-than-requested page.
+const BASE_ID_PAGE = 256;
+
+// Fetch EVERY base event id (non-expanded) by paging the query to completion. resolveBaseEvent suffix-
+// matches against this set, so a truncated list would make a real event fail to resolve (a blocked
+// edit). Stop conditions: `calculateTotal` (the normal completion — stop once we've collected `total`),
+// and an empty page (a correctly-paging server's natural end when `total` is absent). The hard
+// page-count cap is the backstop for a MISBEHAVING server that ignores `position` and keeps returning a
+// non-empty page forever — that won't loop unbounded, though it will collect duplicates up to the cap.
+async function fetchAllBaseEventIds(accountId: string): Promise<string[]> {
+  const client = jmap();
+  // Accumulate into a Set: it dedupes (a server with overlapping pages can't bloat the candidate match
+  // / the follow-up get) AND lets us detect "no forward progress" — a non-empty page that adds zero new
+  // ids means the server is ignoring `position`, so stop rather than loop to the cap.
+  const seen = new Set<string>();
+  let position = 0;
+  // Unknown until the server reports it. Fall back to Infinity (NOT seen.size) so a server that omits
+  // `total` pages until an empty page instead of stopping after one (which would reintroduce truncation).
+  let total = Number.POSITIVE_INFINITY;
+  for (let page = 0; page < 1000; page += 1) {
+    // Only ask the server to compute `total` until we have it — recomputing it on every page is
+    // needless work that adds latency on a large account (this whole sweep runs on the Edit click).
+    const needTotal = total === Number.POSITIVE_INFINITY;
+    const responses = await client.request(
+      [
+        calendarEventQuery(accountId, "bq", {
+          // Explicitly non-expanded: this MUST return base ids (the ones CalendarEvent/set accepts),
+          // not the synthetic per-occurrence ids the agenda's expandRecurrences query yields.
+          expandRecurrences: false,
+          position,
+          limit: BASE_ID_PAGE,
+          ...(needTotal ? { calculateTotal: true } : {}),
+        }),
+      ],
+      CALENDAR_USING,
+    );
+    const result = methodResult(responses, "bq");
+    const pageIds = (result.ids ?? []) as string[];
+    const before = seen.size;
+    for (const id of pageIds) seen.add(id);
+    if (needTotal && typeof result.total === "number") total = result.total;
+    position += pageIds.length;
+    // Stop on: an empty page (a correctly-paging server's natural end), a non-empty page that added no
+    // new ids (no forward progress — the server is ignoring `position`), or once we've collected `total`.
+    if (pageIds.length === 0 || seen.size === before || seen.size >= total) break;
+  }
+  return [...seen];
+}
+
+/** The outcome of a {@link saveEvent}: ok on success/no-op, else why it didn't persist. */
+export type SaveEventResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: "no-account" | "invalid" | "auth" | "refused" | "error";
+      error?: SetError;
+    };
+
+/**
+ * Save edits to an existing event. `baseId` is the BASE event id ({@link resolveBaseEvent}); `baseline`
+ * is the base event the form was seeded from (its open-time snapshot); `occurrenceId` is the synthetic
+ * agenda id the user was viewing (the optimistic write target — the store is keyed by occurrence ids).
+ * The patch is the diff between the baseline and the edits, so it carries only the properties the user
+ * changed — issued as ONE `CalendarEvent/set update` (a JSON-pointer patch) that touches only those
+ * pointers, leaving `recurrenceRule`/`participants`/etc. untouched. Resolves with a
+ * {@link SaveEventResult} (never rejects) so the form can surface a failure inline.
+ *
+ * The agenda is an EXPANDED view (synthetic-keyed, un-upsertable by base id — see syncCalendar), so:
+ *  - the optimistic write overlays the changed NON-temporal properties onto the viewed occurrence for
+ *    instant feedback (temporal props differ per occurrence, so they're left to the reconcile);
+ *  - the reconcile is a full window re-query ({@link refetchEvents}) — the only way to rebuild the
+ *    expanded view, and how it picks up a moved/re-expanded series. This recaptures `eventState` from
+ *    a full /get (consistent with load/sync — not a partial reconcile that must avoid the cursor).
+ * Discipline mirrors saveContact ([[jmap-set-quirks]] / [[qelo-review-checklist]]): `requireNewState:
+ * false` (an all-failed /set omits newState on Stalwart; this path syncs via CalendarEvent/changes,
+ * not this token); on a refusal OR transport error the optimistic overlay is reverted to server truth
+ * (re-query), INDEPENDENT of the auth gate (the change didn't persist either way). An empty patch
+ * (nothing changed) is a no-op success; an invalid when is rejected without a round trip.
+ */
+export async function saveEvent(
+  occurrenceId: string,
+  baseId: string,
+  baseline: CalendarEvent,
+  edits: EditableEvent,
+): Promise<SaveEventResult> {
+  const accountId = calendarAccountId();
+  if (!accountId) return { ok: false, reason: "no-account" };
+  if (editableEventError(baseline, edits)) return { ok: false, reason: "invalid" };
+
+  const patch = editableToPatch(baseline, edits);
+  if (Object.keys(patch).length === 0) return { ok: true }; // nothing changed
+
+  // Optimistic overlay of the changed NON-temporal props onto the viewed occurrence (snapshot it for
+  // a revert). Temporal props (start/duration/timeZone/showWithoutTime) belong to each occurrence and
+  // are left to the reconcile re-query; calendarIds/recurrence are untouched.
+  const occurrence = calendarEvents[occurrenceId];
+  const restore = occurrence ? (structuredClone(unwrap(occurrence)) as CalendarEvent) : null;
+  if (occurrence) {
+    const rebuilt = editableToEvent(baseline, edits);
+    setCalendarEvents(
+      produce((s) => {
+        const target = s[occurrenceId];
+        if (!target) return;
+        const view = target as unknown as Record<string, unknown>;
+        for (const key of [
+          "title",
+          "description",
+          "locations",
+          "status",
+          "freeBusyStatus",
+          "privacy",
+        ] as const) {
+          if (rebuilt[key] === undefined) delete view[key];
+          else view[key] = rebuilt[key];
+        }
+      }),
+    );
+  }
+
+  const client = jmap();
+  let refused: SetError | undefined;
+  try {
+    const responses = await client.request(
+      [calendarEventSet(accountId, "set", { update: { [baseId]: patch } })],
+      CALENDAR_USING,
+    );
+    refused = setResult<CalendarEvent>(responses, "set", { requireNewState: false }).notUpdated[
+      baseId
+    ];
+  } catch (err) {
+    // The /set never applied — revert the optimistic overlay (to server truth via re-query, or the
+    // snapshot if that also fails), independent of the re-auth gate, then raise that gate / report.
+    await revertEventOverlay(accountId, occurrenceId, restore);
+    if (handleAuthFailure(err)) return { ok: false, reason: "auth" };
+    console.error("CalendarEvent/set update failed:", err);
+    return { ok: false, reason: "error" };
+  }
+
+  // The /set applied (fully, or with a per-item refusal). Reconcile the agenda to server truth: on
+  // success this absorbs the change + any re-expansion; on a refusal it undoes the optimistic overlay.
+  try {
+    await refetchEvents(accountId);
+  } catch (err) {
+    handleAuthFailure(err);
+    // A re-query blip. On a refusal the server rejected the write, so fall back to the occurrence
+    // snapshot regardless (else rejected data lingers); on success the overlay ≈ truth, so keep it.
+    if (refused && restore) {
+      setCalendarEvents(
+        produce((s) => {
+          s[occurrenceId] = restore;
+        }),
+      );
+    }
+  }
+  return refused ? { ok: false, reason: "refused", error: refused } : { ok: true };
+}
+
+// Revert an optimistic overlay after the /set itself failed: re-query server truth, or restore the
+// occurrence snapshot if even the re-query fails (so the agenda isn't stuck on a guess).
+async function revertEventOverlay(
+  accountId: string,
+  occurrenceId: string,
+  restore: CalendarEvent | null,
+): Promise<void> {
+  try {
+    await refetchEvents(accountId);
+  } catch {
+    if (restore) {
+      setCalendarEvents(
+        produce((s) => {
+          s[occurrenceId] = restore;
+        }),
+      );
+    }
   }
 }
 

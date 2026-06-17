@@ -2004,6 +2004,149 @@ textarea.contact-edit-input {
   word-break: break-word;
 }
 
+/* Edit button beside the title in the detail header (mirrors the contacts detail headline). */
+.event-detail-headline {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.event-edit-button {
+  flex: none;
+  padding: 0.3rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.event-edit-button:hover {
+  border-color: var(--accent);
+}
+
+.event-edit-button:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+/* Event edit form (column 3, replacing the read-only detail). */
+.event-edit {
+  max-width: 44rem;
+  padding: 1.6rem 1.8rem;
+}
+
+.event-edit-head {
+  margin-bottom: 1.2rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.event-edit-field {
+  display: block;
+  margin-bottom: 1.1rem;
+}
+
+.event-edit-label {
+  display: block;
+  margin-bottom: 0.3rem;
+  color: var(--ink-soft);
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.event-edit-input {
+  display: block;
+  inline-size: 100%;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+}
+
+textarea.event-edit-input {
+  resize: vertical;
+}
+
+.event-edit-input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* The status/free-busy/privacy enums show their raw single-word value capitalized, like the badges. */
+.event-edit-enum {
+  text-transform: capitalize;
+}
+
+.event-edit-check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1.1rem;
+}
+
+/* Start + end sit side by side, wrapping on a narrow pane. */
+.event-edit-when,
+.event-edit-enums {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1rem;
+}
+
+.event-edit-when .event-edit-field,
+.event-edit-enums .event-edit-field {
+  flex: 1 1 12rem;
+}
+
+.event-edit-error {
+  margin: 0 0 1rem;
+  padding: 0.6rem 0.8rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+  font-size: 0.85rem;
+}
+
+.event-edit-actions {
+  display: flex;
+  gap: 0.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+
+.event-edit-actions button {
+  padding: 0.45rem 1.1rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.event-edit-actions .event-edit-save {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.event-edit-actions .event-edit-save:hover {
+  background: color-mix(in srgb, var(--accent) 88%, #000);
+}
+
+.event-edit-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --paper: #1b1916;

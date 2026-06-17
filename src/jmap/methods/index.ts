@@ -481,6 +481,42 @@ export function calendarEventChanges(
   return ["CalendarEvent/changes", args, callId];
 }
 
+/**
+ * A single event's patch for `CalendarEvent/set update`. Keys are JSON pointers (the `/set update`
+ * patch mechanism, RFC 8620 §5.3) into the JSCalendar Event (RFC 8984) — a whole-property pointer
+ * (`"title"`, `"start"`, `"locations"`) replaces
+ * that property, a leaf pointer (`"locations/<key>/name"`) sets one value, and `null` removes the
+ * pointed-at value. A JSCalendar event is a normal mutable JMAP object (unlike Email, whose content
+ * is immutable — an Email "edit" is create+destroy), so an in-place patch is the edit path. Qelo
+ * builds these with whole-property pointers (carrying un-edited sub-fields through), so a patch never
+ * clobbers a property the form doesn't expose — `recurrenceRule`, `participants`, `keywords`,
+ * `color`, `uid`, `calendarIds`. Verified live against dev Stalwart: whole-property replace, a leaf
+ * set, and `null` removal all round-trip and leave un-named properties (incl. `recurrenceRule`)
+ * untouched. NOTE: updating an EXPANDED-occurrence synthetic id is rejected (`invalidProperties:
+ * "Updating synthetic ids is not yet supported"`) — a caller must target the BASE event id.
+ */
+export type CalendarEventPatch = Record<string, unknown>;
+
+export interface CalendarEventSetOptions {
+  /** Creation-id → new-event map; the ids become `#creationId` back-references. (Phase 2 create.) */
+  create?: Record<string, Record<string, unknown>>;
+  /** Existing-id → patch map (JSON-pointer keys; see {@link CalendarEventPatch}). */
+  update?: Record<Id, CalendarEventPatch>;
+  destroy?: Id[];
+}
+
+export function calendarEventSet(
+  accountId: Id,
+  callId: string,
+  opts: CalendarEventSetOptions,
+): MethodCall {
+  const args: Record<string, unknown> = { accountId };
+  if (opts.create) args.create = opts.create;
+  if (opts.update) args.update = opts.update;
+  if (opts.destroy) args.destroy = opts.destroy;
+  return ["CalendarEvent/set", args, callId];
+}
+
 // ---------------------------------------------------------------------------
 // Thread
 // ---------------------------------------------------------------------------
