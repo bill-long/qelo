@@ -21,3 +21,9 @@ export const [selectedCalendarId, setSelectedCalendarId] = createSignal<string |
 // affordance; cleared on save/cancel or when the selected contact changes (ContactView), so the
 // form can't outlive its context. Distinct from the per-card `editing` mode, which is component-local.
 export const [creatingContact, setCreatingContact] = createSignal(false);
+
+// Whether the create-event form owns the detail pane (column 3). Set by the "+ New event" affordance;
+// cleared on save/cancel, when the selected event changes, or when the Calendar surface unmounts
+// (EventView), so the form can't outlive its context. Distinct from EventView's per-event `editing`
+// mode, which is component-local. Mirrors `creatingContact`.
+export const [creatingEvent, setCreatingEvent] = createSignal(false);

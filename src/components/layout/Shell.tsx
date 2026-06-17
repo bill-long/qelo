@@ -2,6 +2,7 @@ import { Match, onMount, Show, Switch } from "solid-js";
 import { CalendarList } from "@/components/calendar/CalendarList";
 import { EventList } from "@/components/calendar/EventList";
 import { EventView } from "@/components/calendar/EventView";
+import { NewEventButton } from "@/components/calendar/NewEventButton";
 import { Composer } from "@/components/composer/Composer";
 import { AddressBookList } from "@/components/contacts/AddressBookList";
 import { ContactList } from "@/components/contacts/ContactList";
@@ -47,6 +48,7 @@ export function Shell() {
             <AddressBookList />
           </Match>
           <Match when={activeView() === "calendar"}>
+            <NewEventButton />
             <CalendarList />
           </Match>
         </Switch>

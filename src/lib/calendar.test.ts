@@ -3,22 +3,66 @@ import type { Calendar, CalendarEvent } from "@/jmap/types";
 import {
   compareCalendars,
   compareEvents,
+  createdEventFor,
+  createEventBody,
+  createEventError,
   dayKey,
+  defaultWritableCalendarId,
+  type EditableEvent,
+  editableHasContent,
+  emptyEditableEvent,
   eventDisplayTitle,
   eventEndParts,
   formatDayHeading,
   formatTimeRange,
+  freshOccurrenceIdForBase,
   groupEventsByDay,
   isAllDay,
   isRecurring,
   parseDateParts,
   parseDuration,
   recurrenceSummary,
+  writableCalendars,
 } from "./calendar";
 
 function event(partial: Partial<CalendarEvent>): CalendarEvent {
   return { "@type": "Event", id: "e", ...partial };
 }
+
+function cal(partial: Partial<Calendar>): Calendar {
+  return {
+    id: "x",
+    name: "Cal",
+    description: null,
+    color: null,
+    timeZone: null,
+    sortOrder: 0,
+    isDefault: false,
+    isSubscribed: false,
+    myRights: {
+      mayReadFreeBusy: true,
+      mayReadItems: true,
+      mayWriteAll: true,
+      mayWriteOwn: true,
+      mayUpdatePrivate: true,
+      mayRSVP: true,
+      mayShare: true,
+      mayDelete: true,
+    },
+    ...partial,
+  };
+}
+
+const readonlyRights: Calendar["myRights"] = {
+  mayReadFreeBusy: true,
+  mayReadItems: true,
+  mayWriteAll: false,
+  mayWriteOwn: false,
+  mayUpdatePrivate: false,
+  mayRSVP: false,
+  mayShare: false,
+  mayDelete: false,
+};
 
 describe("parseDateParts", () => {
   it("parses a local date-time", () => {
@@ -248,30 +292,6 @@ describe("compareEvents / groupEventsByDay", () => {
 });
 
 describe("compareCalendars", () => {
-  function cal(partial: Partial<Calendar>): Calendar {
-    return {
-      id: "x",
-      name: "Cal",
-      description: null,
-      color: null,
-      timeZone: null,
-      sortOrder: 0,
-      isDefault: false,
-      isSubscribed: false,
-      myRights: {
-        mayReadFreeBusy: true,
-        mayReadItems: true,
-        mayWriteAll: true,
-        mayWriteOwn: true,
-        mayUpdatePrivate: true,
-        mayRSVP: true,
-        mayShare: true,
-        mayDelete: true,
-      },
-      ...partial,
-    };
-  }
-
   it("orders default first, then by sortOrder, then name", () => {
     const def = cal({ id: "d", name: "Zeta", isDefault: true, sortOrder: 9 });
     const a = cal({ id: "a", name: "Work", sortOrder: 1 });
@@ -311,5 +331,141 @@ describe("recurrenceSummary", () => {
 
   it("degrades to a generic marker for an unknown frequency", () => {
     expect(recurrenceSummary({ frequency: "hourly" })).toBe("Repeats");
+  });
+});
+
+describe("emptyEditableEvent", () => {
+  it("seeds a default one-hour timed slot at the next top of the hour", () => {
+    const now = new Date("2026-09-07T09:30:00"); // a local wall-clock instant
+    const e = emptyEditableEvent(now);
+    expect(e.title).toBe("");
+    expect(e.allDay).toBe(false);
+    expect(e.timeZone).toBe("");
+    // Next top of the hour → 10:00, one hour long → 11:00 (datetime-local shape, no seconds).
+    expect(e.start).toBe("2026-09-07T10:00");
+    expect(e.end).toBe("2026-09-07T11:00");
+    // The seeded default is already a VALID when (createEventError null) but needs a title to save.
+    expect(createEventError(e)).toBeNull();
+    expect(editableHasContent(e)).toBe(false);
+  });
+});
+
+describe("editableHasContent / createEventError", () => {
+  const base = emptyEditableEvent(new Date("2026-09-07T09:30:00"));
+
+  it("requires both a non-blank title and a valid when", () => {
+    expect(editableHasContent(base)).toBe(false); // no title
+    expect(editableHasContent({ ...base, title: "   " })).toBe(false); // whitespace only
+    expect(editableHasContent({ ...base, title: "Lunch" })).toBe(true);
+    // A title but an invalid when (end before start) is not savable.
+    expect(editableHasContent({ ...base, title: "Lunch", end: "2026-09-07T09:00" })).toBe(false);
+  });
+
+  it("flags an invalid when regardless of title", () => {
+    expect(createEventError(base)).toBeNull();
+    expect(createEventError({ ...base, end: "2026-09-07T09:00" })).toMatch(/end can't be before/i);
+    expect(createEventError({ ...base, start: "" })).toMatch(/valid start/i);
+  });
+});
+
+describe("createEventBody / createdEventFor", () => {
+  const edits: EditableEvent = {
+    ...emptyEditableEvent(new Date("2026-09-07T09:30:00")),
+    title: "Standup",
+    description: "Daily",
+    location: "Room A",
+    status: "confirmed",
+  };
+
+  it("builds a create body with @type, calendarIds, and the rebuilt editable props", () => {
+    const body = createEventBody(edits, { b: true });
+    expect(body["@type"]).toBe("Event");
+    expect(body.calendarIds).toEqual({ b: true });
+    expect(body.title).toBe("Standup");
+    expect(body.description).toBe("Daily");
+    expect(body.locations).toEqual({ l1: { "@type": "Location", name: "Room A" } });
+    expect(body.status).toBe("confirmed");
+    expect(body.start).toBe("2026-09-07T10:00:00");
+    expect(body.duration).toBe("PT1H");
+    // No id/uid (server assigns), and nothing for the absent recurrence/participants/keywords.
+    expect(body.id).toBeUndefined();
+    expect(body.uid).toBeUndefined();
+    expect(body.recurrenceRule).toBeUndefined();
+    expect(body.participants).toBeUndefined();
+  });
+
+  it("drops blank editable props from the body", () => {
+    const body = createEventBody(
+      { ...emptyEditableEvent(new Date("2026-09-07T09:30:00")), title: "Bare" },
+      { b: true },
+    );
+    expect(body.title).toBe("Bare");
+    expect(body.description).toBeUndefined();
+    expect(body.locations).toBeUndefined();
+    expect(body.status).toBeUndefined();
+  });
+
+  it("seeds a full local event under the server id for the optimistic write", () => {
+    const seeded = createdEventFor("srv1", edits, { b: true });
+    expect(seeded.id).toBe("srv1");
+    expect(seeded["@type"]).toBe("Event");
+    expect(seeded.calendarIds).toEqual({ b: true });
+    expect(seeded.title).toBe("Standup");
+    expect(seeded.start).toBe("2026-09-07T10:00:00");
+    expect(seeded.duration).toBe("PT1H");
+    // The seed parses as a placeable agenda row (same transform as the create body).
+    expect(isAllDay(seeded)).toBe(false);
+  });
+});
+
+describe("freshOccurrenceIdForBase", () => {
+  it("returns the single freshly-appeared occurrence ending in the base id", () => {
+    const before = new Set(["eaaaaax", "eaaaaay"]);
+    // After a create of base "g": its occurrence "eaaaaag" is new and ends in "g".
+    expect(freshOccurrenceIdForBase("g", ["eaaaaax", "eaaaaag", "eaaaaay"], before)).toBe(
+      "eaaaaag",
+    );
+  });
+
+  it("returns null when the new event is out of window (no fresh occurrence)", () => {
+    const before = new Set(["eaaaaax"]);
+    expect(freshOccurrenceIdForBase("g", ["eaaaaax"], before)).toBeNull();
+  });
+
+  it("excludes a pre-existing occurrence that coincidentally ends in the base id", () => {
+    // "eaaaaag" already existed (an occurrence of some other base ending in "g") → not fresh → null.
+    const before = new Set(["eaaaaag"]);
+    expect(freshOccurrenceIdForBase("g", ["eaaaaag"], before)).toBeNull();
+  });
+
+  it("returns null on an ambiguous multi-match rather than guessing", () => {
+    const before = new Set<string>();
+    expect(freshOccurrenceIdForBase("g", ["eaaaaag", "baaaaag"], before)).toBeNull();
+  });
+});
+
+describe("writableCalendars / defaultWritableCalendarId", () => {
+  it("keeps only writable calendars, sorted, with the default first", () => {
+    const def = cal({ id: "d", name: "Zeta", isDefault: true, sortOrder: 9 });
+    const work = cal({ id: "w", name: "Work", sortOrder: 1 });
+    const ro = cal({ id: "r", name: "Read only", myRights: readonlyRights });
+    // mayWriteOwn alone is enough to be writable.
+    const own = cal({
+      id: "o",
+      name: "Own",
+      sortOrder: 2,
+      myRights: { ...readonlyRights, mayWriteOwn: true },
+    });
+    const writable = writableCalendars({ r: ro, w: work, d: def, o: own });
+    expect(writable.map((c) => c.id)).toEqual(["d", "w", "o"]);
+    expect(defaultWritableCalendarId(writable)).toBe("d");
+  });
+
+  it("falls back to the first writable when none is the default, and null when empty", () => {
+    const a = cal({ id: "a", name: "Alpha", sortOrder: 0 });
+    expect(defaultWritableCalendarId(writableCalendars({ a }))).toBe("a");
+    expect(
+      defaultWritableCalendarId(writableCalendars({ r: cal({ myRights: readonlyRights }) })),
+    ).toBe(null);
   });
 });

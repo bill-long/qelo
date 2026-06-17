@@ -24,6 +24,8 @@ import { mailboxes, setMailboxes } from "@/stores/mailboxes";
 import { resetRecipients } from "@/stores/recipients";
 import {
   setActiveView,
+  setCreatingContact,
+  setCreatingEvent,
   setSelectedAddressBookId,
   setSelectedCalendarId,
   setSelectedContactId,
@@ -131,6 +133,10 @@ export function resetStores(): void {
   // calendar selection into the next case.
   setSelectedEventId(null);
   setSelectedCalendarId(null);
+  // The transient create-mode UI signals are global (unlike the per-card/per-event component-local
+  // edit mode), so a half-open create form would otherwise leak across cases in the shared worker.
+  setCreatingContact(false);
+  setCreatingEvent(false);
   setPageSize(50);
   // Recipient autocomplete keeps a module-level load-once guard + index that otherwise leak across
   // tests in the shared worker (openWith fires loadRecipientSuggestions), so reset it here too.

@@ -1,4 +1,13 @@
-import { createEffect, createMemo, createSignal, For, type JSX, on, Show } from "solid-js";
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  type JSX,
+  on,
+  onCleanup,
+  Show,
+} from "solid-js";
 import { EventEditForm } from "@/components/calendar/EventEditForm";
 import type { CalendarEvent } from "@/jmap/types";
 import {
@@ -8,10 +17,11 @@ import {
   formatDayHeading,
   formatTimeRange,
   recurrenceSummary,
+  writableCalendars,
 } from "@/lib/calendar";
 import { handleAuthFailure } from "@/stores/account";
 import { calendarEvents, calendars, resolveBaseEvent } from "@/stores/calendar";
-import { selectedEventId } from "@/stores/ui";
+import { creatingEvent, selectedEventId, setCreatingEvent } from "@/stores/ui";
 
 /**
  * The event detail (column 3, where ThreadView sits in mail view): a focused-complete render of the
@@ -40,22 +50,27 @@ export function EventView() {
     const id = selectedEventId();
     return id ? calendarEvents[id] : undefined;
   };
-  // Leave edit mode whenever the selected event changes or clears, so a stale form can't outlive its
-  // context (runs once on mount setting false, harmless). Edit state is component-local, so it also
-  // resets naturally when the Calendar surface unmounts — no global cleanup needed (unlike contacts'
-  // create mode).
+  // Leave edit AND create mode whenever the selected event changes or clears, so a stale form can't
+  // outlive its context (runs once on mount setting false, harmless). A successful create selects the
+  // new occurrence, which lands here and closes the create form onto the new event's detail. Edit
+  // state is component-local; `creatingEvent` is global, so it also gets an onCleanup below.
   createEffect(
     on(selectedEventId, () => {
       setEditing(false);
       setEditBase(null);
       setEditOccurrenceId(null);
       setResolveError(null);
+      setCreatingEvent(false);
       // Also clear the in-flight flag: a resolve for the PREVIOUS selection may still be awaiting (its
       // own continuation aborts via the selectedEventId guard), but leaving `resolving` true would
       // wrongly disable + "Opening…" the newly selected event's Edit button until that old call returns.
       setResolving(false);
     }),
   );
+  // Clear the create form when the Calendar surface unmounts (the view switch swaps it out when
+  // activeView leaves "calendar"), so a half-filled create can't silently resurface on return —
+  // `creatingEvent` is global UI state, unlike the component-local `editing`. Mirrors ContactView.
+  onCleanup(() => setCreatingEvent(false));
 
   async function handleEdit() {
     const id = selectedEventId();
@@ -96,33 +111,45 @@ export function EventView() {
 
   return (
     <div class="event-view">
-      <Show when={event()} fallback={<p class="event-empty">Select an event</p>}>
-        {(e) => (
-          <Show
-            when={editing() && editBase()}
-            fallback={
-              <EventDetail
-                event={e()}
-                canEdit={eventMayWrite(e(), calendars)}
-                resolving={resolving()}
-                resolveError={resolveError()}
-                onEdit={() => void handleEdit()}
-              />
-            }
-          >
-            {(base) => (
-              <EventEditForm
-                event={base()}
-                occurrenceId={editOccurrenceId() as string}
-                onClose={() => {
-                  setEditing(false);
-                  setEditBase(null);
-                  setEditOccurrenceId(null);
-                }}
-              />
+      <Show
+        when={creatingEvent()}
+        fallback={
+          <Show when={event()} fallback={<p class="event-empty">Select an event</p>}>
+            {(e) => (
+              <Show
+                when={editing() && editBase()}
+                fallback={
+                  <EventDetail
+                    event={e()}
+                    canEdit={eventMayWrite(e(), calendars)}
+                    resolving={resolving()}
+                    resolveError={resolveError()}
+                    onEdit={() => void handleEdit()}
+                  />
+                }
+              >
+                {(base) => (
+                  <EventEditForm
+                    mode="edit"
+                    event={base()}
+                    occurrenceId={editOccurrenceId() as string}
+                    onClose={() => {
+                      setEditing(false);
+                      setEditBase(null);
+                      setEditOccurrenceId(null);
+                    }}
+                  />
+                )}
+              </Show>
             )}
           </Show>
-        )}
+        }
+      >
+        <EventEditForm
+          mode="create"
+          calendars={writableCalendars(calendars)}
+          onClose={() => setCreatingEvent(false)}
+        />
       </Show>
     </div>
   );
