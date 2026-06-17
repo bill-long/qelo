@@ -2033,6 +2033,77 @@ textarea.contact-edit-input {
   opacity: 0.6;
 }
 
+/* Edit + Delete affordances, and the inline two-step delete confirm, in the detail header
+   (mirrors the contacts detail-header actions). */
+.event-detail-actions,
+.event-delete-confirm {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+/* The confirm row is a <fieldset> for its implicit group semantics — strip its default chrome. */
+.event-delete-confirm {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-inline-size: 0;
+}
+
+.event-delete-prompt {
+  align-self: center;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+}
+
+/* A recurring delete acts on the whole series — warn in the confirm prompt (own line). */
+.event-delete-note {
+  display: block;
+  color: var(--danger);
+  font-size: 0.8rem;
+}
+
+.event-delete-button {
+  flex: none;
+  padding: 0.3rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--danger);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.event-delete-button:hover {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.event-delete-cancel {
+  flex: none;
+  padding: 0.3rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.event-delete-cancel:hover {
+  border-color: var(--accent);
+}
+
+/* While a delete is in flight (the base-id resolve + destroy), the confirm buttons disable. */
+.event-delete-button:disabled,
+.event-delete-cancel:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
 /* Event edit form (column 3, replacing the read-only detail). */
 .event-edit {
   max-width: 44rem;

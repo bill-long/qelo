@@ -12,6 +12,7 @@ import {
   editableToEvent,
   editableToPatch,
   editableWhen,
+  eventMayDelete,
   eventMayWrite,
   eventToEditable,
   pickBaseEvent,
@@ -135,6 +136,53 @@ describe("eventMayWrite", () => {
     expect(
       eventMayWrite(event({ calendarIds: { b: false as unknown as true } }), {
         b: cal({ mayWriteAll: true }),
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("eventMayDelete", () => {
+  const cal = (rights: Partial<Calendar["myRights"]>): Calendar => ({
+    id: "b",
+    name: "Cal",
+    description: null,
+    color: null,
+    timeZone: null,
+    sortOrder: 0,
+    isDefault: true,
+    isSubscribed: false,
+    myRights: {
+      mayReadFreeBusy: true,
+      mayReadItems: true,
+      mayWriteAll: false,
+      mayWriteOwn: false,
+      mayUpdatePrivate: false,
+      mayRSVP: false,
+      mayShare: false,
+      mayDelete: false,
+      ...rights,
+    },
+  });
+
+  it("is true when any containing calendar grants mayDelete", () => {
+    expect(
+      eventMayDelete(event({ calendarIds: { b: true } }), { b: cal({ mayDelete: true }) }),
+    ).toBe(true);
+  });
+
+  it("does not key off write rights — mayWrite without mayDelete is false", () => {
+    // The gates are independent: a calendar can be writable but not deletable.
+    expect(
+      eventMayDelete(event({ calendarIds: { b: true } }), { b: cal({ mayWriteAll: true }) }),
+    ).toBe(false);
+  });
+
+  it("is false for a non-deletable calendar, a missing calendar, or a falsy membership", () => {
+    expect(eventMayDelete(event({ calendarIds: { b: true } }), { b: cal({}) })).toBe(false);
+    expect(eventMayDelete(event({ calendarIds: { b: true } }), {})).toBe(false);
+    expect(
+      eventMayDelete(event({ calendarIds: { b: false as unknown as true } }), {
+        b: cal({ mayDelete: true }),
       }),
     ).toBe(false);
   });

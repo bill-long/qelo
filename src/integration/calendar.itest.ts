@@ -14,6 +14,7 @@ import {
   calendarReady,
   calendars,
   createEvent,
+  deleteEvent,
   eventIds,
   loadCalendar,
   resetCalendar,
@@ -21,6 +22,7 @@ import {
   saveEvent,
   syncCalendar,
 } from "@/stores/calendar";
+import { selectedEventId, setSelectedEventId } from "@/stores/ui";
 import { connectTestClient, disconnectTestClient, resetStores, testClient } from "./harness";
 
 const CALENDAR_USING = [CAP_CORE, CAP_CALENDARS];
@@ -293,6 +295,46 @@ describe("calendar (live Stalwart)", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.reason).toBe("empty");
+  });
+
+  it("deletes an event via the store action, resolving the base id from the synthetic occurrence", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    const [baseId] = (await seedEvents(calId, [
+      { title: `Del ${tag}`, start: localDateTime(5, 9) },
+    ])) as [Id];
+    await loadUntil(() => countByTitle(`Del ${tag}`) >= 1);
+
+    // Delete via the real store action from the SYNTHETIC agenda id — deleteEvent resolves the base id
+    // internally (a synthetic-id destroy is rejected, probed live) and selection clears on success.
+    const occId = occurrenceIdFor(`Del ${tag}`);
+    setSelectedEventId(occId);
+    const result = await deleteEvent(occId);
+    expect(result.ok).toBe(true);
+    expect(selectedEventId()).toBeNull();
+    createdIds.splice(createdIds.indexOf(baseId), 1); // destroyed server-side; drop from cleanup
+
+    // It persisted: reload from scratch and it's gone.
+    await loadUntil(() => countByTitle(`Del ${tag}`) === 0);
+    expect(countByTitle(`Del ${tag}`)).toBe(0);
+  });
+
+  it("deletes a recurring event's whole series (base destroy removes every occurrence)", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    const [baseId] = (await seedEvents(calId, [
+      { title: `Series ${tag}`, start: localDateTime(4, 9), weekly: true },
+    ])) as [Id];
+    await loadUntil(() => countByTitle(`Series ${tag}`) >= 2);
+
+    // Deleting from any one occurrence destroys the base, which removes the WHOLE series (probed live;
+    // single-occurrence delete is out of scope this milestone).
+    const result = await deleteEvent(occurrenceIdFor(`Series ${tag}`));
+    expect(result.ok).toBe(true);
+    createdIds.splice(createdIds.indexOf(baseId), 1);
+
+    await loadUntil(() => countByTitle(`Series ${tag}`) === 0);
+    expect(countByTitle(`Series ${tag}`)).toBe(0);
   });
 
   it("treats open + save with no edits as a no-op success", async () => {

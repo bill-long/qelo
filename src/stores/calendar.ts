@@ -30,7 +30,7 @@ import {
 } from "@/lib/calendar";
 import { handleAuthFailure, jmap, session } from "./account";
 import { syncCollection } from "./sync-collection";
-import { setSelectedEventId } from "./ui";
+import { selectedEventId, setSelectedEventId } from "./ui";
 
 export const [calendars, setCalendars] = createStore<Record<string, Calendar>>({});
 export const [calendarEvents, setCalendarEvents] = createStore<Record<string, CalendarEvent>>({});
@@ -545,6 +545,131 @@ export async function createEvent(
     handleAuthFailure(err);
   }
   return { ok: true, id };
+}
+
+/** The outcome of a {@link deleteEvent}: ok on success, else why it didn't delete. */
+export type DeleteEventResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: "no-account" | "unresolved" | "auth" | "refused" | "error";
+      error?: SetError;
+    };
+
+/**
+ * Delete an event. The agenda is keyed by SYNTHETIC expanded-occurrence ids, but `CalendarEvent/set
+ * destroy` — like `set update` — REJECTS a synthetic id (`invalidProperties: "Deleting synthetic ids
+ * is not yet supported."`, probed live 2026-06-17) and needs the BASE event id. So `occurrenceId` is
+ * first resolved to its base via the same {@link resolveBaseEvent} the edit path uses (paged
+ * non-expanded query → suffix candidates → content disambiguation, fail-safe to null), then ONE
+ * `CalendarEvent/set destroy` targets that base. A null resolution returns `unresolved` rather than
+ * risk destroying the wrong series, so the caller keeps the read-only detail.
+ *
+ * RECURRING-EVENT CAVEAT: with no recurrence editing this milestone, destroying the base id removes the
+ * WHOLE series (probed live — every occurrence vanishes), not just the viewed occurrence; deleting a
+ * single occurrence (a `recurrenceOverrides` exception) is out of scope. The confirm copy says as much.
+ *
+ * The clicked occurrence is pruned from `calendarEvents` + `eventIds` (and the selection cleared if it
+ * pointed at it) optimistically for instant feedback; on success a full-window reconcile re-query
+ * ({@link refetchEvents}) drops the rest of a recurring series (the expanded, synthetic-keyed store
+ * can't be upserted by base id — the same reason saveEvent/syncCalendar re-query). Discipline mirrors
+ * the contacts `deleteContact` / email `deleteForever` ([[jmap-set-quirks]] / [[qelo-review-checklist]]):
+ * `requireNewState:false` (a fully-refused destroy omits newState on Stalwart; this path syncs via
+ * `CalendarEvent/changes`, not this token, and the reconcile re-query recaptures `eventState` from a
+ * full /get exactly like load/sync); a `notFound` refusal counts as gone (kept pruned); only a
+ * substantive refusal or a transport error restores the occurrence, guarded against a concurrent sync
+ * having re-added it / moved the selection. Resolves (never rejects) so the caller can surface a
+ * failure inline.
+ */
+export async function deleteEvent(occurrenceId: string): Promise<DeleteEventResult> {
+  const accountId = calendarAccountId();
+  if (!accountId) return { ok: false, reason: "no-account" };
+
+  // Resolve the BASE id BEFORE any optimistic change — a resolve failure then needs no restore. An
+  // auth failure during the resolve raises the global gate; a null result means the base can't be
+  // safely identified (gone/ambiguous), so we refuse rather than destroy a guessed-wrong series.
+  let base: CalendarEvent | null;
+  try {
+    base = await resolveBaseEvent(occurrenceId);
+  } catch (err) {
+    if (handleAuthFailure(err)) return { ok: false, reason: "auth" };
+    console.error("resolveBaseEvent (delete) failed:", err);
+    return { ok: false, reason: "error" };
+  }
+  if (!base) return { ok: false, reason: "unresolved" };
+  const baseId = base.id;
+
+  // Optimistic prune of the clicked occurrence: snapshot it (to a plain object — not a live store
+  // proxy, which the delete empties) for a guarded restore, and remember whether it was selected so a
+  // restore re-selects only what the prune cleared. The agenda position isn't captured: the eventIds
+  // order isn't load-bearing (EventList re-derives the order via groupEventsByDay), so a restore
+  // re-appends rather than threading a stale index through the async destroy.
+  const occurrence = calendarEvents[occurrenceId];
+  const removed = occurrence ? (structuredClone(unwrap(occurrence)) as CalendarEvent) : null;
+  const wasSelected = selectedEventId() === occurrenceId;
+  setCalendarEvents(
+    produce((s) => {
+      delete s[occurrenceId];
+    }),
+  );
+  setEventIds((ids) => ids.filter((id) => id !== occurrenceId));
+  if (wasSelected) setSelectedEventId(null);
+
+  const client = jmap();
+  let refused: SetError | undefined;
+  try {
+    const responses = await client.request(
+      [calendarEventSet(accountId, "set", { destroy: [baseId] })],
+      CALENDAR_USING,
+    );
+    const r = setResult<CalendarEvent>(responses, "set", { requireNewState: false });
+    // notFound = already gone (destroyed elsewhere) → keep it pruned; only a substantive refusal
+    // leaves the event on the server and warrants a restore.
+    const err = r.notDestroyed[baseId];
+    if (err && err.type !== "notFound") refused = err;
+  } catch (err) {
+    // The destroy never applied — restore the occurrence + selection, independent of the re-auth gate
+    // (the deletion didn't persist either way), then raise that gate / report the error.
+    restoreOccurrence(removed, wasSelected);
+    if (handleAuthFailure(err)) return { ok: false, reason: "auth" };
+    console.error("CalendarEvent/set destroy failed:", err);
+    return { ok: false, reason: "error" };
+  }
+
+  if (refused) {
+    restoreOccurrence(removed, wasSelected);
+    return { ok: false, reason: "refused", error: refused };
+  }
+
+  // Success: drop the rest of a recurring series (and confirm the prune) by reconciling the agenda to
+  // server truth. Best-effort — a re-query blip leaves any lingering occurrences until the next sync.
+  try {
+    await refetchEvents(accountId);
+  } catch (err) {
+    handleAuthFailure(err);
+  }
+  return { ok: true };
+}
+
+// Reverse an optimistic occurrence prune the server refused (or a transport error left unconfirmed).
+// Guarded like deleteContact/deleteForever: re-insert into the event store AND the agenda list, each
+// only if a concurrent sync (a refetch rebuilds both together) hasn't already re-added the occurrence
+// with possibly-newer data — the two presence checks are independent so neither can strand the other.
+// Re-append to eventIds (order isn't load-bearing; EventList re-sorts). Re-select only if nothing else
+// was selected across the await, so a refusal doesn't yank the user off an event they opened meanwhile.
+function restoreOccurrence(removed: CalendarEvent | null, reselect: boolean): void {
+  if (!removed) return;
+  if (!calendarEvents[removed.id]) {
+    setCalendarEvents(
+      produce((s) => {
+        s[removed.id] = removed;
+      }),
+    );
+  }
+  if (!eventIds().includes(removed.id)) {
+    setEventIds((ids) => [...ids, removed.id]);
+  }
+  if (reselect && selectedEventId() === null) setSelectedEventId(removed.id);
 }
 
 /** Test seam: drop all calendar state so a suite starts clean (wired into the harness resetStores). */
