@@ -1,5 +1,5 @@
 import { cleanup, render, screen } from "@solidjs/testing-library";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventView } from "@/components/calendar/EventView";
 import type { Calendar, CalendarEvent } from "@/jmap/types";
 import { resetCalendar, setCalendarEvents, setCalendars } from "@/stores/calendar";
@@ -39,7 +39,15 @@ function reset() {
   setSelectedCalendarId(null);
 }
 
+// formatDayHeading appends the year only when it differs from the current year, so pin the clock
+// (Date only — leave real timers so SolidJS isn't disturbed) to keep "Mon, Sep 7" deterministic.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-06-17T12:00:00"));
+});
+
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   reset();
 });
