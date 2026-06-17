@@ -18,9 +18,12 @@ import { syncCollection } from "./sync-collection";
 
 export const [calendars, setCalendars] = createStore<Record<string, Calendar>>({});
 export const [calendarEvents, setCalendarEvents] = createStore<Record<string, CalendarEvent>>({});
-// The agenda order: the CalendarEvent/query result ids (start-ascending, recurrences expanded).
-// Unlike contacts (no server sort), the calendar query CAN sort by start, so we keep its order
-// rather than re-deriving — the event store is keyed by these (possibly synthetic) occurrence ids.
+// The agenda's event ids in the CalendarEvent/query result order (start-ascending, recurrences
+// expanded) — the event store is keyed by these (possibly synthetic) occurrence ids. Unlike contacts
+// (no server sort), the calendar query CAN sort by start, so this captures a server-ordered id list.
+// The agenda component still groups these by day and sorts within each day (`groupEventsByDay` →
+// `compareEvents`) for the grouped display; that per-day sort is by start too, so it's consistent
+// with this order (and breaks same-start ties deterministically).
 export const [eventIds, setEventIds] = createSignal<string[]>([]);
 
 const CALENDAR_USING = [CAP_CORE, CAP_CALENDARS];

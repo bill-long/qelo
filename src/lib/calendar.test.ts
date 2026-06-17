@@ -28,6 +28,7 @@ describe("parseDateParts", () => {
       day: 7,
       hour: 9,
       minute: 30,
+      second: 0,
     });
   });
 
@@ -38,16 +39,18 @@ describe("parseDateParts", () => {
       day: 7,
       hour: 0,
       minute: 0,
+      second: 0,
     });
   });
 
-  it("allows seconds and a fractional part", () => {
+  it("captures seconds (discarding any fraction)", () => {
     expect(parseDateParts("2026-09-07T09:30:15.500")).toEqual({
       year: 2026,
       month: 9,
       day: 7,
       hour: 9,
       minute: 30,
+      second: 15,
     });
   });
 
@@ -75,6 +78,7 @@ describe("parseDateParts", () => {
       day: 29,
       hour: 0,
       minute: 0,
+      second: 0,
     });
   });
 });
@@ -120,27 +124,27 @@ describe("isAllDay / isRecurring", () => {
 describe("eventEndParts", () => {
   it("adds a sub-day duration without timezone drift", () => {
     const end = eventEndParts(event({ start: "2026-09-07T09:00:00", duration: "PT30M" }));
-    expect(end).toEqual({ year: 2026, month: 9, day: 7, hour: 9, minute: 30 });
+    expect(end).toEqual({ year: 2026, month: 9, day: 7, hour: 9, minute: 30, second: 0 });
   });
 
   it("rolls over midnight", () => {
     const end = eventEndParts(event({ start: "2026-09-07T23:30:00", duration: "PT1H" }));
-    expect(end).toEqual({ year: 2026, month: 9, day: 8, hour: 0, minute: 30 });
+    expect(end).toEqual({ year: 2026, month: 9, day: 8, hour: 0, minute: 30, second: 0 });
   });
 
   it("adds whole days for an all-day duration", () => {
     const end = eventEndParts(event({ start: "2026-09-07T00:00:00", duration: "P1D" }));
-    expect(end).toEqual({ year: 2026, month: 9, day: 8, hour: 0, minute: 0 });
+    expect(end).toEqual({ year: 2026, month: 9, day: 8, hour: 0, minute: 0, second: 0 });
   });
 
   it("returns the start when there is no duration", () => {
     const end = eventEndParts(event({ start: "2026-09-07T09:00:00" }));
-    expect(end).toEqual({ year: 2026, month: 9, day: 7, hour: 9, minute: 0 });
+    expect(end).toEqual({ year: 2026, month: 9, day: 7, hour: 9, minute: 0, second: 0 });
   });
 
   it("defaults an all-day event with no duration to one day", () => {
     const end = eventEndParts(event({ start: "2026-09-07T00:00:00", showWithoutTime: true }));
-    expect(end).toEqual({ year: 2026, month: 9, day: 8, hour: 0, minute: 0 });
+    expect(end).toEqual({ year: 2026, month: 9, day: 8, hour: 0, minute: 0, second: 0 });
   });
 
   it("returns null for an event with no start", () => {
@@ -217,6 +221,12 @@ describe("compareEvents / groupEventsByDay", () => {
     const b = event({ id: "b", start: "2026-09-07T08:00:00", title: "Z" });
     const c = event({ id: "c", start: "2026-09-07T09:00:00", title: "A" });
     expect([a, b, c].sort(compareEvents).map((e) => e.id)).toEqual(["b", "c", "a"]);
+  });
+
+  it("orders same-minute events by their seconds, not by title", () => {
+    const late = event({ id: "late", start: "2026-09-07T09:00:50", title: "AAA" });
+    const early = event({ id: "early", start: "2026-09-07T09:00:10", title: "ZZZ" });
+    expect([late, early].sort(compareEvents).map((e) => e.id)).toEqual(["early", "late"]);
   });
 
   it("groups events by day in chronological order, sorted within each day, dropping undated", () => {

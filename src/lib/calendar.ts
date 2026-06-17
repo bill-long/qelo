@@ -17,12 +17,14 @@ export interface DateParts {
   day: number;
   hour: number;
   minute: number;
+  second: number;
 }
 
 // End-anchored: a JSCalendar LocalDateTime carries NO trailing `Z`/offset (RFC 8984 §1.4.5), so a
 // value like "2026-09-07T09:00:00Z" or any trailing garbage is malformed and must be rejected, not
-// silently truncated. Seconds (with optional fraction) are allowed but not captured.
-const LOCAL_DT = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?)?$/;
+// silently truncated. Seconds (group 6) are captured (any fraction discarded) so the sort can order
+// same-minute events; the display helpers ignore them.
+const LOCAL_DT = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?)?$/;
 
 /**
  * Parse a JSCalendar local date-time ("2026-09-07T09:00:00" or a bare date) into its parts, or null
@@ -40,18 +42,22 @@ export function parseDateParts(s: string | undefined): DateParts | null {
     day: Number(m[3]),
     hour: m[4] ? Number(m[4]) : 0,
     minute: m[5] ? Number(m[5]) : 0,
+    second: m[6] ? Number(m[6]) : 0,
   };
   // Validate by round-tripping through a UTC date: any impossible field — month 13, an invalid
-  // day-of-month (Feb 31, Apr 31, Feb 29 in a non-leap year), hour 25, minute 60 — normalizes to a
-  // different instant, so a component mismatch means the input was malformed. This subsumes simple
-  // range checks AND honors per-month/leap-year day limits in one pass.
-  const d = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute));
+  // day-of-month (Feb 31, Apr 31, Feb 29 in a non-leap year), hour 25, minute 60, second 60 —
+  // normalizes to a different instant, so a component mismatch means the input was malformed. This
+  // subsumes simple range checks AND honors per-month/leap-year day limits in one pass.
+  const d = new Date(
+    Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second),
+  );
   if (
     d.getUTCFullYear() !== parts.year ||
     d.getUTCMonth() !== parts.month - 1 ||
     d.getUTCDate() !== parts.day ||
     d.getUTCHours() !== parts.hour ||
-    d.getUTCMinutes() !== parts.minute
+    d.getUTCMinutes() !== parts.minute ||
+    d.getUTCSeconds() !== parts.second
   ) {
     return null;
   }
@@ -112,7 +118,9 @@ export function eventEndParts(event: CalendarEvent): DateParts | null {
     parseDuration(event.duration) ??
     (isAllDay(event) ? { years: 0, months: 0, days: 1, ms: 0 } : null);
   if (!dur) return start;
-  const d = new Date(Date.UTC(start.year, start.month - 1, start.day, start.hour, start.minute));
+  const d = new Date(
+    Date.UTC(start.year, start.month - 1, start.day, start.hour, start.minute, start.second),
+  );
   if (dur.years) d.setUTCFullYear(d.getUTCFullYear() + dur.years);
   if (dur.months) d.setUTCMonth(d.getUTCMonth() + dur.months);
   if (dur.days) d.setUTCDate(d.getUTCDate() + dur.days);
@@ -123,6 +131,7 @@ export function eventEndParts(event: CalendarEvent): DateParts | null {
     day: d.getUTCDate(),
     hour: d.getUTCHours(),
     minute: d.getUTCMinutes(),
+    second: d.getUTCSeconds(),
   };
 }
 
@@ -173,6 +182,7 @@ function stepDays(p: DateParts, days: number): DateParts {
     day: d.getUTCDate(),
     hour: 0,
     minute: 0,
+    second: 0,
   };
 }
 
@@ -200,11 +210,12 @@ export function eventDisplayTitle(event: CalendarEvent): string {
   return event.title?.trim() || "(no title)";
 }
 
-// Sort key: start instant (UTC-built from the literal parts) then title, for a deterministic order.
+// Sort key: start instant (UTC-built from the literal parts, including seconds so same-minute events
+// order correctly) then title, for a deterministic order.
 function startSortKey(event: CalendarEvent): number {
   const p = eventStartParts(event);
   if (!p) return Number.POSITIVE_INFINITY; // undated events sort last
-  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute);
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
 }
 
 /** Compare two events by start then title — the deterministic agenda order. */
