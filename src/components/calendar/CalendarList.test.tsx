@@ -3,7 +3,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CalendarList } from "@/components/calendar/CalendarList";
 import type { Calendar } from "@/jmap/types";
 import { resetCalendar, setCalendars } from "@/stores/calendar";
-import { selectedCalendarId, selectedEventId, setSelectedEventId } from "@/stores/ui";
+import {
+  selectedCalendarId,
+  selectedEventId,
+  setSelectedCalendarId,
+  setSelectedEventId,
+} from "@/stores/ui";
 
 function calendar(partial: Partial<Calendar>): Calendar {
   return {
@@ -32,6 +37,7 @@ function calendar(partial: Partial<Calendar>): Calendar {
 function reset() {
   resetCalendar();
   setSelectedEventId(null);
+  setSelectedCalendarId(null);
 }
 
 afterEach(() => {
