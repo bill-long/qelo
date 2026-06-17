@@ -31,7 +31,7 @@ import { creatingContact, selectedContactId, setCreatingContact } from "@/stores
 export function ContactView() {
   const [editing, setEditing] = createSignal(false);
   // A failed delete surfaces here, ABOVE the detail: deleteContact prunes the card optimistically, so
-  // the ContactDetail that hosted the Delete button unmounts the instant delete is confirmed. On a
+  // the ContactDetail that hosted the Delete button unmounts the instant the delete is confirmed. On a
   // refusal the card is restored + re-selected (the detail re-mounts) and this error rides down to it
   // as a prop. Held on the always-mounted ContactView (not the unmounting detail) so it survives.
   const [deleteError, setDeleteError] = createSignal<string | null>(null);
