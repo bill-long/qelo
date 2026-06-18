@@ -922,6 +922,26 @@ describe("packDayColumns", () => {
     expect(byId.a?.column).toBe(0); // Alpha takes the leftmost column
     expect(byId.z?.column).toBe(1);
   });
+
+  it("packs against minHeight so short non-overlapping blocks don't visually collide", () => {
+    // a: 09:00–09:05, b: 09:10–09:15 — disjoint in TIME, but each floors to 24min when rendered.
+    // With minHeight 24 their effective spans (09:00–09:24, 09:10–09:34) overlap → side-by-side.
+    const both = [place("a", 540, 5), place("b", 550, 5)];
+    const exact = packDayColumns(both); // no floor → same full-width column
+    expect(Object.fromEntries(exact.map((p) => [p.event.id, p.columns]))).toEqual({ a: 1, b: 1 });
+    const floored = packDayColumns(both, 24);
+    const byId = Object.fromEntries(floored.map((p) => [p.event.id, p]));
+    expect(byId.a).toMatchObject({ column: 0, columns: 2 });
+    expect(byId.b).toMatchObject({ column: 1, columns: 2 });
+    // The OUTPUT keeps the true heights (the renderer applies the same floor).
+    expect(byId.a?.height).toBe(5);
+  });
+
+  it("tiles two zero-duration events at the same instant side-by-side under minHeight", () => {
+    const packed = packDayColumns([place("a", 540, 0), place("b", 540, 0)], 24);
+    expect(packed.map((p) => p.columns)).toEqual([2, 2]);
+    expect(new Set(packed.map((p) => p.column))).toEqual(new Set([0, 1]));
+  });
 });
 
 describe("layoutAllDayLane", () => {

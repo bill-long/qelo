@@ -156,7 +156,9 @@ function WeekDayColumn(props: { dayKey: string; now: () => Date; events: () => C
       const p = eventDayPlacement(e, props.dayKey);
       if (p) placements.push(p);
     }
-    return packDayColumns(placements);
+    // Pack against the rendered minimum height so short/zero-duration blocks that float to
+    // MIN_BLOCK_MINUTES don't visually overlap while sharing a sub-column.
+    return packDayColumns(placements, MIN_BLOCK_MINUTES);
   });
   const nowOffset = () => nowIndicatorOffset(props.now(), props.dayKey);
   return (

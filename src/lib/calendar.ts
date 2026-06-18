@@ -705,12 +705,19 @@ export interface PackedPlacement extends DayPlacement {
  * and within each cluster every event takes the leftmost sub-column free at its start; the cluster's
  * column count (its peak concurrency) is shared by all its members so they tile to full width.
  * Intervals are half-open [top, top+height): exact-touch (one ends where the next starts) does NOT
- * overlap and shares a column; two zero-duration events at the same instant don't conflict (each tiles
- * full width — a documented degenerate). Deterministic input order — earlier `top`, then taller, then
+ * overlap and shares a column. `minHeight` is the renderer's visual floor (a short/zero-duration block
+ * is drawn at least this tall): overlap is computed against `max(height, minHeight)` so two events that
+ * don't overlap in TIME but WOULD overlap once floored to the minimum still get side-by-side columns —
+ * packing then matches what's actually drawn (and two zero-duration events at the same instant tile
+ * side-by-side instead of visually colliding). The OUTPUT keeps the true `top`/`height`; the renderer
+ * applies the same floor. Deterministic input order — earlier `top`, then taller, then
  * {@link compareEvents} — so the packing is stable across renders. Pure; returns a flat list (the
  * cluster grouping is internal).
  */
-export function packDayColumns(placements: DayPlacement[]): PackedPlacement[] {
+export function packDayColumns(
+  placements: DayPlacement[],
+  minHeight: number = 0,
+): PackedPlacement[] {
   const sorted = [...placements].sort(
     (a, b) => a.top - b.top || b.height - a.height || compareEvents(a.event, b.event),
   );
@@ -730,7 +737,8 @@ export function packDayColumns(placements: DayPlacement[]): PackedPlacement[] {
   };
 
   for (const p of sorted) {
-    const end = p.top + p.height;
+    // Effective end uses the rendered minimum so packing matches the floored visual height.
+    const end = p.top + Math.max(p.height, minHeight);
     // A new cluster begins once this event starts at/after every prior cluster member has ended (no
     // overlap with any — they're start-sorted, so clusterEnd, the running max end, bounds them all).
     if (cluster.length > 0 && p.top >= clusterEnd) flush();
