@@ -757,6 +757,16 @@ describe("splitSeries — 'this and following'", () => {
     expect(tail.start).toBe("2026-07-20T15:00:00"); // split DATE + edited time-of-day
   });
 
+  it("gives the tail NO rule when the user turns the repeat off (a single non-recurring event)", () => {
+    const base = timedEvent({ recurrenceRule: { frequency: "weekly" } });
+    const split = splitSeries(base, RID, edit(base, { recurrence: emptyRecurrence() }));
+    const tail = split?.tailCreate as Record<string, unknown>;
+    // The tail must NOT keep repeating (the old `?? baseRule` fallback would have re-added the rule).
+    expect(tail).not.toHaveProperty("recurrenceRule");
+    // The head is still capped (the past occurrences keep their bounded weekly pattern).
+    expect(split?.basePatch.recurrenceRule).toMatchObject({ frequency: "weekly" });
+  });
+
   it("gives the tail the EDITED rule when the user changed how it repeats", () => {
     const base = timedEvent({ recurrenceRule: { frequency: "weekly" } });
     const split = splitSeries(

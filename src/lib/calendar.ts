@@ -1657,10 +1657,13 @@ export function splitSeries(
   const editedStart = edited.start ?? baseline.start ?? recurrenceId;
   const timeOfDay = editedStart.length >= 19 ? editedStart.slice(11, 19) : "00:00:00";
   tail.start = `${recurrenceId.slice(0, 10)}T${timeOfDay}`;
-  // The remaining rule: the EDITED rule when the user changed the repeat (it applies to the tail), else
-  // the base rule verbatim (its own until/count — see the count tradeoff above). `@type` re-asserted
-  // for the write (stripped on read).
-  tail.recurrenceRule = { "@type": "RecurrenceRule", ...(edited.recurrenceRule ?? baseRule) };
+  // The remaining rule rides along from `edited` (via the {@link tail} spread): the EDITED rule when the
+  // user changed the repeat, the base rule VERBATIM when untouched, or ABSENT when the user turned the
+  // repeat OFF (editableToEvent drops the key) — then the tail is a single non-recurring event. Only
+  // re-assert `@type` (stripped on read) when a rule is actually present; never re-add the base rule.
+  if (tail.recurrenceRule) {
+    tail.recurrenceRule = { "@type": "RecurrenceRule", ...(tail.recurrenceRule as RecurrenceRule) };
+  }
   return { basePatch, tailCreate: tail };
 }
 

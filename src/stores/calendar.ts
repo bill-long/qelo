@@ -464,8 +464,11 @@ export async function saveEvent(
   };
   if (mode === "this" && recurrenceId) {
     const override = overridePatch(recurrenceId, baseline, edits);
-    if (!override) return { ok: true }; // only the rule changed → nothing to override on one occurrence
-    setOpts = { update: { [baseId]: override } };
+    // A null override means the only change was the recurrence RULE, which can't be scoped to one
+    // occurrence — degrade to the whole-series patch (applies + is visible) rather than silently
+    // reporting success. The UI disables "this" on a rule change, so this is the defense-in-depth path
+    // for a direct caller.
+    setOpts = override ? { update: { [baseId]: override } } : { update: { [baseId]: allPatch } };
   } else if (mode === "following" && recurrenceId) {
     const split = splitSeries(baseline, recurrenceId, edits);
     setOpts = split
