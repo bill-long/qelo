@@ -1588,8 +1588,10 @@ export function overridePatch(
   const delta = editableToPatch(baseline, edits);
   delete delta.recurrenceRule; // a per-occurrence override can't change the series rule
   if (Object.keys(delta).length === 0) return null; // nothing changed → no override to write
-  // Carry a title so Stalwart keeps the occurrence in the expansion. A `null` (title cleared) would
-  // still drop it, so fall back to the baseline title (or "") rather than emit a title-removing patch.
+  // Carry a title KEY so Stalwart keeps the occurrence in the expansion. Probed live: an ABSENT title
+  // key drops the occurrence, but an empty-string value does NOT — so the `?? ""` fallback (for a
+  // titleless baseline) is safe and keeps the occurrence visible with a blank title. A title-removing
+  // `null` from the delta is replaced with the baseline title (else the key would carry null).
   if (typeof delta.title !== "string") {
     delta.title = baseline.title ?? "";
   }
@@ -1671,11 +1673,14 @@ export function splitSeries(
 
 /**
  * The id of the loaded occurrence whose `recurrenceId` matches `recurrenceId`, or null. Re-points the
- * selection after a per-occurrence save: an override reshuffles the synthetic occurrence ids, but the
- * occurrence keeps its `recurrenceId` (the override's map key) even when its `start` moved — so we
- * re-find it by recurrenceId, not by the now-stale synthetic id. Returns null when none match (the
- * occurrence left the visible window) or several do (ambiguous — the caller clears rather than guess).
- * Pure; the store passes the live ids + event lookup.
+ * selection after a per-occurrence save: an override reshuffles the synthetic occurrence ids, so we
+ * re-find the occurrence by its recurrenceId rather than the now-stale synthetic id. BEST-EFFORT —
+ * Stalwart reports an occurrence's `recurrenceId` as its RESOLVED start (probed live), so a match
+ * succeeds only when the occurrence's TIME did NOT move; a time move / split re-times the occurrence
+ * (its recurrenceId becomes the new start), so the original recurrenceId no longer matches and this
+ * returns null. Also null when none match (occurrence left the window) or several do (ambiguous). The
+ * caller treats null as "clear the selection" rather than guess. Pure; the store passes the live ids +
+ * event lookup.
  */
 export function occurrenceIdByRecurrenceId(
   recurrenceId: string,
