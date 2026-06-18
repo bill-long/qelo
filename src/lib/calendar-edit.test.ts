@@ -19,11 +19,15 @@ import {
   eventMayDelete,
   eventMayWrite,
   eventToEditable,
+  occurrenceIdByRecurrenceId,
+  overridePatch,
   pickBaseEvent,
+  recurrenceChanged,
   recurrenceErrorMessage,
   recurrenceValid,
   resolveBaseEventId,
   ruleToEditable,
+  splitSeries,
   startWeekdayCode,
   whenErrorMessage,
 } from "./calendar";
@@ -638,5 +642,151 @@ describe("recurrence in the patch builder", () => {
       edit(base, { recurrence: { ...emptyRecurrence(), frequency: "daily" } }),
     );
     expect(next.recurrenceRule).toMatchObject({ frequency: "daily" });
+  });
+});
+
+const RID = "2026-07-20T09:00:00"; // a later occurrence of the weekly timedEvent series
+
+describe("recurrenceChanged (exported for the apply-mode chooser)", () => {
+  it("is false for an untouched rule and true when the repeat differs", () => {
+    const base = timedEvent({ recurrenceRule: { frequency: "weekly" } });
+    expect(recurrenceChanged(base, eventToEditable(base))).toBe(false);
+    expect(
+      recurrenceChanged(base, edit(base, { recurrence: { ...ruleToEditable(base), interval: 3 } })),
+    ).toBe(true);
+  });
+});
+
+describe("overridePatch — the 'this occurrence' override", () => {
+  it("returns null when nothing changed (no-op)", () => {
+    const base = timedEvent();
+    expect(overridePatch(RID, base, eventToEditable(base))).toBeNull();
+  });
+
+  it("writes the changed prop under recurrenceOverrides[recurrenceId], carrying the title", () => {
+    const base = timedEvent();
+    // Change only the description: the override must ALSO carry the (unchanged) title so Stalwart
+    // keeps the occurrence in the expansion.
+    const patch = overridePatch(RID, base, edit(base, { description: "one-off note" }));
+    expect(patch).toEqual({
+      recurrenceOverrides: { [RID]: { description: "one-off note", title: "Standup" } },
+    });
+  });
+
+  it("uses the EDITED title when the title itself changed (no duplicate carry)", () => {
+    const base = timedEvent();
+    const patch = overridePatch(RID, base, edit(base, { title: "Renamed once" }));
+    expect(patch).toEqual({ recurrenceOverrides: { [RID]: { title: "Renamed once" } } });
+  });
+
+  it("carries the baseline title rather than a title-removing null (which would hide the occurrence)", () => {
+    const base = timedEvent();
+    // Clearing the title would diff to `title: null`; the override falls back to the baseline title so
+    // the patch never strips the title (a null/blank title drops the occurrence from the Stalwart
+    // expansion) — clearing a single occurrence's title is an accepted limitation.
+    const patch = overridePatch(RID, base, edit(base, { title: "", description: "x" }));
+    const ov = (patch?.recurrenceOverrides as Record<string, Record<string, unknown>>)[RID];
+    expect(ov?.title).toBe("Standup");
+    expect(ov?.description).toBe("x");
+  });
+
+  it("never overrides the recurrenceRule per-occurrence", () => {
+    const base = timedEvent({ recurrenceRule: { frequency: "weekly" } });
+    // Change ONLY the rule: a single occurrence can't carry a rule, so the override is a no-op (null).
+    const patch = overridePatch(
+      RID,
+      base,
+      edit(base, { recurrence: { ...ruleToEditable(base), interval: 4 } }),
+    );
+    expect(patch).toBeNull();
+  });
+
+  it("moves just this occurrence when the when changed (start in the override)", () => {
+    const base = timedEvent();
+    const patch = overridePatch(
+      RID,
+      base,
+      edit(base, { start: "2026-07-06T14:00", end: "2026-07-06T14:30" }),
+    );
+    const ov = (patch?.recurrenceOverrides as Record<string, Record<string, unknown>>)[RID];
+    expect(ov?.start).toBe("2026-07-06T14:00:00");
+    expect(ov?.title).toBe("Standup"); // carried so the moved occurrence stays visible
+  });
+});
+
+describe("splitSeries — 'this and following'", () => {
+  it("returns null for a non-recurring event (nothing to split)", () => {
+    const base = timedEvent({ recurrenceRule: undefined });
+    expect(splitSeries(base, RID, eventToEditable(base))).toBeNull();
+  });
+
+  it("caps the head one DAY before the split and drops count (until now bounds it)", () => {
+    const base = timedEvent({ recurrenceRule: { frequency: "weekly", count: 10 } });
+    const split = splitSeries(base, RID, eventToEditable(base));
+    expect(split?.basePatch.recurrenceRule).toEqual({
+      "@type": "RecurrenceRule",
+      frequency: "weekly",
+      until: "2026-07-19T09:00:00", // 2026-07-20 minus one day, keeping the time-of-day
+    });
+    // count is dropped from the head (until bounds it now).
+    expect(split?.basePatch.recurrenceRule).not.toHaveProperty("count");
+  });
+
+  it("creates a tail restarted at the split date with the forward edits + remaining rule, stripped of ids", () => {
+    const base = timedEvent({ recurrenceRule: { frequency: "weekly" } });
+    const split = splitSeries(base, RID, edit(base, { title: "From here on", location: "Room B" }));
+    const tail = split?.tailCreate as Record<string, unknown>;
+    expect(tail.title).toBe("From here on");
+    expect(tail.start).toBe("2026-07-20T09:00:00"); // restarted at the split occurrence's date
+    expect(tail.recurrenceRule).toMatchObject({ frequency: "weekly" });
+    // Server-managed / occurrence-specific fields are stripped so it's a clean create.
+    for (const k of ["id", "uid", "recurrenceId", "recurrenceOverrides", "relatedTo"]) {
+      expect(tail).not.toHaveProperty(k);
+    }
+    expect((tail.locations as Record<string, { name: string }>).l1?.name).toBe("Room B");
+  });
+
+  it("keeps the EDITED time-of-day on the tail when the when changed", () => {
+    const base = timedEvent({ recurrenceRule: { frequency: "weekly" } });
+    const split = splitSeries(
+      base,
+      RID,
+      edit(base, { start: "2026-07-06T15:00", end: "2026-07-06T16:00" }),
+    );
+    const tail = split?.tailCreate as Record<string, unknown>;
+    expect(tail.start).toBe("2026-07-20T15:00:00"); // split DATE + edited time-of-day
+  });
+
+  it("gives the tail the EDITED rule when the user changed how it repeats", () => {
+    const base = timedEvent({ recurrenceRule: { frequency: "weekly" } });
+    const split = splitSeries(
+      base,
+      RID,
+      edit(base, { recurrence: { ...ruleToEditable(base), frequency: "daily", interval: 2 } }),
+    );
+    expect((split?.tailCreate as Record<string, unknown>).recurrenceRule).toMatchObject({
+      frequency: "daily",
+      interval: 2,
+    });
+    // The head keeps the ORIGINAL pattern (weekly), just capped.
+    expect(split?.basePatch.recurrenceRule).toMatchObject({ frequency: "weekly" });
+  });
+});
+
+describe("occurrenceIdByRecurrenceId — selection re-point after a recurring save", () => {
+  const events: Record<string, CalendarEvent> = {
+    a: event({ id: "a", recurrenceId: "2026-07-06T09:00:00" }),
+    b: event({ id: "b", recurrenceId: RID }),
+    c: event({ id: "c", recurrenceId: "2026-07-27T09:00:00" }),
+  };
+  it("finds the single occurrence whose recurrenceId matches", () => {
+    expect(occurrenceIdByRecurrenceId(RID, ["a", "b", "c"], events)).toBe("b");
+  });
+  it("returns null when none match (occurrence left the window)", () => {
+    expect(occurrenceIdByRecurrenceId("2099-01-01T00:00:00", ["a", "b", "c"], events)).toBeNull();
+  });
+  it("returns null when several match (ambiguous — don't guess)", () => {
+    const dup = { ...events, d: event({ id: "d", recurrenceId: RID }) };
+    expect(occurrenceIdByRecurrenceId(RID, ["a", "b", "c", "d"], dup)).toBeNull();
   });
 });

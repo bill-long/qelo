@@ -4,6 +4,7 @@ import { drainChanges } from "@/jmap/changes";
 import {
   CAP_CALENDARS,
   CAP_CORE,
+  type CalendarEventPatch,
   calendarChanges,
   calendarEventChanges,
   calendarEventGet,
@@ -26,8 +27,12 @@ import {
   editableToEvent,
   editableToPatch,
   freshOccurrenceIdForBase,
+  occurrenceIdByRecurrenceId,
+  overridePatch,
   pickBaseEvent,
+  type RecurrenceEditMode,
   recurrenceValid,
+  splitSeries,
   visibleRange,
 } from "@/lib/calendar";
 import { handleAuthFailure, jmap, session } from "./account";
@@ -401,36 +406,74 @@ export type SaveEventResult =
  * Save edits to an existing event. `baseId` is the BASE event id ({@link resolveBaseEvent}); `baseline`
  * is the base event the form was seeded from (its open-time snapshot); `occurrenceId` is the synthetic
  * agenda id the user was viewing (the optimistic write target — the store is keyed by occurrence ids).
- * The patch is the diff between the baseline and the edits, so it carries only the properties the user
- * changed — issued as ONE `CalendarEvent/set update` (a JSON-pointer patch) that touches only those
- * pointers (which may include `recurrenceRule` when the repeat changed — editing a recurring event
- * here changes the WHOLE series), leaving unedited properties (`participants`/etc.) untouched. Resolves
- * with a {@link SaveEventResult} (never rejects) so the form can surface a failure inline.
+ * `mode` chooses how widely the edit applies to a RECURRING event (a non-recurring event always uses
+ * the default "all"); `recurrenceId` is the viewed occurrence's recurrence id, required for the
+ * per-occurrence modes. Resolves with a {@link SaveEventResult} (never rejects) so the form can surface
+ * a failure inline.
+ *
+ * The patch is always derived from the diff between the baseline and the edits, so it carries only the
+ * properties the user changed (an empty diff is a no-op success — for ANY mode, since nothing changed).
+ * The mode then routes that delta into ONE `CalendarEvent/set` ({@link jmap-set-quirks}):
+ *  - "all"       → `update { [baseId]: editableToPatch }`: the whole-series patch (which may include
+ *                  `recurrenceRule` when the repeat changed). Leaves unedited props (participants/…)
+ *                  untouched.
+ *  - "this"      → `update { [baseId]: { recurrenceOverrides: {…} } }` ({@link overridePatch}): a
+ *                  whole-map merge overriding just this occurrence (always carrying its title so
+ *                  Stalwart keeps it in the expansion — see the lib).
+ *  - "following" → `update` the base rule capped + `create` a tail event ({@link splitSeries}): the
+ *                  spec's "this and following" split (the tail is unlinked — uid unreadable).
  *
  * The agenda is an EXPANDED view (synthetic-keyed, un-upsertable by base id — see syncCalendar), so:
  *  - the optimistic write overlays the changed NON-temporal properties onto the viewed occurrence for
  *    instant feedback (temporal props differ per occurrence, so they're left to the reconcile);
  *  - the reconcile is a full window re-query ({@link refetchEvents}) — the only way to rebuild the
- *    expanded view, and how it picks up a moved/re-expanded series. This recaptures `eventState` from
- *    a full /get (consistent with load/sync — not a partial reconcile that must avoid the cursor).
+ *    expanded view, and how it picks up an override / moved / re-expanded series. This recaptures
+ *    `eventState` from a full /get (consistent with load/sync — not a partial reconcile that must
+ *    avoid the cursor). For a recurring save the synthetic occurrence ids RESHUFFLE, so the selection
+ *    is re-pointed by `recurrenceId` ({@link occurrenceIdByRecurrenceId}), not the now-stale id.
  * Discipline mirrors saveContact ([[jmap-set-quirks]] / [[qelo-review-checklist]]): `requireNewState:
  * false` (an all-failed /set omits newState on Stalwart; this path syncs via CalendarEvent/changes,
  * not this token); on a refusal OR transport error the optimistic overlay is reverted to server truth
- * (re-query), INDEPENDENT of the auth gate (the change didn't persist either way). An empty patch
- * (nothing changed) is a no-op success; an invalid when is rejected without a round trip.
+ * (re-query), INDEPENDENT of the auth gate (the change didn't persist either way). An invalid when is
+ * rejected without a round trip.
  */
 export async function saveEvent(
   occurrenceId: string,
   baseId: string,
   baseline: CalendarEvent,
   edits: EditableEvent,
+  mode: RecurrenceEditMode = "all",
+  recurrenceId: string | null = null,
 ): Promise<SaveEventResult> {
   const accountId = calendarAccountId();
   if (!accountId) return { ok: false, reason: "no-account" };
   if (editableEventError(baseline, edits)) return { ok: false, reason: "invalid" };
 
-  const patch = editableToPatch(baseline, edits);
-  if (Object.keys(patch).length === 0) return { ok: true }; // nothing changed
+  // Nothing changed → no-op success for EVERY mode (a "this"/"following" with no edits has nothing to
+  // apply, so it must not split or override). This also gates the per-occurrence branches below. The
+  // whole-series ("all") patch is computed ONCE here and reused for the gate AND the "all"/split-fallback
+  // writes, so the no-op gate can't drift from what's actually written.
+  const allPatch = editableToPatch(baseline, edits);
+  if (Object.keys(allPatch).length === 0) return { ok: true };
+
+  // Build the CalendarEvent/set body for the chosen mode. The per-occurrence modes need a recurrenceId
+  // and a base rule; absent either (or for a non-recurring event) they degrade to the "all" patch.
+  let setOpts: {
+    update: Record<string, CalendarEventPatch>;
+    create?: Record<string, Record<string, unknown>>;
+  };
+  if (mode === "this" && recurrenceId) {
+    const override = overridePatch(recurrenceId, baseline, edits);
+    if (!override) return { ok: true }; // only the rule changed → nothing to override on one occurrence
+    setOpts = { update: { [baseId]: override } };
+  } else if (mode === "following" && recurrenceId) {
+    const split = splitSeries(baseline, recurrenceId, edits);
+    setOpts = split
+      ? { update: { [baseId]: split.basePatch }, create: { tail: split.tailCreate } }
+      : { update: { [baseId]: allPatch } };
+  } else {
+    setOpts = { update: { [baseId]: allPatch } };
+  }
 
   // Optimistic overlay of the changed NON-temporal props onto the viewed occurrence (snapshot it for
   // a revert). Temporal props (start/duration/timeZone/showWithoutTime) belong to each occurrence and
@@ -464,12 +507,44 @@ export async function saveEvent(
   let refused: SetError | undefined;
   try {
     const responses = await client.request(
-      [calendarEventSet(accountId, "set", { update: { [baseId]: patch } })],
+      [calendarEventSet(accountId, "set", setOpts)],
       CALENDAR_USING,
     );
-    refused = setResult<CalendarEvent>(responses, "set", { requireNewState: false }).notUpdated[
-      baseId
-    ];
+    const result = setResult<CalendarEvent>(responses, "set", { requireNewState: false });
+    // A refusal on EITHER write (the base update or — for a split — the tail create) means the change
+    // didn't fully apply; surface the first one and revert (the reconcile below).
+    const baseFailed = result.notUpdated[baseId];
+    const tailCreatedId = setOpts.create ? result.created.tail?.id : undefined;
+    // A requested tail the server neither created NOR refused (an omitted id) is itself a failure — else
+    // the head would be capped with no tail and we'd wrongly report success.
+    let tailFailed = setOpts.create ? result.notCreated.tail : undefined;
+    if (setOpts.create && !tailCreatedId && !tailFailed) {
+      tailFailed = { type: "serverFail", description: "tail create returned no id" };
+    }
+    refused = baseFailed ?? tailFailed;
+    // PARTIAL-SPLIT GUARD: a CalendarEvent/set is not transactional, so a "following" split can half-apply
+    // (the head cap and the tail create are independent). Compensate either way so a failed split leaves
+    // the series INTACT rather than corrupted — best-effort (a failure here is logged; the reconcile below
+    // still re-queries server truth):
+    //  - head capped but tail absent → RESTORE the base's original rule (else the forward occurrences are
+    //    silently dropped).
+    //  - head NOT capped but a tail WAS created → DESTROY the orphan tail (else the forward occurrences
+    //    are duplicated across the un-capped head and the new tail).
+    if (setOpts.create) {
+      if (tailFailed && !baseFailed) {
+        await compensateSet(accountId, {
+          update: {
+            [baseId]: {
+              recurrenceRule: baseline.recurrenceRule
+                ? { "@type": "RecurrenceRule", ...baseline.recurrenceRule }
+                : null,
+            },
+          },
+        });
+      } else if (baseFailed && tailCreatedId) {
+        await compensateSet(accountId, { destroy: [tailCreatedId] });
+      }
+    }
   } catch (err) {
     // The /set never applied — revert the optimistic overlay (to server truth via re-query, or the
     // snapshot if that also fails), independent of the re-auth gate, then raise that gate / report.
@@ -483,6 +558,18 @@ export async function saveEvent(
   // success this absorbs the change + any re-expansion; on a refusal it undoes the optimistic overlay.
   try {
     await refetchEvents(accountId);
+    // Re-point the selection: a recurring save reshuffles the synthetic occurrence ids, so re-find the
+    // viewed occurrence by its recurrenceId. BEST-EFFORT — Stalwart reports an occurrence's recurrenceId
+    // as its RESOLVED start, so this matches only when the occurrence's TIME didn't move (the dominant
+    // non-temporal edit: rename/note/location); a time move or a split re-times the occurrence, so no id
+    // matches and the selection clears (the modal closes back to the grid, which already reflects the
+    // change). Only when the occurrence was — and still is — the live selection (don't yank a user who
+    // navigated mid-save); a non-recurring save keeps its stable id. On a refusal nothing changed, so
+    // leave the selection on the original id.
+    if (!refused && recurrenceId && selectedEventId() === occurrenceId) {
+      const repointed = occurrenceIdByRecurrenceId(recurrenceId, eventIds(), calendarEvents);
+      if (repointed) setSelectedEventId(repointed);
+    }
   } catch (err) {
     handleAuthFailure(err);
     // A re-query blip. On a refusal the server rejected the write, so fall back to the occurrence
@@ -515,6 +602,20 @@ async function revertEventOverlay(
         }),
       );
     }
+  }
+}
+
+// Best-effort compensating CalendarEvent/set for a half-applied "following" split (a /set isn't
+// transactional): restore the head's rule, or destroy an orphan tail. Swallowed on failure — the
+// caller still reports the split as refused and the reconcile re-queries server truth either way.
+async function compensateSet(
+  accountId: string,
+  opts: { update?: Record<string, CalendarEventPatch>; destroy?: Id[] },
+): Promise<void> {
+  try {
+    await jmap().request([calendarEventSet(accountId, "comp", opts)], CALENDAR_USING);
+  } catch (err) {
+    console.error("CalendarEvent/set split compensation failed:", err);
   }
 }
 
