@@ -9,7 +9,7 @@
 // displayed day/time matches what the server sent, regardless of where the client runs.
 
 import type { CalendarEventPatch } from "@/jmap/methods";
-import type { Calendar, CalendarEvent, EventLocation, RecurrenceRule } from "@/jmap/types";
+import type { Calendar, CalendarEvent, EventLocation, NDay, RecurrenceRule } from "@/jmap/types";
 
 /** A calendar date-time broken into its literal components (no timezone applied). */
 export interface DateParts {
@@ -849,7 +849,9 @@ const FREQ_LABEL: Record<string, string> = {
   monthly: "Monthly",
   yearly: "Yearly",
 };
-const FREQ_UNIT: Record<string, string> = {
+/** Frequency → singular unit ("week"), shared by the recurrence summary badge AND the edit form's
+ * interval label so the two can't drift. */
+export const FREQ_UNIT: Record<string, string> = {
   daily: "day",
   weekly: "week",
   monthly: "month",
@@ -1010,17 +1012,198 @@ export function eventMayDelete(event: CalendarEvent, cals: Record<string, Calend
 // ---------------------------------------------------------------------------
 // Editable event model — the edit form's working copy of a BASE event, and the pure transforms that
 // turn it back into (a) a full event for an optimistic store write and (b) a minimal JSON-pointer
-// patch for CalendarEvent/set update. Recurrence + participants are present-but-uneditable: they're
-// NOT in the working copy and NOT in the rebuilt property set, so a patch never names them and they
-// carry through untouched (the same way the contacts form carried `photos`/`kind`).
+// patch for CalendarEvent/set update. The working copy now ALSO carries recurrence (the rule editor,
+// below); participants stay present-but-uneditable — NOT in the working copy and NOT in the rebuilt
+// property set, so a patch never names them and they carry through untouched (as the contacts form
+// carried `photos`/`kind`).
 //
 // The governing invariant (carried verbatim from the contacts edit form): open the form and save with
 // NO edits ⇒ empty patch / true no-op. Every normalization (trim, duration recompute) runs ONLY on a
 // value the user actually changed; an unchanged value is carried VERBATIM. The when-group is the
 // subtle case: deriving an end-time from `start + duration` and recomputing `duration` from it is
 // LOSSY (e.g. "PT90M" → end → "PT1H30M"), so when the when-fields are unchanged we carry the original
-// `start`/`duration`/`timeZone`/`showWithoutTime` verbatim and only recompute when they changed.
+// `start`/`duration`/`timeZone`/`showWithoutTime` verbatim and only recompute when they changed. The
+// recurrence rule follows the same lossy-rebuild guard (see the recurrence section).
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Recurrence RULE editor (Recurrence-Editing milestone, Branch 1). The form's working copy of an
+// event's recurrence + the pure transforms between it and a JSCalendar `recurrenceRule`. Like the
+// when-fields, the no-op invariant governs: an unchanged recurrence is carried VERBATIM (the original
+// rule object), so re-deriving from an untouched event emits no patch — `editableToRule` need not be a
+// perfect inverse of `ruleToEditable` (only a CHANGED recurrence is rebuilt). For a CHANGED rule the
+// weekly/monthly specifics are derived from the event's START (its weekday / day-of-month), the common
+// calendar-UI convention ("Monthly on the 2nd Tuesday").
+//
+// WIRE NOTE (Fastmail portability): we emit the SINGULAR `recurrenceRule` object — what dev Stalwart
+// accepts (it REJECTS the RFC-8984 plural `recurrenceRules` array). The build is isolated in
+// `editableToRule` so a spec-strict/Fastmail target (plural array, `excludedRecurrenceRules`) is a
+// localized change here, not a rewrite. See [[qelo-calendar-recurrence.md]].
+// ---------------------------------------------------------------------------
+
+/** The recurrence frequencies the editor exposes; "" = does not repeat. */
+export type EditableFrequency = "" | "daily" | "weekly" | "monthly" | "yearly";
+
+/**
+ * The recurrence editor's working copy. `weekdays` are byDay codes (weekly); `monthlyNth` picks the
+ * monthly pattern (true = "the Nth <weekday>" via byDay+nthOfPeriod, false = "day N" via byMonthDay) —
+ * both derived from the start on write. `end` chooses the termination (`count`/`until` carry their
+ * field). A non-recurring event is `frequency: ""`.
+ */
+export interface EditableRecurrence {
+  frequency: EditableFrequency;
+  interval: number;
+  weekdays: string[];
+  monthlyNth: boolean;
+  end: "never" | "count" | "until";
+  count: number;
+  until: string; // "YYYY-MM-DD"
+}
+
+// RFC 8984 byDay weekday codes, Sunday-indexed to line up with Date.getUTCDay().
+const WEEKDAY_CODES = ["su", "mo", "tu", "we", "th", "fr", "sa"];
+
+function weekdayCode(p: DateParts): string {
+  const d = new Date(Date.UTC(p.year, p.month - 1, p.day));
+  return WEEKDAY_CODES[d.getUTCDay()] ?? "su";
+}
+
+// Which occurrence of its weekday within the month a date is (1–5) — the `nthOfPeriod` for a monthly
+// "Nth <weekday>" rule (e.g. the 15th is in the 3rd week → 3rd <weekday>).
+function nthWeekdayOfMonth(p: DateParts): number {
+  return Math.floor((p.day - 1) / 7) + 1;
+}
+
+/** A blank (non-recurring) recurrence working copy, with sensible defaults for when the user turns
+ * repeating on (every 1, end never, a default count of 10 if they switch to "after N"). */
+export function emptyRecurrence(): EditableRecurrence {
+  return {
+    frequency: "",
+    interval: 1,
+    weekdays: [],
+    monthlyNth: false,
+    end: "never",
+    count: 10,
+    until: "",
+  };
+}
+
+/**
+ * Derive the recurrence editor's working copy from an event's `recurrenceRule`. Best-effort: an
+ * unknown/absent frequency → non-repeating; `byDay` codes populate `weekdays`; a byDay carrying
+ * `nthOfPeriod` flags the monthly "Nth weekday" pattern; `count`/`until` set the end. Pure +
+ * deterministic, so re-deriving an unchanged event reproduces identical fields (the no-op foundation).
+ *
+ * A WEEKLY rule with no `byDay` repeats on the event's start weekday (the server's implicit default),
+ * so we surface that day as selected — otherwise the editor would show "weekly" with no day checked,
+ * contradicting what the rule actually does. The verbatim-carry guard keeps this from emitting a
+ * spurious byDay on an untouched save (both sides of recurrenceChanged seed the same day).
+ */
+export function ruleToEditable(event: CalendarEvent): EditableRecurrence {
+  const e = emptyRecurrence();
+  const rule = event.recurrenceRule;
+  const freq = rule?.frequency?.toLowerCase();
+  if (!freq || !["daily", "weekly", "monthly", "yearly"].includes(freq)) return e;
+  e.frequency = freq as EditableFrequency;
+  e.interval = rule?.interval && rule.interval > 1 ? rule.interval : 1;
+  e.weekdays = (rule?.byDay ?? [])
+    .map((d) => d.day?.toLowerCase())
+    .filter((d): d is string => Boolean(d));
+  if (e.frequency === "weekly" && e.weekdays.length === 0) {
+    const start = eventStartParts(event);
+    if (start) e.weekdays = [weekdayCode(start)];
+  }
+  e.monthlyNth = (rule?.byDay ?? []).some((d) => typeof d.nthOfPeriod === "number");
+  if (typeof rule?.count === "number") {
+    e.end = "count";
+    e.count = rule.count;
+  } else if (rule?.until) {
+    e.end = "until";
+    e.until = rule.until.slice(0, 10);
+  }
+  return e;
+}
+
+/**
+ * Build a JSCalendar `recurrenceRule` from the editor's working copy, or undefined when not repeating.
+ * Weekly carries the chosen `weekdays` (byDay); monthly derives the pattern from `start` (Nth weekday
+ * vs day-of-month); `count`/`until` set the termination (a timed `until` takes the start's time-of-day
+ * so the last occurrence is included). Only called for a CHANGED recurrence (an unchanged one is carried
+ * verbatim) — so it needn't reproduce an arbitrary server rule byte-for-byte. Pure.
+ */
+export function editableToRule(
+  rec: EditableRecurrence,
+  start: DateParts | null,
+): RecurrenceRule | undefined {
+  if (rec.frequency === "") return undefined;
+  const rule: RecurrenceRule = { "@type": "RecurrenceRule", frequency: rec.frequency };
+  if (rec.interval > 1) rule.interval = rec.interval;
+  if (rec.frequency === "weekly" && rec.weekdays.length > 0) {
+    rule.byDay = rec.weekdays.map((day): NDay => ({ "@type": "NDay", day }));
+  } else if (rec.frequency === "monthly" && start) {
+    if (rec.monthlyNth) {
+      // The 5th occurrence of a weekday doesn't exist in every month; emit -1 ("the last <weekday>")
+      // so the series doesn't silently skip the short months (the common calendar-UI convention).
+      const nth = nthWeekdayOfMonth(start);
+      rule.byDay = [{ "@type": "NDay", day: weekdayCode(start), nthOfPeriod: nth >= 5 ? -1 : nth }];
+    } else {
+      rule.byMonthDay = [start.day];
+    }
+  }
+  if (rec.end === "count" && rec.count >= 1) {
+    rule.count = rec.count;
+  } else if (rec.end === "until" && rec.until) {
+    const time = start
+      ? `${pad2(start.hour)}:${pad2(start.minute)}:${pad2(start.second)}`
+      : "00:00:00";
+    rule.until = `${rec.until}T${time}`;
+  }
+  return rule;
+}
+
+// Whether the user changed the recurrence vs the baseline's derived editable. Drives "carry the
+// original rule verbatim" (unchanged) vs "rebuild from the editor" (changed) — the same lossy-rebuild
+// guard the when-fields use, so the no-op invariant holds regardless of editableToRule's fidelity.
+// Compares ONLY the fields semantically active for the current mode (the same ones editableToRule
+// reads), so fiddling an inactive field and reverting — e.g. setting an Occurrences count then
+// switching End back to "Never" — stays a no-op instead of forcing a rebuild. Field-wise (like
+// whenChanged), not JSON.stringify, and the weekday SET is compared order-insensitively.
+function recurrenceChanged(baseline: CalendarEvent, edits: EditableEvent): boolean {
+  const b = ruleToEditable(baseline);
+  const e = edits.recurrence;
+  if (b.frequency !== e.frequency) return true;
+  if (b.frequency === "") return false; // not repeating → no other field is active
+  if (b.interval !== e.interval) return true;
+  if (b.frequency === "weekly" && sortedJoin(b.weekdays) !== sortedJoin(e.weekdays)) return true;
+  if (b.frequency === "monthly" && b.monthlyNth !== e.monthlyNth) return true;
+  if (b.end !== e.end) return true;
+  if (b.end === "count" && b.count !== e.count) return true;
+  if (b.end === "until" && b.until !== e.until) return true;
+  return false;
+}
+
+const sortedJoin = (xs: string[]): string => xs.slice().sort().join(",");
+
+/** Whether the recurrence working copy is internally valid: a positive interval, and (when chosen) a
+ * positive count or a parseable until date. A non-repeating recurrence is always valid. Pure. */
+export function recurrenceValid(rec: EditableRecurrence): boolean {
+  if (rec.frequency === "") return true;
+  if (!(rec.interval >= 1)) return false;
+  if (rec.end === "count" && !(rec.count >= 1)) return false;
+  if (rec.end === "until" && parseDateParts(rec.until) === null) return false;
+  return true;
+}
+
+/** The byDay weekday code (`mo`/`tu`/…) for the form's current start, or "" when unparseable. The
+ * weekly picker seeds this when the user first turns repeating on, so the checked day matches what an
+ * empty-byDay weekly rule actually does (repeat on the start's weekday) rather than showing none. */
+export function startWeekdayCode(edits: EditableEvent): string {
+  const p = partsFromInput(edits.start, edits.allDay);
+  return p ? weekdayCode(p) : "";
+}
+
+const RECURRENCE_ERROR =
+  "Enter a valid repeat: an interval of 1 or more, a positive count, or a valid end date.";
 
 /**
  * The edit form's working copy of a base event: every editable property as a flat shape. Dates are
@@ -1041,6 +1224,7 @@ export interface EditableEvent {
   status: string;
   freeBusyStatus: string;
   privacy: string;
+  recurrence: EditableRecurrence;
 }
 
 function dateInput(p: DateParts): string {
@@ -1081,6 +1265,7 @@ export function eventToEditable(event: CalendarEvent): EditableEvent {
     status: event.status ?? "",
     freeBusyStatus: event.freeBusyStatus ?? "",
     privacy: event.privacy ?? "",
+    recurrence: ruleToEditable(event),
   };
 }
 
@@ -1207,8 +1392,9 @@ function rebuildLocations(
 }
 
 // The editable properties rebuilt back into their JSCalendar shapes (undefined = property removed).
-// One source of truth so the optimistic event and the patch can't drift. recurrenceRule/participants/
-// keywords/color/uid/calendarIds are absent here → never touched → carried through.
+// One source of truth so the optimistic event and the patch can't drift. recurrenceRule IS rebuilt
+// here (carried verbatim when unchanged); participants/keywords/color/uid/calendarIds are absent →
+// never touched → carried through.
 interface RebuiltEventProps {
   title: string | undefined;
   description: string | undefined;
@@ -1220,6 +1406,7 @@ interface RebuiltEventProps {
   duration: string | undefined;
   timeZone: string | null | undefined;
   showWithoutTime: true | undefined;
+  recurrenceRule: RecurrenceRule | undefined;
 }
 
 // Caller MUST ensure the when is valid (editableEventError === null) before rebuilding a CHANGED
@@ -1237,6 +1424,15 @@ function rebuildEvent(baseline: CalendarEvent, edits: EditableEvent): RebuiltEve
   const when: WhenProps = whenChanged(baseline, edits)
     ? (editableWhen(edits) ?? carryVerbatim)
     : carryVerbatim;
+  // Recurrence: carry the baseline rule VERBATIM when unchanged (preserves a server rule the editor
+  // can't represent exactly — the no-op guard); rebuild from the editor when changed, anchoring the
+  // weekly/monthly specifics on the event's (possibly edited) start.
+  const recurrenceRule = recurrenceChanged(baseline, edits)
+    ? editableToRule(
+        edits.recurrence,
+        partsFromInput(edits.start, edits.allDay) ?? eventStartParts(baseline),
+      )
+    : baseline.recurrenceRule;
   return {
     title: rebuildScalar(edits.title, baseline.title),
     description: rebuildScalar(edits.description, baseline.description),
@@ -1248,37 +1444,61 @@ function rebuildEvent(baseline: CalendarEvent, edits: EditableEvent): RebuiltEve
     duration: when.duration,
     timeZone: when.timeZone,
     showWithoutTime: when.showWithoutTime,
+    recurrenceRule,
   };
 }
 
 const WHEN_ERROR = "Enter a valid start and end; the end can't be before the start.";
 
 /**
- * A validation message for the EDIT form's when-fields, or null when valid. Only flags a when the
- * user actually CHANGED (an unchanged event is always valid — it loaded from the server), so opening
- * a malformed-looking event and saving without touching the time never blocks. The store action gates
- * on this too (enforcement at the boundary, not just the UI).
+ * The WHEN-field validation message, or null when valid. With a `baseline` (edit) only a CHANGED when
+ * is flagged (an unchanged event loaded from the server is always valid — opening + saving without
+ * touching the time never blocks); without one (create) any invalid when is flagged. Field-scoped so
+ * the form can show it under the date fields independently of the recurrence error (and they can both
+ * surface at once). Pure.
  */
-export function editableEventError(baseline: CalendarEvent, edits: EditableEvent): string | null {
-  if (whenChanged(baseline, edits) && editableWhen(edits) === null) {
-    return WHEN_ERROR;
-  }
-  return null;
+export function whenErrorMessage(
+  baseline: CalendarEvent | null,
+  edits: EditableEvent,
+): string | null {
+  const validate = baseline ? whenChanged(baseline, edits) : true;
+  return validate && editableWhen(edits) === null ? WHEN_ERROR : null;
 }
 
 /**
- * A validation message for the CREATE form's when-fields, or null when valid. Unlike the edit path
- * (which carries an unchanged baseline through), a create always needs a concrete, valid when — so
- * this flags any unparseable/end-before-start when outright. Same message as the edit path.
+ * The RECURRENCE validation message, or null when valid. Change-gated for edit (an event that loaded
+ * with an exotic rule stays savable until the user touches the repeat) and unconditional for create —
+ * the SAME gating as {@link whenErrorMessage}, so the displayed error and the Save gate (which is built
+ * from these) can't disagree. Field-scoped for the recurrence block. Pure.
  */
+export function recurrenceErrorMessage(
+  baseline: CalendarEvent | null,
+  edits: EditableEvent,
+): string | null {
+  const validate = baseline ? recurrenceChanged(baseline, edits) : true;
+  return validate && !recurrenceValid(edits.recurrence) ? RECURRENCE_ERROR : null;
+}
+
+/**
+ * The combined edit-form validation message (when, then recurrence), or null. The store boundary
+ * ({@link saveEvent}) gates on this; the form shows each part in its own place via the two field-scoped
+ * helpers above. Only flags what the user CHANGED (the no-op invariant).
+ */
+export function editableEventError(baseline: CalendarEvent, edits: EditableEvent): string | null {
+  return whenErrorMessage(baseline, edits) ?? recurrenceErrorMessage(baseline, edits);
+}
+
+/** The combined CREATE-form validation message (when, then recurrence), or null. A create has no
+ * baseline to carry through, so both parts validate outright. */
 export function createEventError(edits: EditableEvent): string | null {
-  return editableWhen(edits) === null ? WHEN_ERROR : null;
+  return whenErrorMessage(null, edits) ?? recurrenceErrorMessage(null, edits);
 }
 
 /**
  * Apply the form's working copy onto the base event, producing the full event for an OPTIMISTIC store
- * write. Properties the form doesn't expose (recurrenceRule, participants, keywords, color, uid,
- * calendarIds, …) are carried through untouched; an emptied editable property is removed.
+ * write. Properties the form doesn't expose (participants, keywords, color, uid, calendarIds, …) are
+ * carried through untouched; an emptied editable property is removed; the recurrence rule is rebuilt
+ * (or carried verbatim when unchanged).
  */
 export function editableToEvent(baseline: CalendarEvent, edits: EditableEvent): CalendarEvent {
   const next = { ...baseline };
@@ -1293,9 +1513,9 @@ export function editableToEvent(baseline: CalendarEvent, edits: EditableEvent): 
 /**
  * Build the MINIMAL `CalendarEvent/set update` patch from the form's working copy: a whole-property
  * JSON pointer per editable property that actually changed (deep-compared against the baseline), set
- * to its rebuilt value or `null` to remove it. Unchanged properties — and every property the form
- * doesn't expose (recurrenceRule, participants, …) — are absent, so the patch never rewrites or
- * clobbers them. An all-unchanged edit yields `{}` (the store action treats that as a no-op).
+ * to its rebuilt value or `null` to remove it (e.g. turning a repeat off emits `recurrenceRule: null`).
+ * Unchanged properties — and every property the form doesn't expose (participants, …) — are absent, so
+ * the patch never rewrites or clobbers them. An all-unchanged edit yields `{}` (a no-op for the store).
  */
 export function editableToPatch(baseline: CalendarEvent, edits: EditableEvent): CalendarEventPatch {
   const patch: CalendarEventPatch = {};
@@ -1312,9 +1532,9 @@ export function editableToPatch(baseline: CalendarEvent, edits: EditableEvent): 
 // ---------------------------------------------------------------------------
 // Create — a NEW event from a blank working copy, reusing the same rebuildEvent as the edit path so
 // the two transforms can't drift. The create form exposes the SAME editable set as edit (title, when,
-// location, description, status/free-busy/privacy); recurrence + participants are NOT settable here
-// (the form has no field, and Stalwart drops participants on create anyway — probed live), so they're
-// simply absent from the body. The server assigns `uid` and the id.
+// location, description, status/free-busy/privacy, AND the recurrence rule — a new event can be made
+// recurring); participants are NOT settable (no field, and Stalwart drops them on create anyway —
+// probed live), so they're absent from the body. The server assigns `uid` and the id.
 // ---------------------------------------------------------------------------
 
 // The rebuild "original" for a create: an Event with no editable props set, so rebuildEvent treats
@@ -1350,6 +1570,7 @@ export function emptyEditableEvent(now: Date = new Date()): EditableEvent {
     status: "",
     freeBusyStatus: "",
     privacy: "",
+    recurrence: emptyRecurrence(),
   };
 }
 
@@ -1366,10 +1587,11 @@ export function editableHasContent(edits: EditableEvent): boolean {
 
 /**
  * Build the `CalendarEvent/set create` body from the form's working copy: `@type` + the chosen
- * `calendarIds` plus every editable property that survives the rebuild (blanks dropped). No `id` or
- * `uid` — the server assigns both (a client-chosen uid buys nothing here and risks a collision on a
- * duplicate create). Recurrence/participants are absent (not exposed). Same {@link rebuildEvent} as
- * the edit/patch transforms, so they can't drift. Caller MUST ensure {@link editableHasContent}.
+ * `calendarIds` plus every editable property that survives the rebuild (blanks dropped) — including a
+ * `recurrenceRule` when the editor set one. No `id` or `uid` — the server assigns both (a client-chosen
+ * uid buys nothing here and risks a collision on a duplicate create). Participants are absent (not
+ * exposed). Same {@link rebuildEvent} as the edit/patch transforms, so they can't drift. Caller MUST
+ * ensure {@link editableHasContent}.
  */
 export function createEventBody(
   edits: EditableEvent,

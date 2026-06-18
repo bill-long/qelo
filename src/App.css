@@ -2285,6 +2285,65 @@ textarea.event-edit-input {
   flex: 1 1 12rem;
 }
 
+/* Recurrence editor: a bordered group holding the repeat select + its conditional sub-fields. */
+.event-edit-recurrence {
+  margin: 0 0 1.1rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.event-edit-recurrence > legend {
+  padding: 0 0.4rem;
+}
+
+.event-edit-recurrence .event-edit-field:last-child {
+  margin-bottom: 0;
+}
+
+/* "Every [N] week(s)" — the interval input sits inline with its unit label. */
+.event-edit-interval {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.event-edit-interval .event-edit-label {
+  margin-bottom: 0;
+}
+
+.event-edit-interval .event-edit-input {
+  inline-size: 4.5rem;
+}
+
+.event-edit-unit {
+  color: var(--ink-soft);
+}
+
+/* Weekday picker + monthly radios: borderless inner fieldsets (the outer group owns the border). */
+.event-edit-weekdays,
+.event-edit-monthly {
+  margin: 0 0 1.1rem;
+  padding: 0;
+  border: 0;
+}
+
+.event-edit-weekdays {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.9rem;
+}
+
+.event-edit-weekday {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.event-edit-monthly .event-edit-check:last-child {
+  margin-bottom: 0;
+}
+
 .event-edit-error {
   margin: 0 0 1rem;
   padding: 0.6rem 0.8rem;

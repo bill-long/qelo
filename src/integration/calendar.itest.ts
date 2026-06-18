@@ -7,7 +7,12 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { CAP_CALENDARS, CAP_CORE, methodResult } from "@/jmap/methods";
 import type { Id } from "@/jmap/types";
-import { emptyEditableEvent, eventToEditable } from "@/lib/calendar";
+import {
+  type EditableEvent,
+  emptyEditableEvent,
+  emptyRecurrence,
+  eventToEditable,
+} from "@/lib/calendar";
 import {
   calendarAccountId,
   calendarEvents,
@@ -299,12 +304,93 @@ describe("calendar (live Stalwart)", () => {
     expect(created?.participants).toBeUndefined();
   });
 
+  it("creates a recurring event from the recurrence editor's working copy", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    const title = `Recur ${tag}`;
+    const start = localDateTime(4, 9).slice(0, 16);
+    const end = localDateTime(4, 10).slice(0, 16);
+    const edits = {
+      ...emptyEditableEvent(),
+      title,
+      start,
+      end,
+      timeZone: "America/New_York",
+      // Weekly, 4 times — the editor's working copy the way EventEditForm builds it.
+      recurrence: {
+        ...emptyRecurrence(),
+        frequency: "weekly" as const,
+        end: "count" as const,
+        count: 4,
+      },
+    };
+
+    const result = await createEvent(edits, { [calId]: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("create failed");
+    createdIds.push(result.id);
+
+    // It expands into multiple occurrences, and the base event carries the rule we built.
+    await loadUntil(() => countByTitle(title) >= 2);
+    const base = await resolveBaseEvent(occurrenceIdFor(title));
+    expect(base?.recurrenceRule?.frequency).toBe("weekly");
+    expect(base?.recurrenceRule?.count).toBe(4);
+  });
+
+  it("makes a plain event recurring, then edits the rule for the whole series", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    const title = `Series ${tag}`;
+    // A non-recurring seed.
+    await seedEvents(calId, [{ title, start: localDateTime(3, 9) }]);
+    await loadUntil(() => countByTitle(title) >= 1);
+
+    // (1) Add a weekly rule via saveEvent (the "all events" path — adds recurrenceRule to the base).
+    let base = await resolveBaseEvent(occurrenceIdFor(title));
+    expect(base?.recurrenceRule).toBeUndefined();
+    if (!base) throw new Error("unreachable");
+    let result = await saveEvent(occurrenceIdFor(title), base.id, base, {
+      ...eventToEditable(base),
+      recurrence: { ...emptyRecurrence(), frequency: "weekly" },
+    });
+    expect(result.ok).toBe(true);
+    await loadUntil(() => countByTitle(title) >= 2); // now expands
+
+    // (2) Change the rule for the whole series: weekly → daily.
+    base = await resolveBaseEvent(occurrenceIdFor(title));
+    expect(base?.recurrenceRule?.frequency).toBe("weekly");
+    if (!base) throw new Error("unreachable");
+    result = await saveEvent(occurrenceIdFor(title), base.id, base, {
+      ...eventToEditable(base),
+      recurrence: { ...emptyRecurrence(), frequency: "daily", end: "count", count: 5 },
+    });
+    expect(result.ok).toBe(true);
+    await loadUntil(() => countByTitle(title) >= 2);
+    const after = await resolveBaseEvent(occurrenceIdFor(title));
+    expect(after?.recurrenceRule?.frequency).toBe("daily");
+    expect(after?.recurrenceRule?.count).toBe(5);
+  });
+
   it("rejects a contentless create without a round trip", async () => {
     // No title → editableHasContent is false → the store action refuses before any /set.
     const result = await createEvent(emptyEditableEvent(), { b: true });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.reason).toBe("empty");
+  });
+
+  it("rejects a create with an invalid recurrence at the store boundary", async () => {
+    // A valid title + when but an invalid repeat (count 0) — the store enforces recurrence validity
+    // before any CalendarEvent/set, even though the form's Save gate would already block it.
+    const edits: EditableEvent = {
+      ...emptyEditableEvent(),
+      title: "Bad recur",
+      recurrence: { ...emptyRecurrence(), frequency: "weekly", end: "count", count: 0 },
+    };
+    const result = await createEvent(edits, { b: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toBe("invalid");
   });
 
   it("deletes an event via the store action, resolving the base id from the synthetic occurrence", async () => {

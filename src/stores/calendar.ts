@@ -27,6 +27,7 @@ import {
   editableToPatch,
   freshOccurrenceIdForBase,
   pickBaseEvent,
+  recurrenceValid,
   visibleRange,
 } from "@/lib/calendar";
 import { handleAuthFailure, jmap, session } from "./account";
@@ -402,8 +403,9 @@ export type SaveEventResult =
  * agenda id the user was viewing (the optimistic write target — the store is keyed by occurrence ids).
  * The patch is the diff between the baseline and the edits, so it carries only the properties the user
  * changed — issued as ONE `CalendarEvent/set update` (a JSON-pointer patch) that touches only those
- * pointers, leaving `recurrenceRule`/`participants`/etc. untouched. Resolves with a
- * {@link SaveEventResult} (never rejects) so the form can surface a failure inline.
+ * pointers (which may include `recurrenceRule` when the repeat changed — editing a recurring event
+ * here changes the WHOLE series), leaving unedited properties (`participants`/etc.) untouched. Resolves
+ * with a {@link SaveEventResult} (never rejects) so the form can surface a failure inline.
  *
  * The agenda is an EXPANDED view (synthetic-keyed, un-upsertable by base id — see syncCalendar), so:
  *  - the optimistic write overlays the changed NON-temporal properties onto the viewed occurrence for
@@ -432,7 +434,8 @@ export async function saveEvent(
 
   // Optimistic overlay of the changed NON-temporal props onto the viewed occurrence (snapshot it for
   // a revert). Temporal props (start/duration/timeZone/showWithoutTime) belong to each occurrence and
-  // are left to the reconcile re-query; calendarIds/recurrence are untouched.
+  // are left to the reconcile re-query; calendarIds is untouched. A recurrence-rule change isn't
+  // overlaid either — it re-expands the series, which only the full re-query can rebuild.
   const occurrence = calendarEvents[occurrenceId];
   const restore = occurrence ? (structuredClone(unwrap(occurrence)) as CalendarEvent) : null;
   if (occurrence) {
@@ -520,7 +523,7 @@ export type CreateEventResult =
   | { ok: true; id: Id }
   | {
       ok: false;
-      reason: "empty" | "no-account" | "auth" | "refused" | "error";
+      reason: "empty" | "invalid" | "no-account" | "auth" | "refused" | "error";
       error?: SetError;
     };
 
@@ -554,6 +557,9 @@ export async function createEvent(
   calendarIds: Record<string, true>,
 ): Promise<CreateEventResult> {
   if (!editableHasContent(edits)) return { ok: false, reason: "empty" };
+  // Enforce recurrence validity at the store boundary too (not just the form): a programmatic caller
+  // with an invalid repeat (interval/count < 1, bad until) must be refused before any CalendarEvent/set.
+  if (!recurrenceValid(edits.recurrence)) return { ok: false, reason: "invalid" };
   const accountId = calendarAccountId();
   if (!accountId) return { ok: false, reason: "no-account" };
 
@@ -627,9 +633,10 @@ export type DeleteEventResult =
  * `CalendarEvent/set destroy` targets that base. A null resolution returns `unresolved` rather than
  * risk destroying the wrong series, so the caller keeps the read-only detail.
  *
- * RECURRING-EVENT CAVEAT: with no recurrence editing this milestone, destroying the base id removes the
- * WHOLE series (probed live — every occurrence vanishes), not just the viewed occurrence; deleting a
- * single occurrence (a `recurrenceOverrides` exception) is out of scope. The confirm copy says as much.
+ * RECURRING-EVENT CAVEAT: destroying the base id removes the WHOLE series (probed live — every
+ * occurrence vanishes), not just the viewed occurrence; per-occurrence delete (a `recurrenceOverrides`
+ * `excluded` exception) is not yet wired here (a later branch of the recurrence-editing milestone), so
+ * a delete still acts on the whole series. The confirm copy says as much.
  *
  * The clicked occurrence is pruned from `calendarEvents` + `eventIds` (and the selection cleared if it
  * pointed at it) optimistically for instant feedback; on success a full-window reconcile re-query

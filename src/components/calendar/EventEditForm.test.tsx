@@ -99,6 +99,82 @@ describe("EventEditForm", () => {
   });
 });
 
+describe("EventEditForm recurrence editor", () => {
+  const weekly = event({
+    title: "Standup",
+    start: "2026-07-06T09:00:00",
+    timeZone: "America/New_York",
+    duration: "PT30M",
+    recurrenceRule: { "@type": "RecurrenceRule", frequency: "weekly", interval: 2 },
+  });
+
+  it("seeds the repeat select + interval from the base rule and shows the weekday picker", () => {
+    render(() => (
+      <EventEditForm mode="edit" event={weekly} occurrenceId="eaaaaau" onClose={() => {}} />
+    ));
+    expect((screen.getByLabelText("Repeat") as HTMLSelectElement).value).toBe("weekly");
+    expect((screen.getByLabelText("Repeat every") as HTMLInputElement).value).toBe("2");
+    // Weekly reveals the weekday checkboxes.
+    expect(screen.getByLabelText("Mon")).toBeTruthy();
+  });
+
+  it("hides the sub-fields for a non-repeating event and reveals them on choosing a frequency", () => {
+    render(() => <EventEditForm mode="create" calendars={[calendar({})]} onClose={() => {}} />);
+    expect((screen.getByLabelText("Repeat") as HTMLSelectElement).value).toBe("");
+    expect(screen.queryByLabelText("Repeat every")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Repeat"), { target: { value: "monthly" } });
+    expect(screen.getByLabelText("Repeat every")).toBeTruthy();
+    // Monthly reveals the day-of-month / Nth-weekday choice (not the weekday checkboxes).
+    expect(screen.getByLabelText("On this day of the month")).toBeTruthy();
+    expect(screen.queryByLabelText("Mon")).toBeNull();
+  });
+
+  it("reveals the occurrences field and blocks save on a non-positive count", () => {
+    render(() => (
+      <EventEditForm mode="edit" event={weekly} occurrenceId="eaaaaau" onClose={() => {}} />
+    ));
+    fireEvent.change(screen.getByLabelText("Ends"), { target: { value: "count" } });
+    const occ = screen.getByLabelText("Occurrences") as HTMLInputElement;
+    expect(occ).toBeTruthy();
+    fireEvent.input(occ, { target: { value: "0" } });
+    expect(screen.getByRole("alert").textContent).toMatch(/valid repeat/i);
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("surfaces the when error AND the recurrence error at once (neither masks the other)", () => {
+    render(() => (
+      <EventEditForm mode="edit" event={weekly} occurrenceId="eaaaaau" onClose={() => {}} />
+    ));
+    fireEvent.input(screen.getByLabelText("End"), { target: { value: "2026-07-06T08:00" } }); // when
+    fireEvent.input(screen.getByLabelText("Repeat every"), { target: { value: "0" } }); // recurrence
+    const alerts = screen.getAllByRole("alert").map((a) => a.textContent ?? "");
+    expect(alerts.some((t) => /end can't be before/i.test(t))).toBe(true);
+    expect(alerts.some((t) => /valid repeat/i.test(t))).toBe(true);
+    expect((screen.getByLabelText("End") as HTMLInputElement).getAttribute("aria-invalid")).toBe(
+      "true",
+    );
+  });
+
+  it("keeps at least one weekday checked (can't uncheck the last one)", () => {
+    // `weekly` starts 2026-07-06 (Monday) with no byDay → Mon is the lone seeded day.
+    render(() => (
+      <EventEditForm mode="edit" event={weekly} occurrenceId="eaaaaau" onClose={() => {}} />
+    ));
+    const mon = screen.getByLabelText("Mon") as HTMLInputElement;
+    expect(mon.checked).toBe(true);
+    fireEvent.click(mon); // try to uncheck the only selected day
+    expect((screen.getByLabelText("Mon") as HTMLInputElement).checked).toBe(true); // stays checked
+  });
+
+  it("seeds the start's weekday when switching a fresh event to weekly", () => {
+    // A create seeded at a known date; switching to Weekly should check that day, not show none.
+    render(() => <EventEditForm mode="create" calendars={[calendar({})]} onClose={() => {}} />);
+    fireEvent.input(screen.getByLabelText("Start"), { target: { value: "2026-07-08T09:00" } }); // Wed
+    fireEvent.change(screen.getByLabelText("Repeat"), { target: { value: "weekly" } });
+    expect((screen.getByLabelText("Wed") as HTMLInputElement).checked).toBe(true);
+  });
+});
+
 describe("EventEditForm create mode", () => {
   it("shows the create header + a default valid slot, gating Create on a title", () => {
     render(() => <EventEditForm mode="create" calendars={[calendar({})]} onClose={() => {}} />);
