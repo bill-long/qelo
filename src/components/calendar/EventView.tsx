@@ -174,7 +174,9 @@ export function EventView() {
   function close() {
     // close() the native dialog FIRST so the browser restores focus to the element that opened it (the
     // grid chip / agenda row), then clear the signals (which unmounts the now-closed dialog via Show).
-    dialogRef?.close();
+    // Guard on `open` so this is a single, well-defined close (the dialog may already be closed on some
+    // paths) — close() is the one place that closes, paired with the cancel handler's preventDefault.
+    if (dialogRef?.open) dialogRef.close();
     setCreatingEvent(false);
     setSelectedEventId(null);
   }
@@ -192,7 +194,12 @@ export function EventView() {
         ref={dialogRef}
         class="event-slideover"
         aria-label={creatingEvent() ? "New event" : "Event details"}
-        onCancel={() => close()}
+        onCancel={(e) => {
+          // Escape: stop the browser's default close so this component is the single closer (close()
+          // runs dialogRef.close() + clears the signals), matching the composer's ownership pattern.
+          e.preventDefault();
+          close();
+        }}
       >
         <button
           type="button"
