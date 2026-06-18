@@ -491,6 +491,29 @@ describe("calendar (live Stalwart)", () => {
     expect(after?.recurrenceRule?.until).toBeTruthy(); // the rule was capped, not removed
   });
 
+  it("'following' from the FIRST occurrence destroys the whole series (no empty orphan)", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    const [baseId] = (await seedEvents(calId, [
+      { title: `DelAll ${tag}`, start: localDateTime(3, 9), weekly: true },
+    ])) as [Id];
+    await loadUntil(() => countByTitle(`DelAll ${tag}`) >= 2);
+
+    // Deleting "this and following" from the FIRST occurrence (recurrenceId === the master start) would
+    // cap the rule before any occurrence — an empty orphan series — so it degrades to a whole-series
+    // destroy: every occurrence vanishes AND the base is gone (not a phantom capped-to-empty event).
+    const { id: occId, recurrenceId } = occurrenceAt(`DelAll ${tag}`, 0);
+    const result = await deleteEvent(occId, "following", recurrenceId);
+    expect(result.ok).toBe(true);
+    createdIds.splice(createdIds.indexOf(baseId), 1); // destroyed server-side
+
+    await loadUntil(() => countByTitle(`DelAll ${tag}`) === 0);
+    expect(countByTitle(`DelAll ${tag}`)).toBe(0);
+    // The base is truly gone — resolveBaseEvent can't find it (a capped-to-empty series would still
+    // resolve to a base carrying a rule).
+    expect(await resolveBaseEvent(occId)).toBeNull();
+  });
+
   /** Re-query the visible window (after a nav) until `pred` holds (indexing can lag). */
   async function navUntil(pred: () => boolean, timeoutMs = 20000): Promise<void> {
     const deadline = Date.now() + timeoutMs;

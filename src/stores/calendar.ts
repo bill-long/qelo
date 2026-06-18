@@ -758,7 +758,9 @@ export type DeleteEventResult =
  *                  occurrence; the rest of the series is untouched and the base object survives.
  *  - "following" → `update { [baseId]: { recurrenceRule: <capped> } }` ({@link truncateSeriesBefore}):
  *                  cap the series `until` one day before the split so this occurrence and every later
- *                  one are excluded (no tail — unlike the EDIT split). Also non-destructive.
+ *                  one are excluded (no tail — unlike the EDIT split). Also non-destructive — UNLESS
+ *                  the split is the series' FIRST occurrence (recurrenceId === the master start), where
+ *                  capping would leave an empty orphan series, so it degrades to the whole-series destroy.
  * The per-occurrence modes need a recurring base AND a recurrenceId; absent either they degrade to the
  * whole-series destroy (so a real series can't be silently left untouched).
  *
@@ -799,16 +801,22 @@ export async function deleteEvent(
   const baseId = base.id;
 
   // Build the CalendarEvent/set body for the chosen mode. The per-occurrence modes need a recurring
-  // base AND a recurrenceId; absent either (or for a non-recurring event) they degrade to the
-  // whole-series destroy — so an occurrence we couldn't identify is never silently left in place.
+  // base AND a recurrenceId; everything that ISN'T a viable per-occurrence delete (the "all" mode, a
+  // non-recurring base, a missing recurrenceId, OR a "following" from the very first occurrence —
+  // capping before the series start would leave an empty orphan series, so deleting "this and
+  // following" from the start means deleting the whole series) degrades to the whole-series destroy.
+  // `cap` is null for any of those "following" cases (truncateSeriesBefore returns null for a
+  // non-recurring base), so the destroy branch below stays reachable and an occurrence we couldn't
+  // identify is never silently left in place.
   let setOpts: { update?: Record<string, CalendarEventPatch>; destroy?: Id[] };
   if (mode === "this" && recurrenceId && base.recurrenceRule) {
     setOpts = { update: { [baseId]: excludeOverride(recurrenceId) } };
-  } else if (mode === "following" && recurrenceId && base.recurrenceRule) {
-    const cap = truncateSeriesBefore(base, recurrenceId);
-    setOpts = cap ? { update: { [baseId]: cap } } : { destroy: [baseId] };
   } else {
-    setOpts = { destroy: [baseId] };
+    const cap =
+      mode === "following" && recurrenceId && recurrenceId !== base.start
+        ? truncateSeriesBefore(base, recurrenceId)
+        : null;
+    setOpts = cap ? { update: { [baseId]: cap } } : { destroy: [baseId] };
   }
 
   // Optimistic prune of the clicked occurrence: snapshot it (to a plain object — not a live store
