@@ -2166,13 +2166,6 @@ textarea.contact-edit-input {
   font-size: 0.9rem;
 }
 
-/* A recurring delete acts on the whole series — warn in the confirm prompt (own line). */
-.event-delete-note {
-  display: block;
-  color: var(--danger);
-  font-size: 0.8rem;
-}
-
 .event-delete-button {
   flex: none;
   padding: 0.3rem 0.85rem;
@@ -2211,6 +2204,56 @@ textarea.contact-edit-input {
 .event-delete-cancel:disabled {
   cursor: progress;
   opacity: 0.6;
+}
+
+/* A recurring delete offers a scope chooser (this / this-and-following / all): stack the prompt above
+   a column of full-width choices, like the edit apply-mode chooser, instead of the inline row. */
+.event-delete-confirm-series {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.4rem;
+}
+
+.event-delete-confirm-series .event-delete-prompt {
+  align-self: start;
+}
+
+/* A scope option in the recurring-delete chooser (mirrors .event-edit-apply-option) — danger-tinted
+   to read as a delete, full-width, left-aligned. */
+.event-delete-mode {
+  padding: 0.45rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--danger);
+  font: inherit;
+  font-weight: 600;
+  text-align: start;
+  cursor: pointer;
+}
+
+.event-delete-mode:hover:not([aria-disabled="true"]):not(:disabled) {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+/* aria-disabled (not native disabled) keeps the option focusable so AT users can reach it and read the
+   hint explaining why it's unavailable (the qelo-review-checklist disabled-state rule). */
+.event-delete-mode[aria-disabled="true"],
+.event-delete-mode:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.event-delete-mode-hint {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+}
+
+.event-delete-confirm-series .event-delete-cancel {
+  align-self: start;
+  margin-top: 0.15rem;
 }
 
 /* Event edit form (column 3, replacing the read-only detail). */

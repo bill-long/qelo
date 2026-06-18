@@ -430,7 +430,7 @@ describe("calendar (live Stalwart)", () => {
     expect(countByTitle(`Del ${tag}`)).toBe(0);
   });
 
-  it("deletes a recurring event's whole series (base destroy removes every occurrence)", async () => {
+  it("deletes a recurring event's whole series with the 'all' mode (base destroy)", async () => {
     const calId = await defaultCalendarId();
     const tag = Math.random().toString(36).slice(2, 8);
     const [baseId] = (await seedEvents(calId, [
@@ -438,14 +438,57 @@ describe("calendar (live Stalwart)", () => {
     ])) as [Id];
     await loadUntil(() => countByTitle(`Series ${tag}`) >= 2);
 
-    // Deleting from any one occurrence destroys the base, which removes the WHOLE series (probed live;
-    // single-occurrence delete is out of scope this milestone).
-    const result = await deleteEvent(occurrenceIdFor(`Series ${tag}`));
+    // The "all" mode destroys the base, which removes the WHOLE series (probed live).
+    const result = await deleteEvent(occurrenceIdFor(`Series ${tag}`), "all");
     expect(result.ok).toBe(true);
     createdIds.splice(createdIds.indexOf(baseId), 1);
 
     await loadUntil(() => countByTitle(`Series ${tag}`) === 0);
     expect(countByTitle(`Series ${tag}`)).toBe(0);
+  });
+
+  it("deletes ONE occurrence with the 'this' mode (excluded override; the series survives)", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    await seedEvents(calId, [{ title: `DelOne ${tag}`, start: localDateTime(3, 9), weekly: true }]);
+    await loadUntil(() => countByTitle(`DelOne ${tag}`) >= 3);
+    const total = countByTitle(`DelOne ${tag}`);
+
+    // Exclude the 2nd occurrence — a non-destructive recurrenceOverrides:{excluded:true} update on the
+    // base, so just that occurrence vanishes and the rest of the series stays.
+    const { id: occId, recurrenceId } = occurrenceAt(`DelOne ${tag}`, 1);
+    setSelectedEventId(occId);
+    const result = await deleteEvent(occId, "this", recurrenceId);
+    expect(result.ok).toBe(true);
+    expect(selectedEventId()).toBeNull(); // the pruned occurrence was selected → selection clears
+
+    // Exactly one occurrence is gone; the rest remain; the base series rule is untouched.
+    await loadUntil(() => countByTitle(`DelOne ${tag}`) === total - 1);
+    expect(countByTitle(`DelOne ${tag}`)).toBe(total - 1);
+    const after = await resolveBaseEvent(occurrenceIdFor(`DelOne ${tag}`));
+    expect(after?.recurrenceRule?.frequency).toBe("weekly"); // series survives
+  });
+
+  it("deletes this + all following with the 'following' mode (rule capped, no tail)", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    // Daily interval-1 — the tightest spacing for the −1-day cap (the classic split off-by-one).
+    await seedEvents(calId, [{ title: `DelFwd ${tag}`, start: localDateTime(2, 9), daily: true }]);
+    await loadUntil(() => countByTitle(`DelFwd ${tag}`) >= 5);
+    const headKept = 3; // occurrences before the split (indices 0,1,2) — these survive
+
+    // Delete from the 4th occurrence onward: the base rule's `until` caps one day before it, removing
+    // it and every later occurrence with NO tail created (unlike the EDIT split).
+    const { id: occId, recurrenceId } = occurrenceAt(`DelFwd ${tag}`, headKept);
+    const result = await deleteEvent(occId, "following", recurrenceId);
+    expect(result.ok).toBe(true);
+
+    // Exactly the occurrences before the split survive (no off-by-one swallowing the prior day, no
+    // leaking the split day into the head); the base series persists (capped, not destroyed).
+    await loadUntil(() => countByTitle(`DelFwd ${tag}`) === headKept);
+    expect(countByTitle(`DelFwd ${tag}`)).toBe(headKept);
+    const after = await resolveBaseEvent(occurrenceIdFor(`DelFwd ${tag}`));
+    expect(after?.recurrenceRule?.until).toBeTruthy(); // the rule was capped, not removed
   });
 
   /** Re-query the visible window (after a nav) until `pred` holds (indexing can lag). */

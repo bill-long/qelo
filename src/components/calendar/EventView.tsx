@@ -18,6 +18,7 @@ import {
   formatDayHeading,
   formatTimeRange,
   isRecurring,
+  type RecurrenceDeleteMode,
   recurrenceSummary,
   writableCalendars,
 } from "@/lib/calendar";
@@ -38,8 +39,8 @@ import { creatingEvent, selectedEventId, setCreatingEvent, setSelectedEventId } 
  * calendar, location(s), description, status/free-busy/privacy, participants (read-only), recurrence
  * badge — with Edit (resolves the BASE event behind the selected occurrence → {@link EventEditForm},
  * passing the occurrence's recurrenceId so the form can offer the this/this-and-following/all apply
- * modes), Delete (two-step confirm), and the create form (via `creatingEvent`). Per-occurrence DELETE
- * modes and participant editing stay deferred.
+ * modes), Delete (a two-step confirm that, for a recurring event, offers the matching this/this-and-
+ * following/all scopes), and the create form (via `creatingEvent`). Participant editing stays deferred.
  */
 export function EventView() {
   const [editing, setEditing] = createSignal(false);
@@ -139,13 +140,17 @@ export function EventView() {
     }
   }
 
-  async function handleDelete(occurrenceId: string) {
+  async function handleDelete(
+    occurrenceId: string,
+    mode: RecurrenceDeleteMode,
+    recurrenceId: string | null,
+  ) {
     if (deleting()) return; // re-entry guard (the confirm stays mounted during the base-id resolve)
     setDeleteError(null);
     setDeleting(true);
     let result: Awaited<ReturnType<typeof deleteEvent>>;
     try {
-      result = await deleteEvent(occurrenceId);
+      result = await deleteEvent(occurrenceId, mode, recurrenceId);
     } finally {
       setDeleting(false);
     }
@@ -234,7 +239,9 @@ export function EventView() {
                         deleteError={deleteError()}
                         deleting={deleting()}
                         onEdit={() => void handleEdit()}
-                        onDelete={(id) => void handleDelete(id)}
+                        onDelete={(id, mode, recurrenceId) =>
+                          void handleDelete(id, mode, recurrenceId)
+                        }
                       />
                     }
                   >
@@ -290,6 +297,16 @@ function participantLabel(p: {
   return uri ? uri.replace(/^mailto:/i, "") : null;
 }
 
+// The recurring-delete scope chooser's options (mirrors EventEditForm's APPLY_MODES). "this"/"following"
+// need the occurrence's recurrenceId; without one (a degenerate record / a selected series master) they
+// disable and only "All events" stays available. A non-recurring event never shows these (a single
+// Delete). The store maps "all" → base destroy, "this" → an excluded override, "following" → a capped rule.
+const DELETE_MODES: { value: RecurrenceDeleteMode; label: string }[] = [
+  { value: "this", label: "This event" },
+  { value: "following", label: "This and following events" },
+  { value: "all", label: "All events" },
+];
+
 function EventDetail(props: {
   event: CalendarEvent;
   canEdit: boolean;
@@ -299,7 +316,7 @@ function EventDetail(props: {
   deleteError: string | null;
   deleting: boolean;
   onEdit: () => void;
-  onDelete: (occurrenceId: string) => void;
+  onDelete: (occurrenceId: string, mode: RecurrenceDeleteMode, recurrenceId: string | null) => void;
 }) {
   const event = () => props.event;
   // The inline two-step delete confirm (Bill's choice, the contacts Branch-5 pattern): the Delete
@@ -341,6 +358,11 @@ function EventDetail(props: {
   );
   const description = createMemo(() => event().description?.trim() ?? "");
   const recurrence = createMemo(() => recurrenceText(event()));
+  // Whether the delete confirm offers the per-occurrence scope chooser (a recurring event) vs a single
+  // Delete. `occRecurrenceId` is the viewed occurrence's recurrence id — required for the "this"/
+  // "following" scopes; null (a series master selected directly, or a degenerate record) disables them.
+  const recurring = createMemo(() => isRecurring(event()));
+  const occRecurrenceId = () => event().recurrenceId ?? null;
   // Status/free-busy/privacy badges — only the ones the server actually set.
   const badges = createMemo(() =>
     [event().status, event().freeBusyStatus, event().privacy].filter((b): b is string =>
@@ -379,29 +401,73 @@ function EventDetail(props: {
               </div>
             }
           >
-            <fieldset class="event-delete-confirm" aria-label="Confirm delete event">
-              <span class="event-delete-prompt">
-                Delete “{title()}”?
-                <Show when={isRecurring(event())}>
-                  <span class="event-delete-note">This deletes the whole repeating series.</span>
+            <fieldset
+              class="event-delete-confirm"
+              classList={{ "event-delete-confirm-series": recurring() }}
+              aria-label="Confirm delete event"
+            >
+              <span class="event-delete-prompt">Delete “{title()}”?</span>
+              <Show
+                when={recurring()}
+                fallback={
+                  <>
+                    {/* Non-recurring: a single delete (the store's whole-event destroy). */}
+                    <button
+                      type="button"
+                      class="event-delete-button"
+                      disabled={props.deleting}
+                      onClick={() => props.onDelete(props.event.id, "all", null)}
+                    >
+                      {props.deleting ? "Deleting…" : "Delete"}
+                    </button>
+                    <button
+                      type="button"
+                      class="event-delete-cancel"
+                      disabled={props.deleting}
+                      onClick={() => setConfirmingDelete(false)}
+                    >
+                      Cancel
+                    </button>
+                  </>
+                }
+              >
+                {/* Recurring: pick how widely the delete applies. "This event"/"This and following"
+                    need the occurrence's recurrenceId; without one they're aria-disabled (kept
+                    focusable + a hint, the qelo-review-checklist disabled-state rule) and only
+                    "All events" fires. Each option dispatches the delete directly. */}
+                <For each={DELETE_MODES}>
+                  {(opt) => {
+                    const disabled = () => opt.value !== "all" && occRecurrenceId() === null;
+                    return (
+                      <button
+                        type="button"
+                        class="event-delete-mode"
+                        aria-disabled={disabled() ? "true" : undefined}
+                        disabled={props.deleting}
+                        onClick={() => {
+                          if (disabled() || props.deleting) return;
+                          props.onDelete(props.event.id, opt.value, occRecurrenceId());
+                        }}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  }}
+                </For>
+                <Show when={occRecurrenceId() === null}>
+                  <p class="event-delete-mode-hint">
+                    This occurrence couldn’t be identified, so only “All events” is available.
+                  </p>
                 </Show>
-              </span>
-              <button
-                type="button"
-                class="event-delete-button"
-                disabled={props.deleting}
-                onClick={() => props.onDelete(props.event.id)}
-              >
-                {props.deleting ? "Deleting…" : "Delete"}
-              </button>
-              <button
-                type="button"
-                class="event-delete-cancel"
-                disabled={props.deleting}
-                onClick={() => setConfirmingDelete(false)}
-              >
-                Cancel
-              </button>
+                <button
+                  type="button"
+                  class="event-delete-cancel"
+                  disabled={props.deleting}
+                  onClick={() => setConfirmingDelete(false)}
+                >
+                  Cancel
+                </button>
+              </Show>
             </fieldset>
           </Show>
         </div>

@@ -215,14 +215,44 @@ describe("EventView delete affordance", () => {
     expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
   });
 
-  it("warns that a recurring delete removes the whole series", () => {
+  it("offers the three scope choices for a recurring occurrence, all enabled with a recurrenceId", () => {
     reset();
     setCalendars({ b: calendar({}) });
     setCalendarEvents({
       e: event({
         id: "e",
         title: "Weekly",
+        start: "2026-09-14T09:00:00",
+        // An expanded occurrence carries the recurrenceId (the rule lives on the base) — both flag it
+        // as recurring, so the scope chooser appears and every scope is available.
+        recurrenceId: "2026-09-14T09:00:00",
+      }),
+    });
+    setSelectedEventId("e");
+
+    render(() => <EventView />);
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    // The scope chooser replaces the single Delete: all three modes, none aria-disabled.
+    for (const name of ["This event", "This and following events", "All events"]) {
+      const btn = screen.getByRole("button", { name });
+      expect(btn).toBeTruthy();
+      expect(btn.getAttribute("aria-disabled")).toBeNull();
+    }
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+    // No "couldn't be identified" hint when the occurrence has a recurrenceId.
+    expect(screen.queryByText(/couldn’t be identified/)).toBeNull();
+  });
+
+  it("disables the per-occurrence scopes when a recurring master has no recurrenceId", () => {
+    reset();
+    setCalendars({ b: calendar({}) });
+    setCalendarEvents({
+      e: event({
+        id: "e",
+        title: "Weekly master",
         start: "2026-09-07T09:00:00",
+        // A series master (rule but no recurrenceId) — recurring, but no single occurrence to target,
+        // so only "All events" stays available.
         recurrenceRule: { frequency: "weekly" },
       }),
     });
@@ -230,10 +260,21 @@ describe("EventView delete affordance", () => {
 
     render(() => <EventView />);
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-    expect(screen.getByText("This deletes the whole repeating series.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "This event" }).getAttribute("aria-disabled")).toBe(
+      "true",
+    );
+    expect(
+      screen
+        .getByRole("button", { name: "This and following events" })
+        .getAttribute("aria-disabled"),
+    ).toBe("true");
+    expect(
+      screen.getByRole("button", { name: "All events" }).getAttribute("aria-disabled"),
+    ).toBeNull();
+    expect(screen.getByText(/couldn’t be identified/)).toBeTruthy();
   });
 
-  it("does not warn about a series for a non-recurring event", () => {
+  it("shows a single Delete (no scope choices) for a non-recurring event", () => {
     reset();
     setCalendars({ b: calendar({}) });
     setCalendarEvents({ e: event({ id: "e", title: "One-off", start: "2026-09-07T09:00:00" }) });
@@ -241,7 +282,9 @@ describe("EventView delete affordance", () => {
 
     render(() => <EventView />);
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-    expect(screen.queryByText("This deletes the whole repeating series.")).toBeNull();
+    expect(screen.getByRole("button", { name: "Delete" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "This event" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "All events" })).toBeNull();
   });
 
   it("resets a half-armed confirm when the selected event changes", () => {
