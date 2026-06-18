@@ -1569,9 +1569,11 @@ function minusOneDayLocalDateTime(dt: string): string {
 /**
  * The "this occurrence" override: the user's delta (vs the form's BASE baseline) written as a
  * JSCalendar PatchObject under `recurrenceOverrides[recurrenceId]` (a whole-map merge write on the
- * base id). Returns null when nothing changed (a no-op — the store treats it as success without a
- * round trip). `recurrenceRule` is never overridden per-occurrence (a single occurrence can't carry
- * its own rule), so it's dropped from the delta. The override ALWAYS carries a `title` (the Stalwart
+ * base id). Returns null when there's nothing to override on ONE occurrence — i.e. nothing changed, OR
+ * the ONLY change was the `recurrenceRule` (a single occurrence can't carry its own rule, so the rule
+ * is dropped from the delta BEFORE the emptiness check). So a null result is NOT a guaranteed full no-op
+ * — the caller (`saveEvent`) degrades a null override to the whole-series patch. `recurrenceRule` is
+ * never overridden per-occurrence. The override ALWAYS carries a `title` (the Stalwart
  * visibility workaround above) — the changed title if edited, else the baseline's, so the override
  * never strips the occurrence out of the expansion. Since the form is base-seeded, a `start` in the
  * delta moves the occurrence to exactly the date/time the form showed (WYSIWYG); the form opening on

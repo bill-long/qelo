@@ -465,6 +465,11 @@ export function EventEditForm(props: EventEditFormProps) {
               Changing how the event repeats applies to the whole series.
             </p>
           </Show>
+          <Show when={recurrenceId === null}>
+            <p class="event-edit-apply-hint">
+              This occurrence couldn’t be identified, so only “All events” is available.
+            </p>
+          </Show>
           <button
             type="button"
             class="event-edit-cancel"

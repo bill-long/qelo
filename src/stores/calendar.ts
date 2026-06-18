@@ -571,8 +571,10 @@ export async function saveEvent(
     // navigated mid-save); a non-recurring save keeps its stable id. On a refusal nothing changed, so
     // leave the selection on the original id.
     if (!refused && recurrenceId && selectedEventId() === occurrenceId) {
-      const repointed = occurrenceIdByRecurrenceId(recurrenceId, eventIds(), calendarEvents);
-      if (repointed) setSelectedEventId(repointed);
+      // Set to the match, or CLEAR (null) when none matches — a time move / split / out-of-window edit
+      // leaves no occurrence at the original recurrenceId, so clearing explicitly closes the detail back
+      // to the grid rather than stranding the selection on a now-stale synthetic id.
+      setSelectedEventId(occurrenceIdByRecurrenceId(recurrenceId, eventIds(), calendarEvents));
     }
   } catch (err) {
     handleAuthFailure(err);
