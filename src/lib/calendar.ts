@@ -312,6 +312,19 @@ function startOfWeek(d: Date): Date {
   return m;
 }
 
+/**
+ * The padded month grid's [start, end) as local-midnight Dates: the Sunday on/before the 1st through
+ * the Sunday after the week containing the last day (whole Sun-start weeks). The SINGLE source for both
+ * {@link visibleRange}("month") (the JMAP query window) and {@link monthGridWeeks} (the rendered
+ * cells), so the fetched window and the grid can never diverge.
+ */
+function monthGridBounds(anchor: Date): { start: Date; end: Date } {
+  const start = startOfWeek(new Date(anchor.getFullYear(), anchor.getMonth(), 1));
+  const end = startOfWeek(new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0));
+  end.setDate(end.getDate() + 7); // exclusive: the Sunday after the last visible week
+  return { start, end };
+}
+
 /** Today at local midnight — the default anchor and the "Today" reset target. */
 export function todayAnchor(now: Date = new Date()): Date {
   return localMidnight(now);
@@ -334,11 +347,8 @@ export function visibleRange(
   anchor: Date,
 ): { after: string; before: string } {
   if (mode === "month") {
-    const gridStart = startOfWeek(new Date(anchor.getFullYear(), anchor.getMonth(), 1));
-    const lastOfMonth = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0);
-    const gridEnd = startOfWeek(lastOfMonth);
-    gridEnd.setDate(gridEnd.getDate() + 7); // exclusive: the Sunday after the last visible week
-    return { after: gridStart.toISOString(), before: gridEnd.toISOString() };
+    const { start, end } = monthGridBounds(anchor);
+    return { after: start.toISOString(), before: end.toISOString() };
   }
   const from = mode === "week" ? startOfWeek(anchor) : localMidnight(anchor);
   const days = mode === "week" ? 7 : mode === "day" ? 1 : AGENDA_WINDOW_DAYS;
@@ -417,6 +427,190 @@ export function createSeedDate(mode: CalendarViewMode, anchor: Date, now: Date =
     now.getHours(),
     now.getMinutes(),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Month grid (Calendar Views milestone, Branch B). Pure layout for a Sun-start day-cell grid (4–6
+// rows of 7): the week×day matrix of dates (monthGridWeeks), the inclusive day-keys an event spans
+// (eventCoversDays), and the per-week lane assignment of event segments with overflow (layoutMonth).
+// Day math is UTC-on-the-literal-components (no DST shift), matching visibleRange and the rest of this
+// file — a "YYYY-MM-DD" is treated as a UTC-midnight scalar purely for comparison/enumeration, never
+// as a tz-bearing instant.
+// ---------------------------------------------------------------------------
+
+const DAY_MS = 86_400_000;
+
+/** A single month-grid day cell: its "YYYY-MM-DD" key, day-of-month number, whether it belongs to the
+ * anchor's month (vs a leading/trailing adjacent-month day, which the UI dims), and whether it's today. */
+export interface DayCell {
+  key: string;
+  day: number;
+  inMonth: boolean;
+  isToday: boolean;
+}
+
+// "YYYY-MM-DD" for a Date's LOCAL calendar day (the grid is local-day based, like visibleRange).
+function localDateKey(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+// UTC-midnight ms for a "YYYY-MM-DD" key — the canonical scalar for day comparisons/enumeration.
+function keyToUtcMs(key: string): number {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key);
+  return m ? Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : Number.NaN;
+}
+
+/**
+ * The month's day cells as a weeks×7 matrix, Sun-start, padded with adjacent-month days out to whole
+ * weeks (4–6 rows depending on the month's length + start weekday) — exactly the range
+ * {@link visibleRange}("month") queries. `now` parameterized for deterministic today-flagging in tests.
+ */
+export function monthGridWeeks(anchor: Date, now: Date = new Date()): DayCell[][] {
+  const year = anchor.getFullYear();
+  const month = anchor.getMonth();
+  const { start: gridStart, end: gridEnd } = monthGridBounds(anchor);
+  const todayKey = localDateKey(now);
+  const weeks: DayCell[][] = [];
+  const d = new Date(gridStart);
+  while (d < gridEnd) {
+    const week: DayCell[] = [];
+    for (let i = 0; i < 7; i += 1) {
+      const key = localDateKey(d);
+      week.push({
+        key,
+        day: d.getDate(),
+        inMonth: d.getFullYear() === year && d.getMonth() === month,
+        isToday: key === todayKey,
+      });
+      d.setDate(d.getDate() + 1);
+    }
+    weeks.push(week);
+  }
+  return weeks;
+}
+
+// The event's covered-day span as UTC-midnight ms [firstMs, lastMs], or null when it has no parseable
+// start. Half-open in time: an end exactly at local midnight — including an all-day P{n}D duration,
+// whose computed end is exclusive — occupies no time on that final day, so the last covered day steps
+// back, covering both the all-day exclusive-end AND a timed event ending at 00:00 in one rule. Clamped
+// so lastMs ≥ firstMs (a malformed end-before-start collapses to the start day).
+function eventDayRange(event: CalendarEvent): { firstMs: number; lastMs: number } | null {
+  const start = eventStartParts(event);
+  if (!start) return null;
+  const end = eventEndParts(event) ?? start;
+  const firstMs = Date.UTC(start.year, start.month - 1, start.day);
+  const endDayMs = Date.UTC(end.year, end.month - 1, end.day);
+  const endAtMidnight = end.hour === 0 && end.minute === 0 && end.second === 0;
+  let lastMs = endAtMidnight && endDayMs > firstMs ? endDayMs - DAY_MS : endDayMs;
+  if (lastMs < firstMs) lastMs = firstMs;
+  return { firstMs, lastMs };
+}
+
+/** The inclusive set of "YYYY-MM-DD" day-keys an event covers (one for a single-day event, the
+ * contiguous range for a multi-day/all-day span). Empty when the start is unparseable. */
+export function eventCoversDays(event: CalendarEvent): string[] {
+  const range = eventDayRange(event);
+  if (!range) return [];
+  const out: string[] = [];
+  for (let ms = range.firstMs; ms <= range.lastMs; ms += DAY_MS) {
+    const d = new Date(ms);
+    out.push(`${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`);
+  }
+  return out;
+}
+
+/** How many event lanes a month cell shows before collapsing the rest into "+N more". */
+export const MONTH_VISIBLE_LANES = 3;
+
+/** One positioned event in a month week row: the event, its clipped column span [startCol,endCol]
+ * (0–6, inclusive), its lane (vertical row within the cell band), whether the span continues beyond
+ * this week (so the bar renders an open edge), and whether it's a multi-day/all-day BAR vs a
+ * single-day CHIP. */
+export interface MonthSegment {
+  event: CalendarEvent;
+  startCol: number;
+  endCol: number;
+  lane: number;
+  continuesBefore: boolean;
+  continuesAfter: boolean;
+  isSpan: boolean;
+}
+
+/** A month week row's layout: the visible segments (lane < the visible-lane cap) and, per column
+ * (0–6), the count of hidden segments covering that day (the "+N more" overflow). */
+export interface MonthWeekLayout {
+  segments: MonthSegment[];
+  overflow: number[];
+}
+
+/**
+ * Lay events into each week row of `weeks`: assign every event covering the week a column span + a
+ * lane (greedy — the lowest lane with no column-overlap), so multi-day BARS and single-day CHIPS share
+ * one collision-free lane grid (a chip never renders under a bar). Spans are clipped to the week and
+ * flagged continuesBefore/After (the {after,before} query returns events overlapping the window, so a
+ * span can start before / end after a given row). Segments past `visibleLanes` are hidden and counted
+ * per covered column as overflow ("+N more"). Deterministic order — earlier start, then longer span,
+ * then bars before chips, then {@link compareEvents} — so the layout is stable across renders. Pure.
+ */
+export function layoutMonth(
+  events: CalendarEvent[],
+  weeks: DayCell[][],
+  visibleLanes: number = MONTH_VISIBLE_LANES,
+): MonthWeekLayout[] {
+  // Precompute each event's day range + bar/chip class once (skip the unparseable).
+  const items = events
+    .map((event) => {
+      const range = eventDayRange(event);
+      return range
+        ? { event, ...range, isSpan: isAllDay(event) || range.lastMs > range.firstMs }
+        : null;
+    })
+    .filter((it): it is NonNullable<typeof it> => it !== null);
+
+  return weeks.map((week) => {
+    const first = week[0];
+    const last = week[week.length - 1];
+    if (!first || !last) return { segments: [], overflow: new Array<number>(7).fill(0) };
+    const week0 = keyToUtcMs(first.key);
+    const week6 = keyToUtcMs(last.key);
+
+    const inWeek = items
+      .filter((it) => it.lastMs >= week0 && it.firstMs <= week6)
+      .map((it) => ({
+        event: it.event,
+        isSpan: it.isSpan,
+        startCol: Math.max(0, Math.round((it.firstMs - week0) / DAY_MS)),
+        endCol: Math.min(6, Math.round((it.lastMs - week0) / DAY_MS)),
+        continuesBefore: it.firstMs < week0,
+        continuesAfter: it.lastMs > week6,
+      }))
+      .sort(
+        (a, b) =>
+          a.startCol - b.startCol ||
+          b.endCol - b.startCol - (a.endCol - a.startCol) || // longer span first
+          (a.isSpan === b.isSpan ? 0 : a.isSpan ? -1 : 1) || // bars before chips
+          compareEvents(a.event, b.event),
+      );
+
+    // Greedy lane packing: place each segment in the lowest lane whose occupied column ranges don't
+    // overlap it; segments past the visible cap fall into per-column overflow instead of a lane.
+    const laneRanges: [number, number][][] = [];
+    const segments: MonthSegment[] = [];
+    const overflow = new Array<number>(7).fill(0);
+    for (const s of inWeek) {
+      let lane = 0;
+      while (laneRanges[lane]?.some(([ls, le]) => s.startCol <= le && ls <= s.endCol)) lane += 1;
+      let row = laneRanges[lane];
+      if (!row) {
+        row = [];
+        laneRanges[lane] = row;
+      }
+      row.push([s.startCol, s.endCol]);
+      if (lane < visibleLanes) segments.push({ ...s, lane });
+      else for (let c = s.startCol; c <= s.endCol; c += 1) overflow[c] = (overflow[c] ?? 0) + 1;
+    }
+    return { segments, overflow };
+  });
 }
 
 const FREQ_LABEL: Record<string, string> = {

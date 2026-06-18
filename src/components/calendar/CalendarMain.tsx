@@ -2,6 +2,7 @@ import { createEffect, Match, on, onMount, Switch } from "solid-js";
 import { CalendarNav } from "@/components/calendar/CalendarNav";
 import { CalendarViewSwitch, MODES } from "@/components/calendar/CalendarViewSwitch";
 import { EventList } from "@/components/calendar/EventList";
+import { MonthGrid } from "@/components/calendar/MonthGrid";
 import { loadCalendar, refetchWindow } from "@/stores/calendar";
 import { calendarAnchor, calendarViewMode } from "@/stores/ui";
 
@@ -17,10 +18,9 @@ function modeLabel(): string {
  * and re-queries the visible window whenever the view mode or anchor changes (navigation). It stays
  * mounted across mode switches, so the load/nav wiring lives here rather than on the per-mode bodies.
  *
- * Agenda is live; Day/Week/Month render a placeholder this branch — the month grid and week/day
- * time-grid land in the following branches of the calendar-views milestone, replacing the placeholder.
- * (The default mode stays "agenda" until the month grid exists, so the default never lands on a
- * placeholder.) Navigation works in every mode, including the agenda's back/forward paging.
+ * Agenda and Month are live; Day/Week render a placeholder until the week/day time-grid lands in the
+ * next branch of the calendar-views milestone. Month is the default landing (see stores/ui). Navigation
+ * works in every mode, including the agenda's back/forward paging.
  */
 export function CalendarMain() {
   // Lazy first load. loadCalendar is idempotent + never rejects, so firing it on mount is safe and a
@@ -41,9 +41,12 @@ export function CalendarMain() {
           <Match when={calendarViewMode() === "agenda"}>
             <EventList />
           </Match>
-          <Match when={calendarViewMode() !== "agenda"}>
+          <Match when={calendarViewMode() === "month"}>
+            <MonthGrid />
+          </Match>
+          <Match when={calendarViewMode() === "day" || calendarViewMode() === "week"}>
             <p class="agenda-note">
-              {modeLabel()} view arrives later in this milestone. Use Agenda for now.
+              {modeLabel()} view arrives later in this milestone. Use Agenda or Month for now.
             </p>
           </Match>
         </Switch>

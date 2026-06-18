@@ -2327,6 +2327,295 @@ textarea.event-edit-input {
   opacity: 0.55;
 }
 
+/* ---- Calendar: full-width surface + month grid (Calendar Views milestone) --------------- */
+
+/* The calendar view spans both content columns (the grid needs the room); the event detail rides
+   over it as a modal slide-over instead of a fixed third column. */
+.shell-calendar {
+  grid-column: 2 / 4;
+  min-width: 0;
+  background: var(--raised);
+  overflow: hidden;
+}
+
+/* The event-detail slide-over: a right-pinned modal <dialog> (showModal → focus trap + inert
+   background + ::backdrop + Escape, same as the composer). */
+.event-slideover {
+  inset: 0 0 0 auto;
+  width: min(440px, 100vw);
+  max-width: 100vw;
+  height: 100vh;
+  max-height: 100vh;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-left: 1px solid var(--line);
+  background: var(--raised);
+  color: var(--ink);
+  box-shadow: -18px 0 48px color-mix(in srgb, var(--ink) 22%, transparent);
+}
+
+/* Only the open dialog is a flex column (a closed <dialog> stays UA display:none — no flash). */
+.event-slideover[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.event-slideover::backdrop {
+  background: color-mix(in srgb, var(--ink) 30%, transparent);
+}
+
+.event-slideover-close {
+  align-self: flex-end;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  margin: 0.45rem 0.5rem 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 1.2rem;
+  cursor: pointer;
+}
+
+.event-slideover-close:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.event-slideover-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* The detail body scrolls below the close button. */
+.event-slideover .event-view {
+  flex: 1;
+  min-height: 0;
+}
+
+.month-grid {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: 0.5rem 0.6rem 0.7rem;
+}
+
+.month-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  padding: 0 0.25rem 0.3rem;
+}
+
+.month-weekday {
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.month-weeks {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  /* Floor ≈ date row (--date-h) + 3 lanes + the overflow row, so the "+N more" isn't clipped at the
+     minimum; rows grow to fill taller viewports. */
+  grid-auto-rows: minmax(6.5rem, 1fr);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  --lane-h: 1.15rem;
+  --date-h: 1.7rem;
+}
+
+.month-week {
+  position: relative;
+  min-height: 0;
+  border-top: 1px solid var(--line);
+  overflow: hidden; /* clip lanes/overflow to the row when the viewport is short */
+}
+
+.month-week:first-child {
+  border-top: none;
+}
+
+.month-week-cells {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  height: 100%;
+}
+
+.month-cell {
+  display: flex;
+  flex-direction: column;
+  padding: 0.15rem 0.25rem 0.25rem;
+  border-left: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.month-cell:first-child {
+  border-left: none;
+}
+
+.month-cell-date {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.4rem;
+  height: 1.4rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.month-cell.is-outside {
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+}
+
+.month-cell.is-outside .month-cell-date {
+  color: var(--ink-soft);
+  opacity: 0.7;
+}
+
+.month-cell.is-today .month-cell-date {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 999px;
+}
+
+/* "+N more" is a grid item in the segments overlay, placed in the row just below the visible lanes
+   (grid-row set inline = MONTH_VISIBLE_LANES + 1), so it aligns with the lanes + their gaps. */
+.month-more {
+  pointer-events: auto;
+  justify-self: start;
+  align-self: center;
+  min-width: 0;
+  margin-inline: 1px;
+  padding: 0 0.25rem;
+  border: none;
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.month-more:hover {
+  color: var(--accent);
+}
+
+.month-more:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* The event chips/bars (and the "+N more" row) float over the cells in a 7-column lane grid below the
+   date row, so a multi-day bar can span columns the per-cell flow can't. No horizontal padding: the
+   7 tracks must span the full row width to align column-for-column with .month-week-cells (whose
+   tracks also span full width); chips inset themselves via their own margin. */
+.month-week-segments {
+  position: absolute;
+  top: var(--date-h);
+  left: 0;
+  right: 0;
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  grid-auto-rows: var(--lane-h);
+  gap: 1px 0;
+  pointer-events: none;
+}
+
+.month-event {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+  margin-inline: 1px;
+  padding: 0 0.35rem;
+  border: none;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 0.74rem;
+  line-height: 1.1;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.month-event-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.month-event-time {
+  flex: none;
+  color: var(--ink-soft);
+}
+
+.month-event.is-bar {
+  background: var(--accent);
+  color: #fff;
+}
+
+.month-event.is-bar .month-event-time {
+  color: inherit;
+}
+
+.month-event.is-chip {
+  background: transparent;
+  color: var(--ink);
+}
+
+/* A single-day chip leads with a dot in the calendar accent (the bar shows the color via its fill). */
+.month-event.is-chip::before {
+  content: "";
+  flex: none;
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.month-event.continues-before {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  margin-inline-start: 0;
+}
+
+.month-event.continues-after {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  margin-inline-end: 0;
+}
+
+.month-event:hover {
+  background: var(--hover);
+}
+
+.month-event.is-bar:hover {
+  background: color-mix(in srgb, var(--accent) 88%, #000);
+}
+
+.month-event.is-selected {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.month-event:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --paper: #1b1916;

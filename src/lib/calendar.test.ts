@@ -12,6 +12,7 @@ import {
   type EditableEvent,
   editableHasContent,
   emptyEditableEvent,
+  eventCoversDays,
   eventDisplayTitle,
   eventEndParts,
   formatDayHeading,
@@ -20,6 +21,8 @@ import {
   groupEventsByDay,
   isAllDay,
   isRecurring,
+  layoutMonth,
+  monthGridWeeks,
   parseDateParts,
   parseDuration,
   rangeLabel,
@@ -590,5 +593,210 @@ describe("createSeedDate", () => {
     expect(createSeedDate("month", new Date(2027, 2, 1), now)).toEqual(
       new Date(2027, 2, 1, 14, 30),
     );
+  });
+});
+
+describe("monthGridWeeks", () => {
+  const now = new Date(2026, 5, 17); // Wed Jun 17 2026
+
+  it("pads the month out to whole Sun-start weeks, tagging in/out-of-month + today", () => {
+    // June 2026: 1st = Mon → grid starts Sun May 31; last = Tue Jun 30 → week ends Sat Jul 4. 5 rows.
+    const weeks = monthGridWeeks(new Date(2026, 5, 1), now);
+    expect(weeks.length).toBe(5);
+    expect(weeks.every((w) => w.length === 7)).toBe(true);
+    // First cell = the leading adjacent-month Sunday.
+    expect(weeks[0]?.[0]).toMatchObject({ key: "2026-05-31", day: 31, inMonth: false });
+    // June 1 is the next cell, in-month.
+    expect(weeks[0]?.[1]).toMatchObject({ key: "2026-06-01", day: 1, inMonth: true });
+    // Last cell = the trailing adjacent-month day.
+    expect(weeks[4]?.[6]).toMatchObject({ key: "2026-07-04", day: 4, inMonth: false });
+    // Today (Jun 17, Wed) lands in week index 2, column 3 (Sun14 Mon15 Tue16 Wed17), flagged once.
+    expect(weeks[2]?.[3]).toMatchObject({ key: "2026-06-17", isToday: true });
+    expect(weeks.flat().filter((c) => c.isToday).length).toBe(1);
+  });
+
+  it("yields a 4-row grid for a Feb that fills exactly four weeks", () => {
+    // Feb 2026: 1st = Sun, 28 days (non-leap) → exactly 4 weeks, no padding.
+    const weeks = monthGridWeeks(new Date(2026, 1, 10), now);
+    expect(weeks.length).toBe(4);
+    expect(weeks[0]?.[0]?.key).toBe("2026-02-01");
+    expect(weeks[3]?.[6]?.key).toBe("2026-02-28");
+    expect(weeks.flat().every((c) => c.inMonth)).toBe(true);
+  });
+
+  it("includes Feb 29 in a leap year", () => {
+    const weeks = monthGridWeeks(new Date(2024, 1, 15), now);
+    const leapDay = weeks.flat().find((c) => c.key === "2024-02-29");
+    expect(leapDay).toMatchObject({ day: 29, inMonth: true });
+  });
+
+  it("yields a 6-row grid for a long month starting late in the week", () => {
+    // May 2026: 1st = Fri, 31 days, 31st = Sun → 6 rows (Apr 26 … Jun 6).
+    const weeks = monthGridWeeks(new Date(2026, 4, 1), now);
+    expect(weeks.length).toBe(6);
+    expect(weeks[0]?.[0]?.key).toBe("2026-04-26");
+    expect(weeks[5]?.[6]?.key).toBe("2026-06-06");
+  });
+
+  it("handles the year boundary, dimming next-year trailing days", () => {
+    // Dec 2026: 1st = Tue → grid starts Sun Nov 29; last = Thu Dec 31 → week ends Sat Jan 2 2027.
+    const weeks = monthGridWeeks(new Date(2026, 11, 1), now);
+    expect(weeks[0]?.[0]?.key).toBe("2026-11-29");
+    const jan2 = weeks.flat().find((c) => c.key === "2027-01-02");
+    expect(jan2).toMatchObject({ day: 2, inMonth: false }); // next year → not in-month
+  });
+});
+
+describe("eventCoversDays", () => {
+  it("returns one key for a single-day timed event", () => {
+    expect(eventCoversDays(event({ start: "2026-06-17T09:00:00", duration: "PT1H" }))).toEqual([
+      "2026-06-17",
+    ]);
+  });
+
+  it("returns one key for a single all-day event (exclusive end steps back)", () => {
+    expect(
+      eventCoversDays(
+        event({ start: "2026-06-17T00:00:00", duration: "P1D", showWithoutTime: true }),
+      ),
+    ).toEqual(["2026-06-17"]);
+  });
+
+  it("returns the contiguous range for a multi-day all-day event", () => {
+    expect(
+      eventCoversDays(
+        event({ start: "2026-09-07T00:00:00", duration: "P3D", showWithoutTime: true }),
+      ),
+    ).toEqual(["2026-09-07", "2026-09-08", "2026-09-09"]);
+  });
+
+  it("covers each day a timed multi-day event touches", () => {
+    expect(eventCoversDays(event({ start: "2026-09-07T14:00:00", duration: "P2D" }))).toEqual([
+      "2026-09-07",
+      "2026-09-08",
+      "2026-09-09",
+    ]);
+  });
+
+  it("excludes the final day when a timed event ends exactly at midnight", () => {
+    // 22:00 + 2h = next day 00:00 — occupies no time on that day, so only the start day is covered.
+    expect(eventCoversDays(event({ start: "2026-06-17T22:00:00", duration: "PT2H" }))).toEqual([
+      "2026-06-17",
+    ]);
+    // 23:00 + 2h = next day 01:00 — genuinely spills into the next day.
+    expect(eventCoversDays(event({ start: "2026-06-17T23:00:00", duration: "PT2H" }))).toEqual([
+      "2026-06-17",
+      "2026-06-18",
+    ]);
+  });
+
+  it("is empty when the start is unparseable", () => {
+    expect(eventCoversDays(event({ start: undefined }))).toEqual([]);
+  });
+});
+
+describe("layoutMonth", () => {
+  const weeks = monthGridWeeks(new Date(2026, 5, 1)); // June 2026, 5 rows; week[2] = Sun14…Sat20
+
+  it("places a single-day chip in its day's column", () => {
+    const e = event({ id: "chip", start: "2026-06-17T09:00:00", duration: "PT1H" });
+    const layout = layoutMonth([e], weeks);
+    const seg = layout[2]?.segments.find((s) => s.event.id === "chip");
+    expect(seg).toMatchObject({ startCol: 3, endCol: 3, lane: 0, isSpan: false });
+    expect(seg?.continuesBefore).toBe(false);
+    expect(seg?.continuesAfter).toBe(false);
+  });
+
+  it("draws a multi-day all-day event as a bar spanning its columns", () => {
+    // Jun 16–18 inclusive (all-day P3D) → cols 2–4 of week[2], a bar.
+    const e = event({
+      id: "bar",
+      start: "2026-06-16T00:00:00",
+      duration: "P3D",
+      showWithoutTime: true,
+    });
+    const seg = layoutMonth([e], weeks)[2]?.segments.find((s) => s.event.id === "bar");
+    expect(seg).toMatchObject({ startCol: 2, endCol: 4, isSpan: true });
+  });
+
+  it("splits a span crossing a week boundary into per-row segments with open edges", () => {
+    // Fri Jun 19 → Mon Jun 22 (all-day): week[2] cols 5–6 (continuesAfter), week[3] cols 0–1
+    // (continuesBefore).
+    const e = event({
+      id: "split",
+      start: "2026-06-19T00:00:00",
+      duration: "P4D",
+      showWithoutTime: true,
+    });
+    const layout = layoutMonth([e], weeks);
+    expect(layout[2]?.segments.find((s) => s.event.id === "split")).toMatchObject({
+      startCol: 5,
+      endCol: 6,
+      continuesBefore: false,
+      continuesAfter: true,
+    });
+    expect(layout[3]?.segments.find((s) => s.event.id === "split")).toMatchObject({
+      startCol: 0,
+      endCol: 1,
+      continuesBefore: true,
+      continuesAfter: false,
+    });
+  });
+
+  it("clips a span starting before the grid window to the visible columns", () => {
+    // May 28 → Jun 2 (all-day): week[0] is May31…Jun6, so cols 0–2, continuesBefore (started May 28).
+    const e = event({
+      id: "early",
+      start: "2026-05-28T00:00:00",
+      duration: "P6D",
+      showWithoutTime: true,
+    });
+    const seg = layoutMonth([e], weeks)[0]?.segments.find((s) => s.event.id === "early");
+    expect(seg).toMatchObject({ startCol: 0, endCol: 2, continuesBefore: true });
+  });
+
+  it("packs overlapping events into separate lanes, bars before chips", () => {
+    const bar = event({
+      id: "bar",
+      start: "2026-06-16T00:00:00",
+      duration: "P3D",
+      showWithoutTime: true,
+    }); // cols 2–4
+    const chip = event({ id: "chip", start: "2026-06-17T09:00:00", duration: "PT1H" }); // col 3
+    const segs = layoutMonth([chip, bar], weeks)[2]?.segments ?? [];
+    expect(segs.find((s) => s.event.id === "bar")?.lane).toBe(0);
+    expect(segs.find((s) => s.event.id === "chip")?.lane).toBe(1); // overlaps the bar → next lane
+  });
+
+  it("keeps non-overlapping (exact-touch) spans in the same lane", () => {
+    const a = event({
+      id: "a",
+      start: "2026-06-15T00:00:00",
+      duration: "P2D",
+      showWithoutTime: true,
+    }); // cols 1–2
+    const b = event({
+      id: "b",
+      start: "2026-06-17T00:00:00",
+      duration: "P2D",
+      showWithoutTime: true,
+    }); // cols 3–4 (touches a's right edge but doesn't overlap)
+    const segs = layoutMonth([a, b], weeks)[2]?.segments ?? [];
+    expect(segs.find((s) => s.event.id === "a")?.lane).toBe(0);
+    expect(segs.find((s) => s.event.id === "b")?.lane).toBe(0);
+  });
+
+  it("collapses lanes past the visible cap into per-column overflow", () => {
+    const bar = event({
+      id: "bar",
+      start: "2026-06-16T00:00:00",
+      duration: "P3D",
+      showWithoutTime: true,
+    }); // lane 0, cols 2–4
+    const chip = event({ id: "chip", start: "2026-06-17T09:00:00", duration: "PT1H" }); // lane 1, col 3
+    const layout = layoutMonth([chip, bar], weeks, 1); // only 1 visible lane
+    expect(layout[2]?.segments.map((s) => s.event.id)).toEqual(["bar"]);
+    // The hidden chip is counted as overflow on its column (3) only.
+    expect(layout[2]?.overflow).toEqual([0, 0, 0, 1, 0, 0, 0]);
   });
 });

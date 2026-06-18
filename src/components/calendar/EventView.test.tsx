@@ -53,10 +53,13 @@ afterEach(() => {
 });
 
 describe("EventView", () => {
-  it("shows the empty state when nothing is selected", () => {
+  it("renders no slide-over when nothing is selected and not creating", () => {
     reset();
     render(() => <EventView />);
-    expect(screen.getByText("Select an event")).toBeTruthy();
+    // The detail is a modal slide-over now (re-homed from column 3): closed when there's nothing to
+    // show, so neither the dialog nor the empty-state copy is in the DOM.
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByText("Select an event")).toBeNull();
   });
 
   it("renders the focused-complete detail of the selected event", () => {
