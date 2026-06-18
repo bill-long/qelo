@@ -2239,10 +2239,17 @@ textarea.contact-edit-input {
 
 /* aria-disabled (not native disabled) keeps the option focusable so AT users can reach it and read the
    hint explaining why it's unavailable (the qelo-review-checklist disabled-state rule). */
-.event-delete-mode[aria-disabled="true"],
-.event-delete-mode:disabled {
+.event-delete-mode[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+/* The native disabled state on a scope option only ever fires while a delete is IN-FLIGHT (the
+   unavailable state uses aria-disabled above), so read it as in-progress — matching the sibling
+   .event-delete-button/.event-delete-cancel:disabled — not as an unavailable action. */
+.event-delete-mode:disabled {
+  cursor: progress;
+  opacity: 0.6;
 }
 
 .event-delete-mode-hint {
