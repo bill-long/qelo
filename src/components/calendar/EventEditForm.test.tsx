@@ -140,6 +140,28 @@ describe("EventEditForm recurrence editor", () => {
     expect(screen.getByRole("alert").textContent).toMatch(/valid repeat/i);
     expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
   });
+
+  it("surfaces the when error AND the recurrence error at once (neither masks the other)", () => {
+    render(() => (
+      <EventEditForm mode="edit" event={weekly} occurrenceId="eaaaaau" onClose={() => {}} />
+    ));
+    fireEvent.input(screen.getByLabelText("End"), { target: { value: "2026-07-06T08:00" } }); // when
+    fireEvent.input(screen.getByLabelText("Repeat every"), { target: { value: "0" } }); // recurrence
+    const alerts = screen.getAllByRole("alert").map((a) => a.textContent ?? "");
+    expect(alerts.some((t) => /end can't be before/i.test(t))).toBe(true);
+    expect(alerts.some((t) => /valid repeat/i.test(t))).toBe(true);
+    expect((screen.getByLabelText("End") as HTMLInputElement).getAttribute("aria-invalid")).toBe(
+      "true",
+    );
+  });
+
+  it("seeds the start's weekday when switching a fresh event to weekly", () => {
+    // A create seeded at a known date; switching to Weekly should check that day, not show none.
+    render(() => <EventEditForm mode="create" calendars={[calendar({})]} onClose={() => {}} />);
+    fireEvent.input(screen.getByLabelText("Start"), { target: { value: "2026-07-08T09:00" } }); // Wed
+    fireEvent.change(screen.getByLabelText("Repeat"), { target: { value: "weekly" } });
+    expect((screen.getByLabelText("Wed") as HTMLInputElement).checked).toBe(true);
+  });
 });
 
 describe("EventEditForm create mode", () => {

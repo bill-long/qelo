@@ -849,7 +849,9 @@ const FREQ_LABEL: Record<string, string> = {
   monthly: "Monthly",
   yearly: "Yearly",
 };
-const FREQ_UNIT: Record<string, string> = {
+/** Frequency → singular unit ("week"), shared by the recurrence summary badge AND the edit form's
+ * interval label so the two can't drift. */
+export const FREQ_UNIT: Record<string, string> = {
   daily: "day",
   weekly: "week",
   monthly: "month",
@@ -1131,9 +1133,10 @@ export function editableToRule(
     rule.byDay = rec.weekdays.map((day): NDay => ({ "@type": "NDay", day }));
   } else if (rec.frequency === "monthly" && start) {
     if (rec.monthlyNth) {
-      rule.byDay = [
-        { "@type": "NDay", day: weekdayCode(start), nthOfPeriod: nthWeekdayOfMonth(start) },
-      ];
+      // The 5th occurrence of a weekday doesn't exist in every month; emit -1 ("the last <weekday>")
+      // so the series doesn't silently skip the short months (the common calendar-UI convention).
+      const nth = nthWeekdayOfMonth(start);
+      rule.byDay = [{ "@type": "NDay", day: weekdayCode(start), nthOfPeriod: nth >= 5 ? -1 : nth }];
     } else {
       rule.byMonthDay = [start.day];
     }
@@ -1152,8 +1155,19 @@ export function editableToRule(
 // Whether the user changed the recurrence vs the baseline's derived editable. Drives "carry the
 // original rule verbatim" (unchanged) vs "rebuild from the editor" (changed) — the same lossy-rebuild
 // guard the when-fields use, so the no-op invariant holds regardless of editableToRule's fidelity.
+// Field-wise (like whenChanged), NOT JSON.stringify — so the comparison can't hinge on key order.
 function recurrenceChanged(baseline: CalendarEvent, edits: EditableEvent): boolean {
-  return JSON.stringify(ruleToEditable(baseline)) !== JSON.stringify(edits.recurrence);
+  const b = ruleToEditable(baseline);
+  const e = edits.recurrence;
+  return (
+    b.frequency !== e.frequency ||
+    b.interval !== e.interval ||
+    b.weekdays.join(",") !== e.weekdays.join(",") ||
+    b.monthlyNth !== e.monthlyNth ||
+    b.end !== e.end ||
+    b.count !== e.count ||
+    b.until !== e.until
+  );
 }
 
 /** Whether the recurrence working copy is internally valid: a positive interval, and (when chosen) a
@@ -1164,6 +1178,14 @@ export function recurrenceValid(rec: EditableRecurrence): boolean {
   if (rec.end === "count" && !(rec.count >= 1)) return false;
   if (rec.end === "until" && parseDateParts(rec.until) === null) return false;
   return true;
+}
+
+/** The byDay weekday code (`mo`/`tu`/…) for the form's current start, or "" when unparseable. The
+ * weekly picker seeds this when the user first turns repeating on, so the checked day matches what an
+ * empty-byDay weekly rule actually does (repeat on the start's weekday) rather than showing none. */
+export function startWeekdayCode(edits: EditableEvent): string {
+  const p = partsFromInput(edits.start, edits.allDay);
+  return p ? weekdayCode(p) : "";
 }
 
 const RECURRENCE_ERROR =
@@ -1415,33 +1437,47 @@ function rebuildEvent(baseline: CalendarEvent, edits: EditableEvent): RebuiltEve
 const WHEN_ERROR = "Enter a valid start and end; the end can't be before the start.";
 
 /**
- * A validation message for the EDIT form's when-fields, or null when valid. Only flags a when the
- * user actually CHANGED (an unchanged event is always valid — it loaded from the server), so opening
- * a malformed-looking event and saving without touching the time never blocks. The store action gates
- * on this too (enforcement at the boundary, not just the UI).
+ * The WHEN-field validation message, or null when valid. With a `baseline` (edit) only a CHANGED when
+ * is flagged (an unchanged event loaded from the server is always valid — opening + saving without
+ * touching the time never blocks); without one (create) any invalid when is flagged. Field-scoped so
+ * the form can show it under the date fields independently of the recurrence error (and they can both
+ * surface at once). Pure.
  */
-export function editableEventError(baseline: CalendarEvent, edits: EditableEvent): string | null {
-  if (whenChanged(baseline, edits) && editableWhen(edits) === null) {
-    return WHEN_ERROR;
-  }
-  // Recurrence, like the when, is only validated when the user CHANGED it — an event that loaded with
-  // an exotic server rule stays editable/savable without touching the repeat.
-  if (recurrenceChanged(baseline, edits) && !recurrenceValid(edits.recurrence)) {
-    return RECURRENCE_ERROR;
-  }
-  return null;
+export function whenErrorMessage(
+  baseline: CalendarEvent | null,
+  edits: EditableEvent,
+): string | null {
+  const validate = baseline ? whenChanged(baseline, edits) : true;
+  return validate && editableWhen(edits) === null ? WHEN_ERROR : null;
 }
 
 /**
- * A validation message for the CREATE form's when-fields, or null when valid. Unlike the edit path
- * (which carries an unchanged baseline through), a create always needs a concrete, valid when — so
- * this flags any unparseable/end-before-start when outright. Same message as the edit path.
+ * The RECURRENCE validation message, or null when valid. Change-gated for edit (an event that loaded
+ * with an exotic rule stays savable until the user touches the repeat) and unconditional for create —
+ * the SAME gating as {@link whenErrorMessage}, so the displayed error and the Save gate (which is built
+ * from these) can't disagree. Field-scoped for the recurrence block. Pure.
  */
+export function recurrenceErrorMessage(
+  baseline: CalendarEvent | null,
+  edits: EditableEvent,
+): string | null {
+  const validate = baseline ? recurrenceChanged(baseline, edits) : true;
+  return validate && !recurrenceValid(edits.recurrence) ? RECURRENCE_ERROR : null;
+}
+
+/**
+ * The combined edit-form validation message (when, then recurrence), or null. The store boundary
+ * ({@link saveEvent}) gates on this; the form shows each part in its own place via the two field-scoped
+ * helpers above. Only flags what the user CHANGED (the no-op invariant).
+ */
+export function editableEventError(baseline: CalendarEvent, edits: EditableEvent): string | null {
+  return whenErrorMessage(baseline, edits) ?? recurrenceErrorMessage(baseline, edits);
+}
+
+/** The combined CREATE-form validation message (when, then recurrence), or null. A create has no
+ * baseline to carry through, so both parts validate outright. */
 export function createEventError(edits: EditableEvent): string | null {
-  if (editableWhen(edits) === null) return WHEN_ERROR;
-  // A create always validates the recurrence outright (no baseline to carry through).
-  if (!recurrenceValid(edits.recurrence)) return RECURRENCE_ERROR;
-  return null;
+  return whenErrorMessage(null, edits) ?? recurrenceErrorMessage(null, edits);
 }
 
 /**

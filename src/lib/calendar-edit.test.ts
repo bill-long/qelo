@@ -14,14 +14,18 @@ import {
   editableToPatch,
   editableToRule,
   editableWhen,
+  emptyEditableEvent,
   emptyRecurrence,
   eventMayDelete,
   eventMayWrite,
   eventToEditable,
   pickBaseEvent,
+  recurrenceErrorMessage,
   recurrenceValid,
   resolveBaseEventId,
   ruleToEditable,
+  startWeekdayCode,
+  whenErrorMessage,
 } from "./calendar";
 
 function event(partial: Partial<CalendarEvent>): CalendarEvent {
@@ -483,6 +487,16 @@ describe("editableToRule", () => {
     });
   });
 
+  it("maps a 5th-weekday monthly start to nthOfPeriod -1 (last), so short months aren't skipped", () => {
+    // 2026-07-29 is the 5th Wednesday of July; a literal nthOfPeriod:5 would skip months with only 4.
+    const fifthWed = { year: 2026, month: 7, day: 29, hour: 9, minute: 0, second: 0 };
+    expect(
+      editableToRule(base({ frequency: "monthly", monthlyNth: true }), fifthWed),
+    ).toMatchObject({
+      byDay: [{ "@type": "NDay", day: "we", nthOfPeriod: -1 }],
+    });
+  });
+
   it("emits count, or an until carrying the start's time-of-day", () => {
     expect(
       editableToRule(base({ frequency: "weekly", end: "count", count: 8 }), START),
@@ -506,6 +520,50 @@ describe("recurrenceValid", () => {
     expect(
       recurrenceValid({ ...emptyRecurrence(), frequency: "daily", end: "until", until: "nope" }),
     ).toBe(false);
+  });
+});
+
+describe("startWeekdayCode", () => {
+  it("returns the byDay code for the form's start, or '' when unparseable", () => {
+    // 2026-07-06 is a Monday.
+    expect(startWeekdayCode({ ...eventToEditable(timedEvent()), start: "2026-07-06T09:00" })).toBe(
+      "mo",
+    );
+    expect(startWeekdayCode({ ...eventToEditable(timedEvent()), start: "" })).toBe("");
+  });
+});
+
+describe("when/recurrence error messages are independent and change-gated", () => {
+  const base = timedEvent({ recurrenceRule: { frequency: "weekly" } });
+
+  it("surfaces a when error and a recurrence error simultaneously (neither masks the other)", () => {
+    const broken = edit(base, {
+      end: "2000-01-01T00:00", // end before start → when error
+      recurrence: { ...emptyRecurrence(), frequency: "weekly", interval: 0 }, // → recurrence error
+    });
+    expect(whenErrorMessage(base, broken)).toMatch(/end can't be before/i);
+    expect(recurrenceErrorMessage(base, broken)).toMatch(/valid repeat/i);
+  });
+
+  it("does NOT flag an UNCHANGED (server-loaded) recurrence, even if the editor would reject it", () => {
+    // interval 0 is impossible from ruleToEditable (it coerces to >=1), so an unchanged rule never
+    // trips recurrenceErrorMessage — the display matches the change-gated Save gate.
+    expect(recurrenceErrorMessage(base, eventToEditable(base))).toBeNull();
+    // Once the user CHANGES it to something invalid, it's flagged.
+    expect(
+      recurrenceErrorMessage(
+        base,
+        edit(base, { recurrence: { ...emptyRecurrence(), frequency: "daily", interval: 0 } }),
+      ),
+    ).toMatch(/valid repeat/i);
+  });
+
+  it("validates the recurrence outright in create mode (null baseline)", () => {
+    const bad: EditableEvent = {
+      ...emptyEditableEvent(),
+      recurrence: { ...emptyRecurrence(), frequency: "weekly", end: "count", count: 0 },
+    };
+    expect(recurrenceErrorMessage(null, bad)).toMatch(/valid repeat/i);
   });
 });
 
