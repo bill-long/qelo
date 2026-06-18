@@ -17,12 +17,18 @@ import {
   deleteEvent,
   eventIds,
   loadCalendar,
+  refetchWindow,
   resetCalendar,
   resolveBaseEvent,
   saveEvent,
   syncCalendar,
 } from "@/stores/calendar";
-import { selectedEventId, setSelectedEventId } from "@/stores/ui";
+import {
+  selectedEventId,
+  setCalendarAnchor,
+  setCalendarViewMode,
+  setSelectedEventId,
+} from "@/stores/ui";
 import { connectTestClient, disconnectTestClient, resetStores, testClient } from "./harness";
 
 const CALENDAR_USING = [CAP_CORE, CAP_CALENDARS];
@@ -335,6 +341,40 @@ describe("calendar (live Stalwart)", () => {
 
     await loadUntil(() => countByTitle(`Series ${tag}`) === 0);
     expect(countByTitle(`Series ${tag}`)).toBe(0);
+  });
+
+  /** Re-query the visible window (after a nav) until `pred` holds (indexing can lag). */
+  async function navUntil(pred: () => boolean, timeoutMs = 20000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      await refetchWindow();
+      if (pred()) return;
+      if (Date.now() >= deadline) throw new Error("nav window never reached the expected state");
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+
+  it("navigates to a different window and re-queries that window's events", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    // One event in the default agenda window (today→+56d) and one ~7 months out (well outside it).
+    await seedEvents(calId, [{ title: `Near ${tag}`, start: localDateTime(5, 9) }]);
+    const far = new Date();
+    far.setDate(far.getDate() + 210);
+    const farStart = `${far.getFullYear()}-${pad2(far.getMonth() + 1)}-${pad2(far.getDate())}T09:00:00`;
+    await seedEvents(calId, [{ title: `Far ${tag}`, start: farStart }]);
+
+    // Initial load (default agenda window) holds the near event, not the far one.
+    await loadUntil(() => countByTitle(`Near ${tag}`) >= 1);
+    expect(countByTitle(`Far ${tag}`)).toBe(0);
+
+    // Navigate to the far event's month: the window re-query loads it and drops the near event (the
+    // store is reconciled to the new window — the exact mechanism the month/week grids rely on).
+    setCalendarViewMode("month");
+    setCalendarAnchor(new Date(far.getFullYear(), far.getMonth(), 1));
+    await navUntil(() => countByTitle(`Far ${tag}`) >= 1);
+    expect(countByTitle(`Far ${tag}`)).toBe(1);
+    expect(countByTitle(`Near ${tag}`)).toBe(0);
   });
 
   it("treats open + save with no edits as a no-op success", async () => {

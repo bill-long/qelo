@@ -149,6 +149,22 @@ function sameYmd(a: DateParts, b: DateParts): boolean {
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// Full month names for the month-view header ("June 2026"); the abbreviations above are for compact
+// day headings / spans.
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 function monthDay(p: DateParts): string {
@@ -267,6 +283,140 @@ export function groupEventsByDay(events: CalendarEvent[], now: Date = new Date()
     heading: formatDayHeading(key, now),
     events: (buckets.get(key) ?? []).sort(compareEvents),
   }));
+}
+
+// ---------------------------------------------------------------------------
+// View navigation — the view-mode + a navigable date window (Calendar Views milestone). Pure date
+// math: the store turns `visibleRange` into the CalendarEvent/query window; the nav header uses
+// `stepAnchor`/`todayAnchor`/`rangeLabel`. LOCAL-midnight based (matching the agenda's original
+// window) so the displayed calendar dates are the user's local days. The anchor is always a local-
+// midnight Date; every helper re-normalizes its input so a caller can pass any instant.
+// ---------------------------------------------------------------------------
+
+/** Which calendar view the surface renders. agenda = the scrollable upcoming list (the CRUD v1);
+ * day/week = the time-grid; month = the day-cell grid. */
+export type CalendarViewMode = "agenda" | "day" | "week" | "month";
+
+/** How many days forward the agenda spans from its anchor (the rolling "upcoming" window). */
+export const AGENDA_WINDOW_DAYS = 56;
+
+/** Local midnight of `d` (clock dropped), as a fresh Date — the canonical anchor shape. */
+function localMidnight(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+/** The Sunday on/before `d` at local midnight — the week/month grid's first column. */
+function startOfWeek(d: Date): Date {
+  const m = localMidnight(d);
+  m.setDate(m.getDate() - m.getDay()); // getDay(): 0 = Sunday
+  return m;
+}
+
+/** Today at local midnight — the default anchor and the "Today" reset target. */
+export function todayAnchor(now: Date = new Date()): Date {
+  return localMidnight(now);
+}
+
+/**
+ * The `CalendarEvent/query` window `{after,before}` (UTC instants) for a view mode + anchor date.
+ * `before` is EXCLUSIVE (the instant after the last visible day). Each window is small (≤ ~6 weeks),
+ * comfortably within Stalwart's `maxExpandedQueryDuration` (P52W1D) — which dev Stalwart doesn't even
+ * enforce — and each nav step re-queries rather than accumulating. Stalwart's `{after,before}` filters
+ * on OVERLAP (probed live 2026-06-17), so a multi-day event spanning into the window is returned; the
+ * grids clip its rendered span to the visible days.
+ *  - month: the anchor's month padded out to whole weeks (Sun-start) — the 5/6-row grid range.
+ *  - week:  the Sun…Sat week containing the anchor.
+ *  - day:   the single anchor day.
+ *  - agenda: anchor → anchor + {@link AGENDA_WINDOW_DAYS} (the rolling upcoming list).
+ */
+export function visibleRange(
+  mode: CalendarViewMode,
+  anchor: Date,
+): { after: string; before: string } {
+  if (mode === "month") {
+    const gridStart = startOfWeek(new Date(anchor.getFullYear(), anchor.getMonth(), 1));
+    const lastOfMonth = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0);
+    const gridEnd = startOfWeek(lastOfMonth);
+    gridEnd.setDate(gridEnd.getDate() + 7); // exclusive: the Sunday after the last visible week
+    return { after: gridStart.toISOString(), before: gridEnd.toISOString() };
+  }
+  const from = mode === "week" ? startOfWeek(anchor) : localMidnight(anchor);
+  const days = mode === "week" ? 7 : mode === "day" ? 1 : AGENDA_WINDOW_DAYS;
+  const before = new Date(from);
+  before.setDate(before.getDate() + days);
+  return { after: from.toISOString(), before: before.toISOString() };
+}
+
+/**
+ * Move the anchor one view-window in `dir` (+1 forward / −1 back): month → ±1 month, week → ±7 days,
+ * day → ±1 day, agenda → ±{@link AGENDA_WINDOW_DAYS}. Returns a fresh local-midnight Date. The MONTH
+ * step first pins the day to the 1st — `setMonth` OVERFLOWS a too-large day (stepping from Jan 31 would
+ * land on Mar 3, SKIPPING February), and the month view ignores the anchor's day anyway (the window is
+ * derived from the month) — so stepping month-to-month off the 1st is exact and never skips a month.
+ */
+export function stepAnchor(mode: CalendarViewMode, anchor: Date, dir: 1 | -1): Date {
+  const a = localMidnight(anchor);
+  if (mode === "month") {
+    a.setDate(1);
+    a.setMonth(a.getMonth() + dir);
+  } else if (mode === "week") a.setDate(a.getDate() + 7 * dir);
+  else if (mode === "day") a.setDate(a.getDate() + dir);
+  else a.setDate(a.getDate() + AGENDA_WINDOW_DAYS * dir);
+  return a;
+}
+
+// A span label for the nav header: same-month "Jun 14 – 20", cross-month "Jun 29 – Jul 5", cross-year
+// "Dec 29, 2026 – Jan 4, 2027" (both years, since one trailing year would be ambiguous for the left
+// endpoint). The year is appended once (trailing) for a same-year span that isn't the current year.
+function formatSpanLabel(start: Date, end: Date, now: Date): string {
+  const sM = MONTHS[start.getMonth()] ?? "";
+  const eM = MONTHS[end.getMonth()] ?? "";
+  if (start.getFullYear() !== end.getFullYear()) {
+    return `${sM} ${start.getDate()}, ${start.getFullYear()} – ${eM} ${end.getDate()}, ${end.getFullYear()}`;
+  }
+  const left = `${sM} ${start.getDate()}`;
+  const right = start.getMonth() === end.getMonth() ? `${end.getDate()}` : `${eM} ${end.getDate()}`;
+  const yearSuffix = start.getFullYear() === now.getFullYear() ? "" : `, ${start.getFullYear()}`;
+  return `${left} – ${right}${yearSuffix}`;
+}
+
+/** A human label for the current view window, for the nav header: month → "June 2026", week →
+ * "Jun 14 – 20", day → "Wed, Jun 17", agenda → "Jun 17 – Aug 11". `now` parameterized for tests. */
+export function rangeLabel(mode: CalendarViewMode, anchor: Date, now: Date = new Date()): string {
+  const a = localMidnight(anchor);
+  if (mode === "month") return `${MONTH_NAMES[a.getMonth()] ?? ""} ${a.getFullYear()}`;
+  // Day mode is exactly a one-day heading — reuse formatDayHeading (same "Wed, Jun 17[, year]" rule)
+  // rather than re-encoding the format, so the nav header and the agenda day headings can't drift.
+  if (mode === "day") {
+    return formatDayHeading(
+      `${a.getFullYear()}-${pad2(a.getMonth() + 1)}-${pad2(a.getDate())}`,
+      now,
+    );
+  }
+  const start = mode === "week" ? startOfWeek(a) : a;
+  const end = new Date(start);
+  end.setDate(end.getDate() + (mode === "week" ? 6 : AGENDA_WINDOW_DAYS - 1));
+  return formatSpanLabel(start, end, now);
+}
+
+/**
+ * The Date to seed a NEW event's default slot from, given the visible window: `now` when today is in
+ * view (the familiar next-hour-today default), otherwise the anchor's day at the current time-of-day.
+ * So a create made while the window is navigated away from today lands somewhere VISIBLE (in the window
+ * the user is looking at) instead of on today — off-window, where the reconcile re-query would drop it
+ * from view. Feeds {@link emptyEditableEvent}; pure, `now` parameterized for tests.
+ */
+export function createSeedDate(mode: CalendarViewMode, anchor: Date, now: Date = new Date()): Date {
+  const { after, before } = visibleRange(mode, anchor);
+  const todayMs = localMidnight(now).getTime();
+  if (todayMs >= Date.parse(after) && todayMs < Date.parse(before)) return now;
+  return new Date(
+    anchor.getFullYear(),
+    anchor.getMonth(),
+    anchor.getDate(),
+    now.getHours(),
+    now.getMinutes(),
+  );
 }
 
 const FREQ_LABEL: Record<string, string> = {

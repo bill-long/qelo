@@ -16,6 +16,7 @@ import { basicAuth } from "@/jmap/auth";
 import { JmapClient } from "@/jmap/client";
 import { CAP_CORE, CAP_MAIL, methodResult } from "@/jmap/methods";
 import type { Id, MethodCall } from "@/jmap/types";
+import { todayAnchor } from "@/lib/calendar";
 import { adoptClient, setSession } from "@/stores/account";
 import { resetCalendar } from "@/stores/calendar";
 import { resetContacts } from "@/stores/contacts";
@@ -24,6 +25,8 @@ import { mailboxes, setMailboxes } from "@/stores/mailboxes";
 import { resetRecipients } from "@/stores/recipients";
 import {
   setActiveView,
+  setCalendarAnchor,
+  setCalendarViewMode,
   setCreatingContact,
   setCreatingEvent,
   setSelectedAddressBookId,
@@ -133,6 +136,10 @@ export function resetStores(): void {
   // calendar selection into the next case.
   setSelectedEventId(null);
   setSelectedCalendarId(null);
+  // Calendar view-navigation signals (mode + anchor date) — reset to the default landing so a nav in
+  // one case doesn't leak its window into the next (the shared-worker leak class).
+  setCalendarViewMode("agenda");
+  setCalendarAnchor(todayAnchor());
   // The transient create-mode UI signals are global (unlike the per-card/per-event component-local
   // edit mode), so a half-open create form would otherwise leak across cases in the shared worker.
   setCreatingContact(false);

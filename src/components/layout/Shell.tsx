@@ -1,6 +1,6 @@
 import { Match, onMount, Show, Switch } from "solid-js";
 import { CalendarList } from "@/components/calendar/CalendarList";
-import { EventList } from "@/components/calendar/EventList";
+import { CalendarMain } from "@/components/calendar/CalendarMain";
 import { EventView } from "@/components/calendar/EventView";
 import { NewEventButton } from "@/components/calendar/NewEventButton";
 import { Composer } from "@/components/composer/Composer";
@@ -20,8 +20,8 @@ import { activeView } from "@/stores/ui";
 /**
  * The app shell: a top-level Mail / Contacts / Calendar switch over the three-pane layout. Each view
  * swaps a sidebar + two panes across the same grid columns — Mail: folders | conversations | reading
- * pane; Contacts: address books | contact list | contact detail; Calendar: calendars | agenda |
- * event detail. The Composer + ToastHost stay mounted across views.
+ * pane; Contacts: address books | contact list | contact detail; Calendar: calendars | view (agenda
+ * or a grid, with a view-mode switch + window nav) | event detail. Composer + ToastHost stay mounted.
  */
 export function Shell() {
   // Load the sending identities up front (Shell mounts only once connected) so a reply-all can
@@ -73,7 +73,7 @@ export function Shell() {
         </Match>
         <Match when={activeView() === "calendar"}>
           <section class="shell-threads">
-            <EventList />
+            <CalendarMain />
           </section>
           <section class="shell-view">
             <EventView />
