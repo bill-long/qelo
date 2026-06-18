@@ -117,7 +117,7 @@ function MonthWeek(props: { week: DayCell[]; layout: MonthWeekLayout }) {
                     "grid-column": `${col() + 1}`,
                     "grid-row": `${MONTH_VISIBLE_LANES + 1}`,
                   }}
-                  aria-label={`${more()} more events, ${formatDayHeading(cell.key)}`}
+                  aria-label={`${more()} more event${more() === 1 ? "" : "s"}, ${formatDayHeading(cell.key)}`}
                   onClick={() => openDay(cell.key)}
                 >
                   +{more()} more

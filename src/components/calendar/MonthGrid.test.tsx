@@ -103,7 +103,7 @@ describe("MonthGrid", () => {
     }
     seed(events, ids);
     render(() => <MonthGrid />);
-    const more = screen.getByRole("button", { name: /more events/ });
+    const more = screen.getByRole("button", { name: /1 more event\b/ });
     expect(more.textContent).toContain("+1 more");
     fireEvent.click(more);
     // Until the day time-grid lands, the overflow opens the agenda anchored at that day (built +
