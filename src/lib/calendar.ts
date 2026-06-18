@@ -616,10 +616,11 @@ export function layoutMonth(
 // ---------------------------------------------------------------------------
 // Week + day time-grid (Calendar Views milestone, Branch C). Pure layout for an hour-axis grid: the
 // day-key columns of the visible week/day (weekDays), a timed event's vertical placement within one day
-// column in minutes-from-midnight (minutesIntoDay / eventDayPlacement, clamped to the day so a block
-// crossing midnight renders one piece per day it covers), side-by-side packing of concurrent events
-// (packDayColumns), the all-day bar lane (layoutAllDayLane), and the current-time line offset
-// (nowIndicatorOffset). Same UTC-on-the-literal-components day math as the rest of the file.
+// column in minutes-from-midnight (eventDayPlacement, clamped to the day so a block crossing midnight
+// renders one piece per day it covers), side-by-side packing of concurrent events (packDayColumns), the
+// all-day bar lane (layoutAllDayLane), the current-time line offset (nowIndicatorOffset), and the shared
+// per-block accessible name (eventAccessibleName). Same UTC-on-the-literal-components day math as the
+// rest of the file.
 // ---------------------------------------------------------------------------
 
 /** Minutes in a day — the time grid's vertical extent (00:00 → 24:00). */
