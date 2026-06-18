@@ -1,15 +1,11 @@
 import { createEffect, Match, on, onMount, Switch } from "solid-js";
 import { CalendarNav } from "@/components/calendar/CalendarNav";
-import { CalendarViewSwitch, MODES } from "@/components/calendar/CalendarViewSwitch";
+import { CalendarViewSwitch } from "@/components/calendar/CalendarViewSwitch";
 import { EventList } from "@/components/calendar/EventList";
 import { MonthGrid } from "@/components/calendar/MonthGrid";
+import { WeekGrid } from "@/components/calendar/WeekGrid";
 import { loadCalendar, refetchWindow } from "@/stores/calendar";
 import { calendarAnchor, calendarViewMode } from "@/stores/ui";
-
-// The active mode's label (from the switch's single source of truth), for the placeholder copy.
-function modeLabel(): string {
-  return MODES.find((m) => m.mode === calendarViewMode())?.label ?? "";
-}
 
 /**
  * The calendar surface's main column (where ThreadList sits in mail view): the view-mode switch + the
@@ -18,9 +14,9 @@ function modeLabel(): string {
  * and re-queries the visible window whenever the view mode or anchor changes (navigation). It stays
  * mounted across mode switches, so the load/nav wiring lives here rather than on the per-mode bodies.
  *
- * Agenda and Month are live; Day/Week render a placeholder until the week/day time-grid lands in the
- * next branch of the calendar-views milestone. Month is the default landing (see stores/ui). Navigation
- * works in every mode, including the agenda's back/forward paging.
+ * All four modes are live: Agenda (linear list), Month (day-cell grid), Week and Day (the hour-axis
+ * time-grid — Day is WeekGrid with a single column). Month is the default landing (see stores/ui).
+ * Navigation works in every mode, including the agenda's back/forward paging.
  */
 export function CalendarMain() {
   // Lazy first load. loadCalendar is idempotent + never rejects, so firing it on mount is safe and a
@@ -44,10 +40,11 @@ export function CalendarMain() {
           <Match when={calendarViewMode() === "month"}>
             <MonthGrid />
           </Match>
-          <Match when={calendarViewMode() === "day" || calendarViewMode() === "week"}>
-            <p class="agenda-note">
-              {modeLabel()} view arrives later in this milestone. Use Agenda or Month for now.
-            </p>
+          {/* Week and Day share ONE WeekGrid (Day = a single column). One Match arm — not two — so
+              toggling week↔day reactively re-columns the SAME instance instead of unmounting it,
+              preserving the user's scroll position + the now-clock. */}
+          <Match when={calendarViewMode() === "week" || calendarViewMode() === "day"}>
+            <WeekGrid columns={calendarViewMode() === "day" ? 1 : 7} />
           </Match>
         </Switch>
       </div>

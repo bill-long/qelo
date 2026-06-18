@@ -12,7 +12,9 @@ import {
   type EditableEvent,
   editableHasContent,
   emptyEditableEvent,
+  eventAccessibleName,
   eventCoversDays,
+  eventDayPlacement,
   eventDisplayTitle,
   eventEndParts,
   formatDayHeading,
@@ -21,8 +23,11 @@ import {
   groupEventsByDay,
   isAllDay,
   isRecurring,
+  layoutAllDayLane,
   layoutMonth,
   monthGridWeeks,
+  nowIndicatorOffset,
+  packDayColumns,
   parseDateParts,
   parseDuration,
   rangeLabel,
@@ -30,6 +35,7 @@ import {
   stepAnchor,
   todayAnchor,
   visibleRange,
+  weekDays,
   writableCalendars,
 } from "./calendar";
 
@@ -798,5 +804,226 @@ describe("layoutMonth", () => {
     expect(layout[2]?.segments.map((s) => s.event.id)).toEqual(["bar"]);
     // The hidden chip is counted as overflow on its column (3) only.
     expect(layout[2]?.overflow).toEqual([0, 0, 0, 1, 0, 0, 0]);
+  });
+});
+
+describe("weekDays", () => {
+  it("returns the Sun-start 7-day week containing the anchor", () => {
+    // Wed Jun 17 2026 → Sun Jun 14 … Sat Jun 20.
+    expect(weekDays(new Date(2026, 5, 17), 7)).toEqual([
+      "2026-06-14",
+      "2026-06-15",
+      "2026-06-16",
+      "2026-06-17",
+      "2026-06-18",
+      "2026-06-19",
+      "2026-06-20",
+    ]);
+  });
+
+  it("returns just the anchor's own day for count 1", () => {
+    expect(weekDays(new Date(2026, 5, 17), 1)).toEqual(["2026-06-17"]);
+  });
+
+  it("crosses a month boundary within the week", () => {
+    // Tue Jun 30 2026 → the week Sun Jun 28 … Sat Jul 4.
+    expect(weekDays(new Date(2026, 5, 30), 7)).toEqual([
+      "2026-06-28",
+      "2026-06-29",
+      "2026-06-30",
+      "2026-07-01",
+      "2026-07-02",
+      "2026-07-03",
+      "2026-07-04",
+    ]);
+  });
+});
+
+describe("eventDayPlacement", () => {
+  it("places a timed event by start offset + duration height", () => {
+    const e = event({ start: "2026-06-17T09:00:00", duration: "PT1H" });
+    expect(eventDayPlacement(e, "2026-06-17")).toMatchObject({ top: 540, height: 60 });
+  });
+
+  it("returns null for an all-day event (it belongs to the all-day lane)", () => {
+    const e = event({ start: "2026-06-17T00:00:00", duration: "P1D", showWithoutTime: true });
+    expect(eventDayPlacement(e, "2026-06-17")).toBeNull();
+  });
+
+  it("returns null when the event doesn't fall on the day", () => {
+    const e = event({ start: "2026-06-17T09:00:00", duration: "PT1H" });
+    expect(eventDayPlacement(e, "2026-06-18")).toBeNull();
+  });
+
+  it("clamps a midnight-crossing event to one block per covered day", () => {
+    const e = event({ start: "2026-06-17T23:00:00", duration: "PT2H" }); // 23:00 → 01:00 next day
+    expect(eventDayPlacement(e, "2026-06-17")).toMatchObject({ top: 1380, height: 60 });
+    expect(eventDayPlacement(e, "2026-06-18")).toMatchObject({ top: 0, height: 60 });
+  });
+
+  it("does not render on the next day for an event ending exactly at midnight", () => {
+    const e = event({ start: "2026-06-17T23:00:00", duration: "PT1H" }); // ends 2026-06-18T00:00
+    expect(eventDayPlacement(e, "2026-06-17")).toMatchObject({ top: 1380, height: 60 });
+    expect(eventDayPlacement(e, "2026-06-18")).toBeNull(); // half-open: occupies no time on the 18th
+  });
+
+  it("keeps a zero-duration event with height 0 on its day", () => {
+    const e = event({ start: "2026-06-17T09:00:00" }); // no duration → end = start
+    expect(eventDayPlacement(e, "2026-06-17")).toMatchObject({ top: 540, height: 0 });
+  });
+});
+
+describe("packDayColumns", () => {
+  const place = (id: string, top: number, height: number) => ({
+    event: event({ id, start: "2026-06-17T00:00:00" }),
+    top,
+    height,
+  });
+
+  it("gives non-overlapping (exact-touch) events the same full-width column", () => {
+    const packed = packDayColumns([place("a", 0, 60), place("b", 60, 60)]);
+    expect(packed.map((p) => [p.event.id, p.column, p.columns])).toEqual([
+      ["a", 0, 1],
+      ["b", 0, 1],
+    ]);
+  });
+
+  it("splits two overlapping events into side-by-side sub-columns", () => {
+    const packed = packDayColumns([place("a", 0, 120), place("b", 60, 60)]);
+    const byId = Object.fromEntries(packed.map((p) => [p.event.id, p]));
+    expect(byId.a).toMatchObject({ column: 0, columns: 2 });
+    expect(byId.b).toMatchObject({ column: 1, columns: 2 });
+  });
+
+  it("reuses a freed column in a three-way overlap (peak concurrency 2)", () => {
+    // A 0–120, B 60–180, C 120–240: A&B overlap, B&C overlap, A&C exact-touch (share a column).
+    const packed = packDayColumns([place("a", 0, 120), place("b", 60, 120), place("c", 120, 120)]);
+    const byId = Object.fromEntries(packed.map((p) => [p.event.id, p]));
+    expect(byId.a).toMatchObject({ column: 0, columns: 2 });
+    expect(byId.b).toMatchObject({ column: 1, columns: 2 });
+    expect(byId.c).toMatchObject({ column: 0, columns: 2 });
+  });
+
+  it("orders same-start events deterministically by compareEvents", () => {
+    // Same start + height → tie broken by title (compareEvents): "Alpha" before "Zeta".
+    const packed = packDayColumns([
+      {
+        event: event({ id: "z", title: "Zeta", start: "2026-06-17T09:00:00" }),
+        top: 540,
+        height: 60,
+      },
+      {
+        event: event({ id: "a", title: "Alpha", start: "2026-06-17T09:00:00" }),
+        top: 540,
+        height: 60,
+      },
+    ]);
+    const byId = Object.fromEntries(packed.map((p) => [p.event.id, p]));
+    expect(byId.a?.column).toBe(0); // Alpha takes the leftmost column
+    expect(byId.z?.column).toBe(1);
+  });
+});
+
+describe("layoutAllDayLane", () => {
+  const week = [
+    "2026-06-14",
+    "2026-06-15",
+    "2026-06-16",
+    "2026-06-17",
+    "2026-06-18",
+    "2026-06-19",
+    "2026-06-20",
+  ];
+
+  it("includes only all-day events (timed events go to the time grid)", () => {
+    const allDay = event({
+      id: "ad",
+      start: "2026-06-16T00:00:00",
+      duration: "P1D",
+      showWithoutTime: true,
+    });
+    const timed = event({ id: "t", start: "2026-06-16T09:00:00", duration: "PT1H" });
+    const segs = layoutAllDayLane([allDay, timed], week);
+    expect(segs.map((s) => s.event.id)).toEqual(["ad"]);
+    expect(segs[0]).toMatchObject({ startCol: 2, endCol: 2, lane: 0 });
+  });
+
+  it("clips a span starting before the window and flags the open edge", () => {
+    // Jun 12 → Jun 16 (all-day P5D): clipped to cols 0–2, continuesBefore (started before Sun Jun 14).
+    const e = event({
+      id: "s",
+      start: "2026-06-12T00:00:00",
+      duration: "P5D",
+      showWithoutTime: true,
+    });
+    expect(layoutAllDayLane([e], week)[0]).toMatchObject({
+      startCol: 0,
+      endCol: 2,
+      continuesBefore: true,
+      continuesAfter: false,
+    });
+  });
+
+  it("stacks overlapping bars into separate lanes", () => {
+    const a = event({
+      id: "a",
+      start: "2026-06-15T00:00:00",
+      duration: "P3D",
+      showWithoutTime: true,
+    }); // 15–17
+    const b = event({
+      id: "b",
+      start: "2026-06-16T00:00:00",
+      duration: "P2D",
+      showWithoutTime: true,
+    }); // 16–17
+    const segs = layoutAllDayLane([a, b], week);
+    expect(segs.find((s) => s.event.id === "a")?.lane).toBe(0);
+    expect(segs.find((s) => s.event.id === "b")?.lane).toBe(1);
+  });
+
+  it("clips a multi-day span to a single-day (day-view) window", () => {
+    const e = event({
+      id: "s",
+      start: "2026-06-16T00:00:00",
+      duration: "P3D",
+      showWithoutTime: true,
+    });
+    expect(layoutAllDayLane([e], ["2026-06-17"])[0]).toMatchObject({
+      startCol: 0,
+      endCol: 0,
+      continuesBefore: true,
+      continuesAfter: true,
+    });
+  });
+});
+
+describe("nowIndicatorOffset", () => {
+  it("returns minutes-into-day on the matching local day", () => {
+    expect(nowIndicatorOffset(new Date(2026, 5, 17, 9, 30), "2026-06-17")).toBe(570);
+  });
+
+  it("returns null on any other day", () => {
+    expect(nowIndicatorOffset(new Date(2026, 5, 17, 9, 30), "2026-06-18")).toBeNull();
+  });
+});
+
+describe("eventAccessibleName", () => {
+  it("names the event by the passed column day, not its own start day", () => {
+    // A midnight-crossing block on the SECOND day must announce that day, not the event's start day.
+    // (toContain to stay robust to formatDayHeading's year suffix when run outside 2026.)
+    const e = event({ title: "Night shift", start: "2026-06-17T23:00:00", duration: "PT2H" });
+    const onDay2 = eventAccessibleName(e, "2026-06-18");
+    expect(onDay2).toContain("Night shift");
+    expect(onDay2).toContain("Thu, Jun 18"); // the column's day, not the start day (Wed Jun 17)
+    expect(onDay2).toContain("Jun 17 23:00 – Jun 18 01:00");
+    expect(eventAccessibleName(e, "2026-06-17")).toContain("Wed, Jun 17");
+  });
+
+  it("falls back to the placeholder title and omits an empty range", () => {
+    const name = eventAccessibleName(event({ title: "" }), "2026-06-17");
+    expect(name).toContain("(no title)");
+    expect(name).toContain("Wed, Jun 17");
+    expect(name).not.toContain(" – "); // no range part for a startless event
   });
 });

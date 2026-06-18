@@ -2616,6 +2616,240 @@ textarea.event-edit-input {
   outline-offset: 1px;
 }
 
+/* Week + day time-grid. One scroll container holds a sticky header (day labels + all-day lane) over the
+   hour-axis canvas, so the header and the day columns share the same horizontal track widths and
+   scrollbar — they can't drift. --week-axis-w is the left hour-axis gutter; --hour-h sizes each hour
+   row (the canvas is 24 × --hour-h tall and the timed blocks are positioned as a % of that). */
+.week-grid {
+  height: 100%;
+  min-height: 0;
+  --week-axis-w: 3.4rem;
+  --hour-h: 3rem;
+}
+
+.week-scroll {
+  height: 100%;
+  overflow-y: auto;
+  position: relative;
+}
+
+.week-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.week-head {
+  display: grid;
+}
+
+.week-corner {
+  border-right: 1px solid var(--line);
+}
+
+.week-head-days {
+  display: grid;
+}
+
+.week-head-day {
+  padding: 0.4rem 0.3rem;
+  border-left: 1px solid var(--line);
+  text-align: center;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.week-head-day.is-today {
+  color: var(--accent);
+}
+
+.week-allday {
+  display: grid;
+  border-top: 1px solid var(--line);
+}
+
+.week-allday-label {
+  align-self: center;
+  padding: 0 0.4rem;
+  border-right: 1px solid var(--line);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  text-align: right;
+}
+
+.week-allday-lane {
+  display: grid;
+  grid-auto-rows: 1.25rem;
+  gap: 1px 0;
+  padding: 0.2rem 0;
+  min-height: 1.65rem;
+}
+
+.week-allday-bar {
+  pointer-events: auto;
+  min-width: 0;
+  margin-inline: 1px;
+  padding: 0 0.35rem;
+  border: none;
+  border-radius: 4px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-size: 0.74rem;
+  line-height: 1.2;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.week-allday-bar.continues-before {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  margin-inline-start: 0;
+}
+
+.week-allday-bar.continues-after {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  margin-inline-end: 0;
+}
+
+.week-allday-bar:hover {
+  background: color-mix(in srgb, var(--accent) 88%, #000);
+}
+
+.week-allday-bar.is-selected {
+  box-shadow: inset 0 0 0 2px #fff;
+}
+
+.week-allday-bar:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.week-canvas {
+  display: grid;
+  height: calc(var(--hour-h) * 24);
+}
+
+.week-axis {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+}
+
+.week-hour {
+  height: var(--hour-h);
+  position: relative;
+}
+
+.week-hour-label {
+  position: absolute;
+  top: -0.5rem;
+  right: 0.35rem;
+  font-size: 0.68rem;
+  color: var(--ink-soft);
+}
+
+/* The first hour's label would clip above the canvas — nudge it down instead. */
+.week-hour:first-child .week-hour-label {
+  top: 0.1rem;
+}
+
+.week-cols {
+  display: grid;
+}
+
+.week-col {
+  position: relative;
+  border-left: 1px solid var(--line);
+  /* Hour gridlines: a faint line every 1/24 of the column height. */
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--line) 0,
+    var(--line) 1px,
+    transparent 1px,
+    transparent calc(100% / 24)
+  );
+}
+
+.week-event {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+  overflow: hidden;
+  margin-inline: 1px;
+  padding: 0.1rem 0.3rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--raised));
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--accent) 16%, var(--raised));
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.72rem;
+  line-height: 1.15;
+  text-align: left;
+  cursor: pointer;
+}
+
+.week-event-time {
+  flex: none;
+  color: var(--ink-soft);
+}
+
+.week-event-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.week-event:hover {
+  background: color-mix(in srgb, var(--accent) 26%, var(--raised));
+}
+
+.week-event.is-selected {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.week-event:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* The current-time line — decorative (aria-hidden), only on today's column. */
+.week-now {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  border-top: 2px solid var(--danger);
+  z-index: 1;
+  pointer-events: none;
+}
+
+.week-now-dot {
+  position: absolute;
+  left: -3px;
+  top: -4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--danger);
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --paper: #1b1916;

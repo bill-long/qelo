@@ -37,11 +37,24 @@ describe("CalendarMain", () => {
     expect(screen.queryByText("No events in this range")).toBeNull();
   });
 
-  it("renders a placeholder for a not-yet-built grid mode", () => {
+  it("renders the week time-grid in week mode", () => {
+    setCalendarReady(true); // so the grid shows its axis + lane, not the loading note
     setCalendarViewMode("week");
     render(() => <CalendarMain />);
-    expect(screen.getByText(/Week view arrives later/)).toBeTruthy();
-    // The agenda's empty-state must NOT render in week mode.
+    // The time-grid renders its all-day lane label + hour axis; no placeholder, no agenda empty-state.
+    expect(screen.getByText("All-day")).toBeTruthy();
+    expect(screen.getByText("07:00")).toBeTruthy();
+    expect(screen.queryByText(/arrives later/)).toBeNull();
+    expect(screen.queryByText("No events in this range")).toBeNull();
+  });
+
+  it("renders the day time-grid in day mode", () => {
+    setCalendarReady(true);
+    setCalendarViewMode("day");
+    render(() => <CalendarMain />);
+    expect(screen.getByText("All-day")).toBeTruthy();
+    expect(screen.getByText("07:00")).toBeTruthy();
+    // The agenda's empty-state must NOT leak into day mode either (symmetry with the week test).
     expect(screen.queryByText("No events in this range")).toBeNull();
   });
 });
