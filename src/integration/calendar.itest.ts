@@ -491,6 +491,26 @@ describe("calendar (live Stalwart)", () => {
     expect(after?.recurrenceRule?.until).toBeTruthy(); // the rule was capped, not removed
   });
 
+  it("fails closed on a 'this' delete with no recurrenceId (won't destroy the series)", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    await seedEvents(calId, [{ title: `Guard ${tag}`, start: localDateTime(3, 9), weekly: true }]);
+    await loadUntil(() => countByTitle(`Guard ${tag}`) >= 2);
+    const total = countByTitle(`Guard ${tag}`);
+
+    // A per-occurrence scope on a recurring event but with NO recurrenceId can't be scoped — the store
+    // refuses (`invalid`) rather than fall through to destroying the WHOLE series (data loss).
+    const occId = occurrenceIdFor(`Guard ${tag}`);
+    const result = await deleteEvent(occId, "this", null);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toBe("invalid");
+
+    // The series is completely untouched (no occurrence destroyed, no override written).
+    await loadUntil(() => countByTitle(`Guard ${tag}`) >= total);
+    expect(countByTitle(`Guard ${tag}`)).toBe(total);
+  });
+
   it("'following' from the FIRST occurrence destroys the whole series (no empty orphan)", async () => {
     const calId = await defaultCalendarId();
     const tag = Math.random().toString(36).slice(2, 8);

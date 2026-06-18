@@ -737,7 +737,7 @@ export type DeleteEventResult =
   | { ok: true }
   | {
       ok: false;
-      reason: "no-account" | "unresolved" | "auth" | "refused" | "error";
+      reason: "no-account" | "unresolved" | "invalid" | "auth" | "refused" | "error";
       error?: SetError;
     };
 
@@ -761,8 +761,10 @@ export type DeleteEventResult =
  *                  one are excluded (no tail — unlike the EDIT split). Also non-destructive — UNLESS
  *                  the split is the series' FIRST occurrence (recurrenceId === the master start), where
  *                  capping would leave an empty orphan series, so it degrades to the whole-series destroy.
- * The per-occurrence modes need a recurring base AND a recurrenceId; absent either they degrade to the
- * whole-series destroy (so a real series can't be silently left untouched).
+ * A "this"/"following" on a recurring base with NO recurrenceId can't be scoped to one occurrence, so it
+ * FAILS CLOSED (`reason:"invalid"`) rather than fall through to a whole-series destroy — a scoped delete
+ * must never silently wipe a series on a bad/absent recurrenceId (the UI disables those modes without one;
+ * this is the store-boundary backstop). A non-recurring base is exempt ("this" = delete the single event).
  *
  * The clicked occurrence is pruned from `calendarEvents` + `eventIds` (and the selection cleared if it
  * pointed at it) optimistically for instant feedback — correct for every mode, since the clicked
@@ -800,14 +802,22 @@ export async function deleteEvent(
   if (!base) return { ok: false, reason: "unresolved" };
   const baseId = base.id;
 
-  // Build the CalendarEvent/set body for the chosen mode. The per-occurrence modes need a recurring
-  // base AND a recurrenceId; everything that ISN'T a viable per-occurrence delete (the "all" mode, a
-  // non-recurring base, a missing recurrenceId, OR a "following" from the very first occurrence —
-  // capping before the series start would leave an empty orphan series, so deleting "this and
-  // following" from the start means deleting the whole series) degrades to the whole-series destroy.
-  // `cap` is null for any of those "following" cases (truncateSeriesBefore returns null for a
-  // non-recurring base), so the destroy branch below stays reachable and an occurrence we couldn't
-  // identify is never silently left in place.
+  // FAIL CLOSED on a scoped delete we can't safely scope: a "this"/"following" on a RECURRING base with
+  // no recurrenceId can't identify WHICH occurrence to drop, and falling through to a whole-series
+  // destroy would be silent, irreversible data loss (a far riskier degrade than saveEvent's, which
+  // degrades to a non-destructive whole-series UPDATE). The UI disables these modes without a
+  // recurrenceId; this is the store-boundary backstop (the PR #15 store-is-the-boundary lesson). A
+  // non-recurring base is exempt — "this" there is just deleting the single event (handled below).
+  if (mode !== "all" && base.recurrenceRule && !recurrenceId) {
+    return { ok: false, reason: "invalid" };
+  }
+
+  // Build the CalendarEvent/set body for the chosen mode. With the guard above, the whole-series destroy
+  // is now reached only by: the "all" mode, a non-recurring base ("this"/"following" there = delete the
+  // single event), or a "following" from the very FIRST occurrence (recurrenceId === the master start) —
+  // where capping before the series start would leave an empty orphan series, so it deliberately means
+  // "delete the whole series". `cap` is null for each of those "following" cases (truncateSeriesBefore
+  // returns null for a non-recurring base), so the destroy branch below stays reachable.
   let setOpts: { update?: Record<string, CalendarEventPatch>; destroy?: Id[] };
   if (mode === "this" && recurrenceId && base.recurrenceRule) {
     setOpts = { update: { [baseId]: excludeOverride(recurrenceId) } };

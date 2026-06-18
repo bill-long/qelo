@@ -172,7 +172,11 @@ export function EventView() {
           ? // null base resolution: already destroyed elsewhere OR a suffix-collision the resolver
             // couldn't narrow to one base — cover both rather than assert it's gone.
             "Couldn't delete this event — it may have already been deleted, or couldn't be uniquely identified. Please try again."
-          : "Couldn't delete the event. Please try again.",
+          : result.reason === "invalid"
+            ? // A per-occurrence scope without an identifiable occurrence (the modes are UI-disabled
+              // then; this is the store-boundary backstop). Steer the user to the whole-series option.
+              "Couldn't identify this occurrence, so it can't be deleted on its own. Try “All events.”"
+            : "Couldn't delete the event. Please try again.",
     );
   }
 
