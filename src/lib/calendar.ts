@@ -65,6 +65,26 @@ export function parseDateParts(s: string | undefined): DateParts | null {
   return parts;
 }
 
+/**
+ * Whether two JSCalendar LocalDateTime strings denote the SAME instant, tolerant of format differences
+ * (omitted vs included seconds, a fractional part) — both are parsed to their literal components and
+ * compared, so "2026-09-07T09:00" and "2026-09-07T09:00:00" match. Returns false when EITHER is
+ * unparseable/absent, so an unknown value never spuriously matches (callers that gate a destructive
+ * branch on equality then take the safe non-equal path). Pure. */
+export function sameLocalDateTime(a: string | undefined, b: string | undefined): boolean {
+  const pa = parseDateParts(a);
+  const pb = parseDateParts(b);
+  if (!pa || !pb) return false;
+  return (
+    pa.year === pb.year &&
+    pa.month === pb.month &&
+    pa.day === pb.day &&
+    pa.hour === pb.hour &&
+    pa.minute === pb.minute &&
+    pa.second === pb.second
+  );
+}
+
 interface Duration {
   years: number;
   months: number;

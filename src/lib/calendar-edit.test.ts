@@ -28,6 +28,7 @@ import {
   recurrenceValid,
   resolveBaseEventId,
   ruleToEditable,
+  sameLocalDateTime,
   splitSeries,
   startWeekdayCode,
   truncateSeriesBefore,
@@ -801,6 +802,22 @@ describe("occurrenceIdByRecurrenceId — selection re-point after a recurring sa
   it("returns null when several match (ambiguous — don't guess)", () => {
     const dup = { ...events, d: event({ id: "d", recurrenceId: RID }) };
     expect(occurrenceIdByRecurrenceId(RID, ["a", "b", "c", "d"], dup)).toBeNull();
+  });
+});
+
+describe("sameLocalDateTime — format-tolerant instant equality", () => {
+  it("matches the same instant across omitted/included seconds", () => {
+    expect(sameLocalDateTime("2026-09-07T09:00", "2026-09-07T09:00:00")).toBe(true);
+    expect(sameLocalDateTime("2026-09-07T09:00:00.500", "2026-09-07T09:00:00")).toBe(true);
+    expect(sameLocalDateTime("2026-09-07T09:00:00", "2026-09-07T09:00:00")).toBe(true);
+  });
+
+  it("is false for different instants and for an unparseable/absent value", () => {
+    expect(sameLocalDateTime("2026-09-07T09:00:00", "2026-09-14T09:00:00")).toBe(false);
+    expect(sameLocalDateTime("2026-09-07T09:00:00", "2026-09-07T09:30:00")).toBe(false);
+    // An unknown value never spuriously matches — so a destructive branch gated on equality fails safe.
+    expect(sameLocalDateTime(undefined, "2026-09-07T09:00:00")).toBe(false);
+    expect(sameLocalDateTime("garbage", "2026-09-07T09:00:00")).toBe(false);
   });
 });
 

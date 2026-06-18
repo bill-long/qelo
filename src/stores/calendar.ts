@@ -35,6 +35,7 @@ import {
   type RecurrenceEditMode,
   recurrenceChanged,
   recurrenceValid,
+  sameLocalDateTime,
   splitSeries,
   truncateSeriesBefore,
   visibleRange,
@@ -823,7 +824,7 @@ export async function deleteEvent(
     setOpts = { update: { [baseId]: excludeOverride(recurrenceId) } };
   } else {
     const cap =
-      mode === "following" && recurrenceId && recurrenceId !== base.start
+      mode === "following" && recurrenceId && !sameLocalDateTime(recurrenceId, base.start)
         ? truncateSeriesBefore(base, recurrenceId)
         : null;
     setOpts = cap ? { update: { [baseId]: cap } } : { destroy: [baseId] };
