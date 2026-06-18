@@ -31,6 +31,7 @@ import {
   overridePatch,
   pickBaseEvent,
   type RecurrenceEditMode,
+  recurrenceChanged,
   recurrenceValid,
   splitSeries,
   visibleRange,
@@ -462,13 +463,19 @@ export async function saveEvent(
     update: Record<string, CalendarEventPatch>;
     create?: Record<string, Record<string, unknown>>;
   };
-  if (mode === "this" && recurrenceId && baseline.recurrenceRule) {
+  if (
+    mode === "this" &&
+    recurrenceId &&
+    baseline.recurrenceRule &&
+    !recurrenceChanged(baseline, edits)
+  ) {
+    // "this" applies the user's delta to ONE occurrence. A RECURRENCE-RULE change can't be scoped to a
+    // single occurrence, so when the rule changed we DON'T enter here — the edit degrades to the
+    // whole-series patch below (else the rule change would be silently dropped from the override while
+    // the other edits still applied). The UI disables "this" on a rule change; this is the defensive
+    // store boundary. The base-rule guard mirrors "following" degrading via splitSeries:null — a
+    // non-recurring base never gets a meaningless recurrenceOverrides write.
     const override = overridePatch(recurrenceId, baseline, edits);
-    // A null override means the only change was the recurrence RULE, which can't be scoped to one
-    // occurrence — degrade to the whole-series patch (applies + is visible) rather than silently
-    // reporting success. The UI disables "this" on a rule change, so this is the defense-in-depth path
-    // for a direct caller. (The base-rule guard above mirrors "following" degrading via splitSeries:null
-    // — a non-recurring base never gets a meaningless recurrenceOverrides write.)
     setOpts = override ? { update: { [baseId]: override } } : { update: { [baseId]: allPatch } };
   } else if (mode === "following" && recurrenceId) {
     const split = splitSeries(baseline, recurrenceId, edits);
