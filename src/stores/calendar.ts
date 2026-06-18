@@ -27,10 +27,11 @@ import {
   editableToPatch,
   freshOccurrenceIdForBase,
   pickBaseEvent,
+  visibleRange,
 } from "@/lib/calendar";
 import { handleAuthFailure, jmap, session } from "./account";
 import { syncCollection } from "./sync-collection";
-import { selectedEventId, setSelectedEventId } from "./ui";
+import { calendarAnchor, calendarViewMode, selectedEventId, setSelectedEventId } from "./ui";
 
 export const [calendars, setCalendars] = createStore<Record<string, Calendar>>({});
 export const [calendarEvents, setCalendarEvents] = createStore<Record<string, CalendarEvent>>({});
@@ -43,11 +44,6 @@ export const [calendarEvents, setCalendarEvents] = createStore<Record<string, Ca
 export const [eventIds, setEventIds] = createSignal<string[]>([]);
 
 const CALENDAR_USING = [CAP_CORE, CAP_CALENDARS];
-
-// How far forward the agenda loads. The query is a date window (today → +WINDOW_DAYS); past/forward
-// paging is a follow-up (the read-only v1 shows "upcoming"). Well within Stalwart's advertised
-// maxExpandedQueryDuration (P52W1D) so expandRecurrences never overflows the window.
-const WINDOW_DAYS = 56;
 
 // Sync cursors (from /get and /changes), used as `sinceState` for the *_changes calls. Plain
 // module state — they're sync cursors, not reactive UI state (same as mailboxState/contactState).
@@ -80,14 +76,12 @@ export function calendarAvailable(): boolean {
   return s ? CAP_CALENDARS in s.capabilities && calendarAccountId() !== null : false;
 }
 
-// The agenda's date window: local midnight today → +WINDOW_DAYS, as UTC instants (the filter
-// compares against the event's resolved instant). Recomputed per load so "today" stays current.
-function agendaWindow(): { after: string; before: string } {
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const end = new Date(start);
-  end.setDate(end.getDate() + WINDOW_DAYS);
-  return { after: start.toISOString(), before: end.toISOString() };
+// The currently-visible date window as UTC instants (the filter compares against the event's resolved
+// instant). Derived from the live view-mode + anchor signals (lib/calendar `visibleRange`): the agenda
+// rolls forward from the anchor, the grids span the visible month/week/day. Read at request time (not
+// reactively) so each load/sync/nav re-query captures the window the user is currently looking at.
+function currentWindow(): { after: string; before: string } {
+  return visibleRange(calendarViewMode(), calendarAnchor());
 }
 
 // Apply a CalendarEvent/query → CalendarEvent/get response pair: capture the object-state cursor
@@ -116,7 +110,7 @@ async function fetchCalendar(): Promise<void> {
   const accountId = calendarAccountId();
   if (!accountId) return; // capability absent — nothing to load (view switch keeps the tab disabled)
   const client = jmap();
-  const { after, before } = agendaWindow();
+  const { after, before } = currentWindow();
   const responses = await client.request(
     [
       calendarGet(accountId, "cal"),
@@ -155,20 +149,65 @@ export function loadCalendar(): Promise<void> {
   return loadInFlight;
 }
 
-// Re-run the agenda window query → get and reconcile. Used by syncCalendar when an event changed:
-// the agenda is an EXPANDED view, so we can't upsert a base-event delta into it by id (see below) —
-// re-querying the window is the correct, simple refresh.
-async function refetchEvents(accountId: string): Promise<void> {
+// Issue the visible-window CalendarEvent/query → CalendarEvent/get and return the raw responses (no
+// apply). Shared by refetchEvents (the mutation/sync reconcile) and refetchWindow (view navigation),
+// so the canonical expanded query is defined in one place.
+async function requestWindow(accountId: string): Promise<MethodResponse[]> {
   const client = jmap();
-  const { after, before } = agendaWindow();
-  const responses = await client.request(
+  const { after, before } = currentWindow();
+  return client.request(
     [
       calendarEventQuery(accountId, "q", { filter: { after, before }, expandRecurrences: true }),
       calendarEventGet(accountId, "ev", { idsRef: idsFromCalendarEventQuery("q") }),
     ],
     CALENDAR_USING,
   );
-  applyEventResponses(responses, "q", "ev");
+}
+
+// Re-run the visible-window query → get and reconcile. Used by syncCalendar / the mutation paths when
+// an event changed: the agenda + grids are an EXPANDED view, so we can't upsert a base-event delta into
+// them by id (see below) — re-querying the window is the correct, simple refresh.
+async function refetchEvents(accountId: string): Promise<void> {
+  applyEventResponses(await requestWindow(accountId), "q", "ev");
+}
+
+// Monotonic token for view-navigation re-queries: a fast prev/prev/next can fire several refetchWindow
+// calls, so only the LATEST one's response is applied (a stale earlier window must not clobber the
+// current one). Mirrors the resolve-supersede token discipline in EventView ([[qelo-review-checklist]]
+// PR #34). The mutation/sync reconcile path (refetchEvents) isn't tokened — it re-queries the SAME
+// current window and its callers depend on its store write landing.
+let navSeq = 0;
+
+/**
+ * Re-query the visible window after a view-mode/anchor change (navigation). Awaits any in-flight first
+ * load so a nav done before the initial fetch completes still wins (it re-queries the now-current
+ * window on top of the load), then applies the new window — unless a newer nav superseded it
+ * (`navSeq`). No-op until the calendar has loaded (the lazy first load owns the initial window) or when
+ * the capability is absent. Never rejects; an auth failure raises the global re-auth gate, anything
+ * else is logged (the previous window stays on screen). The Calendar surface calls this from an effect
+ * watching `calendarViewMode`/`calendarAnchor`.
+ */
+export async function refetchWindow(): Promise<void> {
+  if (loadInFlight) {
+    try {
+      await loadInFlight;
+    } catch {
+      // The first load's own error handling already ran; if it failed, calendarReady stays false and
+      // the guard below returns (the next view open retries the load).
+    }
+  }
+  if (!calendarReady()) return;
+  const accountId = calendarAccountId();
+  if (!accountId) return;
+  const token = ++navSeq;
+  try {
+    const responses = await requestWindow(accountId);
+    if (token !== navSeq) return; // a newer nav superseded this window — drop the stale result
+    applyEventResponses(responses, "q", "ev");
+  } catch (err) {
+    if (handleAuthFailure(err)) return;
+    console.error("Calendar window re-query failed:", err);
+  }
 }
 
 /**

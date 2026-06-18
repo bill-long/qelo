@@ -1,4 +1,4 @@
-import { createMemo, For, onMount, Show } from "solid-js";
+import { createMemo, For, Show } from "solid-js";
 import type { CalendarEvent } from "@/jmap/types";
 import {
   eventDisplayTitle,
@@ -7,18 +7,15 @@ import {
   isAllDay,
   isRecurring,
 } from "@/lib/calendar";
-import { calendarEvents, calendarReady, eventIds, loadCalendar } from "@/stores/calendar";
+import { calendarEvents, calendarReady, eventIds } from "@/stores/calendar";
 import { selectedCalendarId, selectedEventId, setSelectedEventId } from "@/stores/ui";
 
 /**
- * The agenda (column 2, where ThreadList sits in mail view): the loaded date window's events,
- * grouped by day with a heading per day. Loads the calendar on first mount (lazy — mail-only
- * sessions never fetch it); the load-once guard makes a mail⇄calendar toggle cheap.
+ * The agenda body (the "agenda" view mode): the loaded date window's events, grouped by day with a
+ * heading per day. The calendar load + window navigation are owned by the enclosing CalendarMain, so
+ * this component is purely the agenda render of the current window.
  */
 export function EventList() {
-  // Lazy first load. loadCalendar is idempotent + never rejects, so firing it on every mount is safe.
-  onMount(() => void loadCalendar());
-
   // Resolve eventIds (query order) → events, filtered to the selected calendar (null = all), then
   // grouped by day. groupEventsByDay sorts within each day, so the agenda order is deterministic.
   const groups = createMemo(() => {
@@ -36,7 +33,10 @@ export function EventList() {
   return (
     <div class="agenda">
       <Show when={calendarReady()} fallback={<p class="agenda-note">Loading…</p>}>
-        <Show when={groups().length > 0} fallback={<p class="agenda-note">No upcoming events</p>}>
+        <Show
+          when={groups().length > 0}
+          fallback={<p class="agenda-note">No events in this range</p>}
+        >
           <For each={groups()}>
             {(group) => (
               <section class="agenda-day">

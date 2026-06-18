@@ -81,6 +81,6 @@ describe("EventList", () => {
     reset();
     setCalendarReady(true);
     render(() => <EventList />);
-    expect(screen.getByText("No upcoming events")).toBeTruthy();
+    expect(screen.getByText("No events in this range")).toBeTruthy();
   });
 });

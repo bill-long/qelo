@@ -21,7 +21,11 @@ import {
   isRecurring,
   parseDateParts,
   parseDuration,
+  rangeLabel,
   recurrenceSummary,
+  stepAnchor,
+  todayAnchor,
+  visibleRange,
   writableCalendars,
 } from "./calendar";
 
@@ -467,5 +471,97 @@ describe("writableCalendars / defaultWritableCalendarId", () => {
     expect(
       defaultWritableCalendarId(writableCalendars({ r: cal({ myRights: readonlyRights }) })),
     ).toBe(null);
+  });
+});
+
+// These helpers build the query window / nav from LOCAL dates, so the expectations are computed the
+// same way (local Date construction) to stay tz-independent: both sides shift by the runner's offset
+// identically. June 2026: the 1st is a Monday, the 14th/21st are Sundays, the 17th is a Wednesday.
+describe("visibleRange", () => {
+  it("day mode = the single anchor day (exclusive next-midnight end)", () => {
+    expect(visibleRange("day", new Date(2026, 5, 17))).toEqual({
+      after: new Date(2026, 5, 17).toISOString(),
+      before: new Date(2026, 5, 18).toISOString(),
+    });
+  });
+
+  it("week mode = the Sun…Sat week containing the anchor", () => {
+    // Wed Jun 17 → week starts Sun Jun 14, exclusive end Sun Jun 21.
+    expect(visibleRange("week", new Date(2026, 5, 17))).toEqual({
+      after: new Date(2026, 5, 14).toISOString(),
+      before: new Date(2026, 5, 21).toISOString(),
+    });
+    // A Sunday anchor is the week start (not pulled back a week).
+    expect(visibleRange("week", new Date(2026, 5, 14)).after).toBe(
+      new Date(2026, 5, 14).toISOString(),
+    );
+  });
+
+  it("agenda mode = anchor → anchor + 56 days", () => {
+    expect(visibleRange("agenda", new Date(2026, 5, 17))).toEqual({
+      after: new Date(2026, 5, 17).toISOString(),
+      before: new Date(2026, 7, 12).toISOString(), // Jun 17 + 56d = Aug 12
+    });
+  });
+
+  it("month mode pads the month out to whole weeks (Sun-start, exclusive end)", () => {
+    // June 2026: 1st=Mon → grid starts Sun May 31; last=Tue Jun 30 → its week's Sun is Jun 28, so the
+    // exclusive end is Jul 5. A 5-row (35-day) grid. The anchor's day-of-month is irrelevant.
+    const range = visibleRange("month", new Date(2026, 5, 17));
+    expect(range).toEqual({
+      after: new Date(2026, 4, 31).toISOString(),
+      before: new Date(2026, 6, 5).toISOString(),
+    });
+    const spanDays = Math.round(
+      (new Date(range.before).getTime() - new Date(range.after).getTime()) / 86_400_000,
+    );
+    expect(spanDays).toBe(35);
+    expect(spanDays % 7).toBe(0); // always whole weeks
+    // Any day in the month yields the same month window.
+    expect(visibleRange("month", new Date(2026, 5, 1))).toEqual(range);
+    expect(visibleRange("month", new Date(2026, 5, 30))).toEqual(range);
+  });
+});
+
+describe("stepAnchor", () => {
+  it("steps day/week/agenda by their window length", () => {
+    expect(stepAnchor("day", new Date(2026, 5, 17), 1)).toEqual(new Date(2026, 5, 18));
+    expect(stepAnchor("day", new Date(2026, 5, 17), -1)).toEqual(new Date(2026, 5, 16));
+    expect(stepAnchor("week", new Date(2026, 5, 17), 1)).toEqual(new Date(2026, 5, 24));
+    expect(stepAnchor("week", new Date(2026, 5, 17), -1)).toEqual(new Date(2026, 5, 10));
+    expect(stepAnchor("agenda", new Date(2026, 5, 17), 1)).toEqual(new Date(2026, 7, 12));
+  });
+
+  it("steps month-to-month off the 1st so a 31st never skips a short month", () => {
+    // The overflow trap: Jan 31 + 1 month via setMonth alone is Mar 3 (skips Feb). Pinning to the 1st
+    // first lands on Feb 1.
+    const next = stepAnchor("month", new Date(2026, 0, 31), 1);
+    expect(next.getFullYear()).toBe(2026);
+    expect(next.getMonth()).toBe(1); // February, not March
+    // Year rollover both directions.
+    expect(stepAnchor("month", new Date(2026, 11, 15), 1).getMonth()).toBe(0); // Dec → Jan
+    expect(stepAnchor("month", new Date(2026, 11, 15), 1).getFullYear()).toBe(2027);
+    expect(stepAnchor("month", new Date(2026, 0, 15), -1).getFullYear()).toBe(2025); // Jan → Dec
+  });
+});
+
+describe("todayAnchor / rangeLabel", () => {
+  it("todayAnchor is the local midnight of now", () => {
+    expect(todayAnchor(new Date(2026, 5, 17, 14, 30))).toEqual(new Date(2026, 5, 17));
+  });
+
+  it("labels each view window", () => {
+    const now = new Date(2026, 5, 17);
+    expect(rangeLabel("month", new Date(2026, 5, 17), now)).toBe("June 2026");
+    expect(rangeLabel("day", new Date(2026, 5, 17), now)).toBe("Wed, Jun 17");
+    // Sun-start week of Jun 17 = Jun 14 – 20 (same month → no repeated month on the right).
+    expect(rangeLabel("week", new Date(2026, 5, 17), now)).toBe("Jun 14 – 20");
+    // Agenda spans Jun 17 → Aug 11 (cross-month label).
+    expect(rangeLabel("agenda", new Date(2026, 5, 17), now)).toBe("Jun 17 – Aug 11");
+  });
+
+  it("appends the year when the window isn't in the current year", () => {
+    const now = new Date(2026, 5, 17);
+    expect(rangeLabel("day", new Date(2027, 0, 5), now)).toBe("Tue, Jan 5, 2027");
   });
 });

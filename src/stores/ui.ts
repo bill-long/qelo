@@ -1,7 +1,8 @@
 import { createSignal } from "solid-js";
+import { type CalendarViewMode, todayAnchor } from "@/lib/calendar";
 
-/** Which top-level surface the shell shows. Calendar is reserved (its tab is disabled until
- * that milestone lands), but typed here so the switch's final shape is fixed now. */
+/** Which top-level surface the shell shows. Mail, Contacts, and Calendar are all live; the tab for
+ * each is capability-gated in ViewSwitch. */
 export type PrimaryView = "mail" | "contacts" | "calendar";
 export const [activeView, setActiveView] = createSignal<PrimaryView>("mail");
 
@@ -16,6 +17,14 @@ export const [selectedAddressBookId, setSelectedAddressBookId] = createSignal<st
 // Calendar view selection. `selectedCalendarId` null = the "All calendars" pseudo-calendar.
 export const [selectedEventId, setSelectedEventId] = createSignal<string | null>(null);
 export const [selectedCalendarId, setSelectedCalendarId] = createSignal<string | null>(null);
+
+// Calendar view navigation (Calendar Views milestone): which view the surface renders and the
+// focused date that drives the visible window. `calendarAnchor` is always a LOCAL-midnight Date
+// (see todayAnchor); changing either re-queries the window (the Calendar surface watches them).
+// Default mode is "agenda" — this scaffold branch keeps the CRUD landing; the month-grid branch
+// flips the default to "month". The store derives the query window via lib/calendar `visibleRange`.
+export const [calendarViewMode, setCalendarViewMode] = createSignal<CalendarViewMode>("agenda");
+export const [calendarAnchor, setCalendarAnchor] = createSignal<Date>(todayAnchor());
 
 // Whether the create-contact form owns the detail pane (column 3). Set by the "+ New contact"
 // affordance; cleared on save/cancel or when the selected contact changes (ContactView), so the
