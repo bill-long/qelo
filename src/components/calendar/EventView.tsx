@@ -37,8 +37,9 @@ import { creatingEvent, selectedEventId, setCreatingEvent, setSelectedEventId } 
  * Inside: a focused-complete render of the selected event — title, when (day + time range + time zone),
  * calendar, location(s), description, status/free-busy/privacy, participants (read-only), recurrence
  * badge — with Edit (resolves the BASE event behind the selected occurrence → {@link EventEditForm}),
- * Delete (two-step confirm), and the create form (via `creatingEvent`). Recurrence + participant editing
- * stay deferred.
+ * Delete (two-step confirm), and the create form (via `creatingEvent`). Editing a recurring event's
+ * rule via the form changes the WHOLE series (the per-occurrence apply modes land in a later branch);
+ * participant editing stays deferred.
  */
 export function EventView() {
   const [editing, setEditing] = createSignal(false);

@@ -402,8 +402,9 @@ export type SaveEventResult =
  * agenda id the user was viewing (the optimistic write target — the store is keyed by occurrence ids).
  * The patch is the diff between the baseline and the edits, so it carries only the properties the user
  * changed — issued as ONE `CalendarEvent/set update` (a JSON-pointer patch) that touches only those
- * pointers, leaving `recurrenceRule`/`participants`/etc. untouched. Resolves with a
- * {@link SaveEventResult} (never rejects) so the form can surface a failure inline.
+ * pointers (which may include `recurrenceRule` when the repeat changed — editing a recurring event
+ * here changes the WHOLE series), leaving unedited properties (`participants`/etc.) untouched. Resolves
+ * with a {@link SaveEventResult} (never rejects) so the form can surface a failure inline.
  *
  * The agenda is an EXPANDED view (synthetic-keyed, un-upsertable by base id — see syncCalendar), so:
  *  - the optimistic write overlays the changed NON-temporal properties onto the viewed occurrence for
@@ -432,7 +433,8 @@ export async function saveEvent(
 
   // Optimistic overlay of the changed NON-temporal props onto the viewed occurrence (snapshot it for
   // a revert). Temporal props (start/duration/timeZone/showWithoutTime) belong to each occurrence and
-  // are left to the reconcile re-query; calendarIds/recurrence are untouched.
+  // are left to the reconcile re-query; calendarIds is untouched. A recurrence-rule change isn't
+  // overlaid either — it re-expands the series, which only the full re-query can rebuild.
   const occurrence = calendarEvents[occurrenceId];
   const restore = occurrence ? (structuredClone(unwrap(occurrence)) as CalendarEvent) : null;
   if (occurrence) {

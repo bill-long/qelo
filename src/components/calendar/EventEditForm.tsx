@@ -6,10 +6,12 @@ import {
   createSeedDate,
   defaultWritableCalendarId,
   type EditableEvent,
+  type EditableRecurrence,
   editableEventError,
   editableHasContent,
   emptyEditableEvent,
   eventToEditable,
+  recurrenceValid,
 } from "@/lib/calendar";
 import { createEvent, saveEvent } from "@/stores/calendar";
 import { notify } from "@/stores/toasts";
@@ -20,6 +22,36 @@ import { calendarAnchor, calendarViewMode } from "@/stores/ui";
 const STATUS_OPTIONS = ["confirmed", "tentative", "cancelled"];
 const FREE_BUSY_OPTIONS = ["free", "busy"];
 const PRIVACY_OPTIONS = ["public", "private", "secret"];
+
+// Display copy for an invalid recurrence (mirrors lib/calendar's gate message). Shown in the recurrence
+// block, not under the date fields.
+const RECURRENCE_ERROR =
+  "Enter a valid repeat: an interval of 1 or more, a positive count, or a valid end date.";
+
+// The repeat <select> options + the per-frequency interval unit ("week" → "weeks").
+const FREQUENCY_OPTIONS: { value: EditableRecurrence["frequency"]; label: string }[] = [
+  { value: "", label: "Does not repeat" },
+  { value: "daily", label: "Daily" },
+  { value: "weekly", label: "Weekly" },
+  { value: "monthly", label: "Monthly" },
+  { value: "yearly", label: "Yearly" },
+];
+const INTERVAL_UNIT: Record<string, string> = {
+  daily: "day",
+  weekly: "week",
+  monthly: "month",
+  yearly: "year",
+};
+// Weekday picker (Mon-first display) → byDay codes.
+const WEEKDAY_PICKER: { code: string; label: string }[] = [
+  { code: "mo", label: "Mon" },
+  { code: "tu", label: "Tue" },
+  { code: "we", label: "Wed" },
+  { code: "th", label: "Thu" },
+  { code: "fr", label: "Fri" },
+  { code: "sa", label: "Sat" },
+  { code: "su", label: "Sun" },
+];
 
 // The IANA time-zone ids for the tz picker. Intl.supportedValuesOf is in modern engines (and Node
 // 18+, so it's present under the test runner); fall back to just the event's own zone if absent so
@@ -45,11 +77,13 @@ export type EventEditFormProps = { onClose: () => void } & (
  * EventDetail). A working copy — seeded from the resolved BASE event (`eventToEditable`) when editing,
  * a default one-hour slot (`emptyEditableEvent`) when creating — is edited locally; Save dispatches
  * `saveEvent` (a minimal patch against the open-time baseline) or `createEvent` (a new event in the
- * chosen calendar), which own the JMAP round trip + the agenda reconcile. Covers the rendered set
- * MINUS recurrence + participants (those are present but uneditable this milestone and carry through /
- * aren't settable on create): title, when (start/end/all-day/timeZone), location, description, and the
- * status/free-busy/privacy enums. Errors surface inline (toasts are success-only); a successful
- * save/create confirms with a toast and closes back to the detail.
+ * chosen calendar), which own the JMAP round trip + the agenda reconcile. Covers title, when
+ * (start/end/all-day/timeZone), location, description, the status/free-busy/privacy enums, AND the
+ * recurrence rule (frequency/interval/weekdays/end — the `RecurrenceEditor` below); participants stay
+ * present-but-uneditable and carry through untouched. For a RECURRING event this edits the whole series
+ * (it patches the base event); the per-occurrence apply modes (this / this-and-following) land in a
+ * later branch. Errors surface inline (toasts are success-only); a successful save/create confirms with
+ * a toast and closes back to the detail.
  */
 export function EventEditForm(props: EventEditFormProps) {
   // Freeze a plain-object snapshot of the base event at open (edit mode only). It seeds the working
@@ -86,11 +120,21 @@ export function EventEditForm(props: EventEditFormProps) {
   // when). Save gating: edit blocks on a when error; create blocks on `editableHasContent` (title +
   // valid when) AND a resolved destination calendar — so the button can't enable into a submit that
   // would always fail with "No writable calendar" (e.g. an empty `calendars`, should rights change).
-  const whenError = createMemo(() =>
+  // The combined validity (when + recurrence) — the store-boundary truth that gates Save.
+  const formError = createMemo(() =>
     baseline ? editableEventError(baseline, form) : createEventError(form),
   );
+  // Recurrence error renders in the recurrence block; the when message renders under End. Split so an
+  // invalid repeat doesn't mark the date fields aria-invalid (formError checks the when first, so when
+  // the recurrence is valid a non-null formError is attributable to the when).
+  const recurrenceError = createMemo(() =>
+    recurrenceValid(form.recurrence) ? null : RECURRENCE_ERROR,
+  );
+  const whenError = createMemo(() => (recurrenceError() ? null : formError()));
   const canSubmit = createMemo(() =>
-    baseline ? whenError() === null : editableHasContent(form) && calendarId() !== null,
+    baseline
+      ? formError() === null
+      : editableHasContent(form) && calendarId() !== null && formError() === null,
   );
   const timeZones = createMemo(() => timeZoneOptions(form.timeZone));
   let titleInput: HTMLInputElement | undefined;
@@ -267,6 +311,12 @@ export function EventEditForm(props: EventEditFormProps) {
         </label>
       </Show>
 
+      <RecurrenceEditor
+        recurrence={form.recurrence}
+        error={recurrenceError()}
+        onChange={(patch) => setForm("recurrence", patch)}
+      />
+
       <label class="event-edit-field">
         <span class="event-edit-label">Location</span>
         <input
@@ -336,6 +386,154 @@ export function EventEditForm(props: EventEditFormProps) {
         </button>
       </footer>
     </form>
+  );
+}
+
+// The recurrence-rule editor: a repeat frequency + (when repeating) interval, weekly weekday picker,
+// monthly day-of-month vs Nth-weekday choice, and an end (never / after N / on date). Edits the form's
+// `recurrence` working copy via `onChange` (a partial merge). Reads props reactively (no destructuring,
+// per SolidJS) so the conditional sections track the chosen frequency. The monthly choice and the
+// weekly weekdays are anchored on the event's start when the rule is built (lib `editableToRule`), so
+// the UI shows the pattern type, not the concrete weekday/date.
+function RecurrenceEditor(props: {
+  recurrence: EditableRecurrence;
+  error: string | null;
+  onChange: (patch: Partial<EditableRecurrence>) => void;
+}): JSX.Element {
+  const repeats = () => props.recurrence.frequency !== "";
+  const unit = () => INTERVAL_UNIT[props.recurrence.frequency] ?? "time";
+  function toggleWeekday(code: string, on: boolean) {
+    const current = props.recurrence.weekdays;
+    const next = on ? [...current, code] : current.filter((c) => c !== code);
+    props.onChange({ weekdays: next });
+  }
+  return (
+    <fieldset class="event-edit-recurrence">
+      <legend class="event-edit-label">Repeat</legend>
+      <select
+        class="event-edit-input"
+        aria-label="Repeat"
+        value={props.recurrence.frequency}
+        onChange={(e) =>
+          props.onChange({ frequency: e.currentTarget.value as EditableRecurrence["frequency"] })
+        }
+      >
+        <For each={FREQUENCY_OPTIONS}>
+          {(opt) => <option value={opt.value}>{opt.label}</option>}
+        </For>
+      </select>
+
+      <Show when={repeats()}>
+        <label class="event-edit-field event-edit-interval">
+          <span class="event-edit-label">Every</span>
+          <input
+            type="number"
+            min="1"
+            class="event-edit-input"
+            aria-label="Repeat every"
+            value={props.recurrence.interval}
+            aria-invalid={props.recurrence.interval >= 1 ? undefined : "true"}
+            onInput={(e) =>
+              props.onChange({ interval: Math.trunc(Number(e.currentTarget.value)) || 0 })
+            }
+          />
+          <span class="event-edit-unit">{unit()}(s)</span>
+        </label>
+
+        <Show when={props.recurrence.frequency === "weekly"}>
+          {/* Native checkboxes; a fieldset (not role=group) groups them per biome's semantic rule. */}
+          <fieldset class="event-edit-weekdays" aria-label="Repeat on">
+            <For each={WEEKDAY_PICKER}>
+              {(d) => (
+                <label class="event-edit-weekday">
+                  <input
+                    type="checkbox"
+                    checked={props.recurrence.weekdays.includes(d.code)}
+                    onChange={(e) => toggleWeekday(d.code, e.currentTarget.checked)}
+                  />
+                  <span>{d.label}</span>
+                </label>
+              )}
+            </For>
+          </fieldset>
+        </Show>
+
+        <Show when={props.recurrence.frequency === "monthly"}>
+          {/* Native radios share a `name`, so they form one radio group; a fieldset wraps them. */}
+          <fieldset class="event-edit-monthly" aria-label="Monthly pattern">
+            <label class="event-edit-check">
+              <input
+                type="radio"
+                name="monthly-mode"
+                checked={!props.recurrence.monthlyNth}
+                onChange={() => props.onChange({ monthlyNth: false })}
+              />
+              <span>On this day of the month</span>
+            </label>
+            <label class="event-edit-check">
+              <input
+                type="radio"
+                name="monthly-mode"
+                checked={props.recurrence.monthlyNth}
+                onChange={() => props.onChange({ monthlyNth: true })}
+              />
+              <span>On this weekday of the month</span>
+            </label>
+          </fieldset>
+        </Show>
+
+        <label class="event-edit-field">
+          <span class="event-edit-label">Ends</span>
+          <select
+            class="event-edit-input"
+            value={props.recurrence.end}
+            onChange={(e) =>
+              props.onChange({ end: e.currentTarget.value as EditableRecurrence["end"] })
+            }
+          >
+            <option value="never">Never</option>
+            <option value="count">After a number of times</option>
+            <option value="until">On a date</option>
+          </select>
+        </label>
+
+        <Show when={props.recurrence.end === "count"}>
+          <label class="event-edit-field">
+            <span class="event-edit-label">Occurrences</span>
+            <input
+              type="number"
+              min="1"
+              class="event-edit-input"
+              value={props.recurrence.count}
+              aria-invalid={props.recurrence.count >= 1 ? undefined : "true"}
+              onInput={(e) =>
+                props.onChange({ count: Math.trunc(Number(e.currentTarget.value)) || 0 })
+              }
+            />
+          </label>
+        </Show>
+        <Show when={props.recurrence.end === "until"}>
+          <label class="event-edit-field">
+            <span class="event-edit-label">End date</span>
+            <input
+              type="date"
+              class="event-edit-input"
+              value={props.recurrence.until}
+              aria-invalid={props.error ? "true" : undefined}
+              onInput={(e) => props.onChange({ until: e.currentTarget.value })}
+            />
+          </label>
+        </Show>
+      </Show>
+
+      <Show when={props.error}>
+        {(message) => (
+          <p class="event-edit-error" role="alert">
+            {message()}
+          </p>
+        )}
+      </Show>
+    </fieldset>
   );
 }
 

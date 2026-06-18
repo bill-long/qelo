@@ -8,15 +8,20 @@ import type { Calendar, CalendarEvent } from "@/jmap/types";
 import {
   baseEventIdCandidates,
   type EditableEvent,
+  type EditableRecurrence,
   editableEventError,
   editableToEvent,
   editableToPatch,
+  editableToRule,
   editableWhen,
+  emptyRecurrence,
   eventMayDelete,
   eventMayWrite,
   eventToEditable,
   pickBaseEvent,
+  recurrenceValid,
   resolveBaseEventId,
+  ruleToEditable,
 } from "./calendar";
 
 function event(partial: Partial<CalendarEvent>): CalendarEvent {
@@ -224,6 +229,15 @@ describe("eventToEditable", () => {
       status: "confirmed",
       freeBusyStatus: "busy",
       privacy: "public",
+      recurrence: {
+        frequency: "weekly",
+        interval: 1,
+        weekdays: [],
+        monthlyNth: false,
+        end: "never",
+        count: 10,
+        until: "",
+      },
     });
   });
 
@@ -377,5 +391,162 @@ describe("editableWhen + editableEventError", () => {
   it("accepts an untouched (server-loaded) event", () => {
     const base = timedEvent();
     expect(editableEventError(base, eventToEditable(base))).toBeNull();
+  });
+});
+
+// A start anchoring the weekly/monthly rule build (Mon 2026-07-06 09:00; the 6th = 1st Monday).
+const START = { year: 2026, month: 7, day: 6, hour: 9, minute: 0, second: 0 };
+
+describe("ruleToEditable", () => {
+  it("returns a non-repeating copy when there's no rule (or an unknown frequency)", () => {
+    expect(ruleToEditable(event({}))).toEqual(emptyRecurrence());
+    expect(ruleToEditable(event({ recurrenceRule: { frequency: "hourly" } }))).toEqual(
+      emptyRecurrence(),
+    );
+  });
+
+  it("reads weekly byDay into weekdays + interval", () => {
+    const rec = ruleToEditable(
+      event({
+        recurrenceRule: {
+          frequency: "weekly",
+          interval: 2,
+          byDay: [{ day: "mo" }, { day: "we" }],
+        },
+      }),
+    );
+    expect(rec.frequency).toBe("weekly");
+    expect(rec.interval).toBe(2);
+    expect(rec.weekdays).toEqual(["mo", "we"]);
+    expect(rec.monthlyNth).toBe(false);
+  });
+
+  it("flags monthly Nth-weekday from a byDay nthOfPeriod, and reads count", () => {
+    const rec = ruleToEditable(
+      event({
+        recurrenceRule: { frequency: "monthly", byDay: [{ day: "tu", nthOfPeriod: 2 }], count: 5 },
+      }),
+    );
+    expect(rec.frequency).toBe("monthly");
+    expect(rec.monthlyNth).toBe(true);
+    expect(rec.end).toBe("count");
+    expect(rec.count).toBe(5);
+  });
+
+  it("reads an until date (date portion only)", () => {
+    const rec = ruleToEditable(
+      event({ recurrenceRule: { frequency: "daily", until: "2026-08-01T09:00:00" } }),
+    );
+    expect(rec.end).toBe("until");
+    expect(rec.until).toBe("2026-08-01");
+  });
+});
+
+describe("editableToRule", () => {
+  const base = (over: Partial<EditableRecurrence> = {}): EditableRecurrence => ({
+    ...emptyRecurrence(),
+    ...over,
+  });
+
+  it("returns undefined for a non-repeating copy", () => {
+    expect(editableToRule(base(), START)).toBeUndefined();
+  });
+
+  it("omits interval 1 and emits interval > 1", () => {
+    expect(editableToRule(base({ frequency: "daily" }), START)).toEqual({
+      "@type": "RecurrenceRule",
+      frequency: "daily",
+    });
+    expect(editableToRule(base({ frequency: "daily", interval: 3 }), START)).toMatchObject({
+      interval: 3,
+    });
+  });
+
+  it("emits weekly byDay from the chosen weekdays", () => {
+    expect(editableToRule(base({ frequency: "weekly", weekdays: ["mo", "th"] }), START)).toEqual({
+      "@type": "RecurrenceRule",
+      frequency: "weekly",
+      byDay: [
+        { "@type": "NDay", day: "mo" },
+        { "@type": "NDay", day: "th" },
+      ],
+    });
+  });
+
+  it("derives monthly day-of-month vs Nth-weekday from the start", () => {
+    // 2026-07-06 is the 6th (day-of-month 6) and the 1st Monday.
+    expect(editableToRule(base({ frequency: "monthly", monthlyNth: false }), START)).toMatchObject({
+      byMonthDay: [6],
+    });
+    expect(editableToRule(base({ frequency: "monthly", monthlyNth: true }), START)).toMatchObject({
+      byDay: [{ "@type": "NDay", day: "mo", nthOfPeriod: 1 }],
+    });
+  });
+
+  it("emits count, or an until carrying the start's time-of-day", () => {
+    expect(
+      editableToRule(base({ frequency: "weekly", end: "count", count: 8 }), START),
+    ).toMatchObject({ count: 8 });
+    expect(
+      editableToRule(base({ frequency: "weekly", end: "until", until: "2026-09-01" }), START),
+    ).toMatchObject({ until: "2026-09-01T09:00:00" });
+  });
+});
+
+describe("recurrenceValid", () => {
+  it("accepts a non-repeating copy and a well-formed rule", () => {
+    expect(recurrenceValid(emptyRecurrence())).toBe(true);
+    expect(recurrenceValid({ ...emptyRecurrence(), frequency: "weekly" })).toBe(true);
+  });
+  it("rejects interval < 1, count < 1, or an invalid until", () => {
+    expect(recurrenceValid({ ...emptyRecurrence(), frequency: "daily", interval: 0 })).toBe(false);
+    expect(
+      recurrenceValid({ ...emptyRecurrence(), frequency: "daily", end: "count", count: 0 }),
+    ).toBe(false);
+    expect(
+      recurrenceValid({ ...emptyRecurrence(), frequency: "daily", end: "until", until: "nope" }),
+    ).toBe(false);
+  });
+});
+
+describe("recurrence in the patch builder", () => {
+  it("emits no recurrenceRule when the repeat is untouched (the no-op invariant)", () => {
+    const base = timedEvent({ recurrenceRule: { frequency: "weekly", interval: 2 } });
+    expect(editableToPatch(base, eventToEditable(base))).toEqual({});
+  });
+
+  it("carries an editor-inexpressible rule VERBATIM when only another field changes", () => {
+    // A multi-day byMonthDay list the simple editor can't reproduce; editing the title alone must not
+    // rewrite (or drop) the rule.
+    const base = timedEvent({
+      recurrenceRule: { frequency: "monthly", byMonthDay: [1, 15, -1] },
+    });
+    const patch = editableToPatch(base, edit(base, { title: "Renamed" }));
+    expect(patch).toEqual({ title: "Renamed" });
+    expect(patch).not.toHaveProperty("recurrenceRule");
+  });
+
+  it("emits a rebuilt rule when the repeat changes", () => {
+    const base = timedEvent({ recurrenceRule: { frequency: "weekly" } });
+    const patch = editableToPatch(
+      base,
+      edit(base, { recurrence: { ...ruleToEditable(base), interval: 3 } }),
+    );
+    expect(patch.recurrenceRule).toMatchObject({ frequency: "weekly", interval: 3 });
+  });
+
+  it("emits recurrenceRule: null when the repeat is turned off", () => {
+    const base = timedEvent({ recurrenceRule: { frequency: "weekly" } });
+    const patch = editableToPatch(base, edit(base, { recurrence: emptyRecurrence() }));
+    expect(patch.recurrenceRule).toBeNull();
+  });
+
+  it("adds a rule to a non-recurring event via the optimistic rebuild", () => {
+    const base = timedEvent({ recurrenceRule: undefined });
+    const next = editableToEvent(
+      base,
+      edit(base, { recurrence: { ...emptyRecurrence(), frequency: "daily" } }),
+    );
+    expect(next.recurrenceRule).toMatchObject({ frequency: "daily" });
   });
 });
