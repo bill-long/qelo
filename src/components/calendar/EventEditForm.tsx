@@ -3,6 +3,7 @@ import { createStore, produce, unwrap } from "solid-js/store";
 import type { Calendar, CalendarEvent } from "@/jmap/types";
 import {
   createEventError,
+  createSeedDate,
   defaultWritableCalendarId,
   type EditableEvent,
   editableEventError,
@@ -12,6 +13,7 @@ import {
 } from "@/lib/calendar";
 import { createEvent, saveEvent } from "@/stores/calendar";
 import { notify } from "@/stores/toasts";
+import { calendarAnchor, calendarViewMode } from "@/stores/ui";
 
 // The JSCalendar enum vocabularies the form exposes as <select>s. "" = unset (the server default);
 // kept distinct so opening and saving an event whose property the server never set stays a no-op.
@@ -60,7 +62,13 @@ export function EventEditForm(props: EventEditFormProps) {
   const baseline = editEvent ? (structuredClone(unwrap(editEvent)) as CalendarEvent) : null;
   // eslint-disable-next-line solid/reactivity
   const occurrenceId = props.mode === "edit" ? props.occurrenceId : "";
-  const initial = baseline ? eventToEditable(baseline) : emptyEditableEvent();
+  // Edit seeds from the base event; create seeds a default slot in the VISIBLE window (createSeedDate
+  // reads the current mode + anchor) so a new event made while the calendar is navigated away from
+  // today lands on screen, not off-window on today. Keyed off `baseline` (null only in create mode) so
+  // there's no extra props read; a one-time capture at open (the form unmounts on a selection change).
+  const initial = baseline
+    ? eventToEditable(baseline)
+    : emptyEditableEvent(createSeedDate(calendarViewMode(), calendarAnchor()));
   const [form, setForm] = createStore<EditableEvent>(initial);
   // Create mode: which writable calendar the new event lands in. Defaults to the server-default
   // writable calendar; a `<select>` lets the user pick only when there's more than one. (Static for

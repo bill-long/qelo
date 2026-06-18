@@ -6,6 +6,7 @@ import {
   createdEventFor,
   createEventBody,
   createEventError,
+  createSeedDate,
   dayKey,
   defaultWritableCalendarId,
   type EditableEvent,
@@ -563,5 +564,31 @@ describe("todayAnchor / rangeLabel", () => {
   it("appends the year when the window isn't in the current year", () => {
     const now = new Date(2026, 5, 17);
     expect(rangeLabel("day", new Date(2027, 0, 5), now)).toBe("Tue, Jan 5, 2027");
+  });
+
+  it("labels a cross-year span with both years", () => {
+    const now = new Date(2026, 11, 31); // current year 2026
+    // A week straddling the year boundary: Sun Dec 27 2026 – Sat Jan 2 2027.
+    expect(rangeLabel("week", new Date(2026, 11, 30), now)).toBe("Dec 27, 2026 – Jan 2, 2027");
+  });
+});
+
+describe("createSeedDate", () => {
+  const now = new Date(2026, 5, 17, 14, 30); // Wed Jun 17 2026, 14:30
+
+  it("returns now when today is in the visible window", () => {
+    // Agenda anchored today, and month anchored on this month, both contain today → seed at now.
+    expect(createSeedDate("agenda", todayAnchor(now), now)).toEqual(now);
+    expect(createSeedDate("month", new Date(2026, 5, 1), now)).toEqual(now);
+  });
+
+  it("seeds the anchor's day (at now's time-of-day) when today is out of the window", () => {
+    // Agenda navigated ~7 months out: today isn't in [anchor, anchor+56d) → seed on the anchor day.
+    const farAnchor = new Date(2027, 0, 10); // Jan 10 2027
+    expect(createSeedDate("agenda", farAnchor, now)).toEqual(new Date(2027, 0, 10, 14, 30));
+    // Month navigated to a different month likewise.
+    expect(createSeedDate("month", new Date(2027, 2, 1), now)).toEqual(
+      new Date(2027, 2, 1, 14, 30),
+    );
   });
 });

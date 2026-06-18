@@ -1,17 +1,14 @@
 import { createEffect, Match, on, onMount, Switch } from "solid-js";
 import { CalendarNav } from "@/components/calendar/CalendarNav";
-import { CalendarViewSwitch } from "@/components/calendar/CalendarViewSwitch";
+import { CalendarViewSwitch, MODES } from "@/components/calendar/CalendarViewSwitch";
 import { EventList } from "@/components/calendar/EventList";
-import type { CalendarViewMode } from "@/lib/calendar";
 import { loadCalendar, refetchWindow } from "@/stores/calendar";
 import { calendarAnchor, calendarViewMode } from "@/stores/ui";
 
-const PLACEHOLDER_LABEL: Record<CalendarViewMode, string> = {
-  agenda: "Agenda",
-  day: "Day",
-  week: "Week",
-  month: "Month",
-};
+// The active mode's label (from the switch's single source of truth), for the placeholder copy.
+function modeLabel(): string {
+  return MODES.find((m) => m.mode === calendarViewMode())?.label ?? "";
+}
 
 /**
  * The calendar surface's main column (where ThreadList sits in mail view): the view-mode switch + the
@@ -46,8 +43,7 @@ export function CalendarMain() {
           </Match>
           <Match when={calendarViewMode() !== "agenda"}>
             <p class="agenda-note">
-              {PLACEHOLDER_LABEL[calendarViewMode()]} view arrives later in this milestone. Use
-              Agenda for now.
+              {modeLabel()} view arrives later in this milestone. Use Agenda for now.
             </p>
           </Match>
         </Switch>

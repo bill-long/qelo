@@ -365,34 +365,58 @@ export function stepAnchor(mode: CalendarViewMode, anchor: Date, dir: 1 | -1): D
   return a;
 }
 
-// A "Mon 5 – Wed 7" / cross-month "Jun 29 – Jul 5" span label, with the year appended when the span
-// isn't wholly within the current year.
+// A span label for the nav header: same-month "Jun 14 – 20", cross-month "Jun 29 – Jul 5", cross-year
+// "Dec 29, 2026 – Jan 4, 2027" (both years, since one trailing year would be ambiguous for the left
+// endpoint). The year is appended once (trailing) for a same-year span that isn't the current year.
 function formatSpanLabel(start: Date, end: Date, now: Date): string {
   const sM = MONTHS[start.getMonth()] ?? "";
   const eM = MONTHS[end.getMonth()] ?? "";
-  const sameMonth =
-    start.getMonth() === end.getMonth() && start.getFullYear() === end.getFullYear();
-  const currentYear =
-    start.getFullYear() === now.getFullYear() && end.getFullYear() === now.getFullYear();
-  const yearSuffix = currentYear ? "" : `, ${end.getFullYear()}`;
+  if (start.getFullYear() !== end.getFullYear()) {
+    return `${sM} ${start.getDate()}, ${start.getFullYear()} – ${eM} ${end.getDate()}, ${end.getFullYear()}`;
+  }
   const left = `${sM} ${start.getDate()}`;
-  const right = sameMonth ? `${end.getDate()}` : `${eM} ${end.getDate()}`;
+  const right = start.getMonth() === end.getMonth() ? `${end.getDate()}` : `${eM} ${end.getDate()}`;
+  const yearSuffix = start.getFullYear() === now.getFullYear() ? "" : `, ${start.getFullYear()}`;
   return `${left} – ${right}${yearSuffix}`;
 }
 
 /** A human label for the current view window, for the nav header: month → "June 2026", week →
- * "Jun 15 – 21", day → "Wed, Jun 17", agenda → "Jun 17 – Aug 11". `now` parameterized for tests. */
+ * "Jun 14 – 20", day → "Wed, Jun 17", agenda → "Jun 17 – Aug 11". `now` parameterized for tests. */
 export function rangeLabel(mode: CalendarViewMode, anchor: Date, now: Date = new Date()): string {
   const a = localMidnight(anchor);
   if (mode === "month") return `${MONTH_NAMES[a.getMonth()] ?? ""} ${a.getFullYear()}`;
+  // Day mode is exactly a one-day heading — reuse formatDayHeading (same "Wed, Jun 17[, year]" rule)
+  // rather than re-encoding the format, so the nav header and the agenda day headings can't drift.
   if (mode === "day") {
-    const base = `${WEEKDAYS[a.getDay()] ?? ""}, ${MONTHS[a.getMonth()] ?? ""} ${a.getDate()}`;
-    return a.getFullYear() === now.getFullYear() ? base : `${base}, ${a.getFullYear()}`;
+    return formatDayHeading(
+      `${a.getFullYear()}-${pad2(a.getMonth() + 1)}-${pad2(a.getDate())}`,
+      now,
+    );
   }
   const start = mode === "week" ? startOfWeek(a) : a;
   const end = new Date(start);
   end.setDate(end.getDate() + (mode === "week" ? 6 : AGENDA_WINDOW_DAYS - 1));
   return formatSpanLabel(start, end, now);
+}
+
+/**
+ * The Date to seed a NEW event's default slot from, given the visible window: `now` when today is in
+ * view (the familiar next-hour-today default), otherwise the anchor's day at the current time-of-day.
+ * So a create made while the window is navigated away from today lands somewhere VISIBLE (in the window
+ * the user is looking at) instead of on today — off-window, where the reconcile re-query would drop it
+ * from view. Feeds {@link emptyEditableEvent}; pure, `now` parameterized for tests.
+ */
+export function createSeedDate(mode: CalendarViewMode, anchor: Date, now: Date = new Date()): Date {
+  const { after, before } = visibleRange(mode, anchor);
+  const todayMs = localMidnight(now).getTime();
+  if (todayMs >= Date.parse(after) && todayMs < Date.parse(before)) return now;
+  return new Date(
+    anchor.getFullYear(),
+    anchor.getMonth(),
+    anchor.getDate(),
+    now.getHours(),
+    now.getMinutes(),
+  );
 }
 
 const FREQ_LABEL: Record<string, string> = {

@@ -84,6 +84,17 @@ function currentWindow(): { after: string; before: string } {
   return visibleRange(calendarViewMode(), calendarAnchor());
 }
 
+// A stable key for the visible window (its query range) — captured before a window query and
+// re-checked at apply time. Any window result is dropped unless it still matches the CURRENT window,
+// so a query for a window the user has since navigated away from can't clobber the one they're now
+// looking at. ONE supersede mechanism keyed on the window itself (not call order), covering BOTH a
+// nav superseding an earlier nav AND a nav superseding an in-flight sync/mutation reconcile (which
+// reads the window at request time but could otherwise apply its older window after the nav).
+function windowKey(): string {
+  const { after, before } = currentWindow();
+  return `${after}|${before}`;
+}
+
 // Apply a CalendarEvent/query → CalendarEvent/get response pair: capture the object-state cursor
 // (off the /get, which is a valid `sinceState` for /changes — verified live), reconcile the event
 // store to the fetched events, and set the agenda order from the QUERY ids (the start-sorted,
@@ -101,6 +112,18 @@ function applyEventResponses(
   for (const e of (ev.list ?? []) as CalendarEvent[]) map[e.id] = e;
   setCalendarEvents(reconcile(map));
   setEventIds((q.ids ?? []) as string[]);
+}
+
+// Request the visible window, then apply ITS result only if the user is still looking at that window
+// ({@link windowKey} unchanged across the round trip). Every window re-query (nav + the sync/mutation
+// reconcile) goes through here, so a stale window can never clobber the current one. `eventState` is
+// still recaptured from a matching apply (it's the account-global object state, valid regardless of
+// window). Captures the key BEFORE the request — requestWindow reads the same live window synchronously.
+async function requestAndApplyWindow(accountId: string): Promise<void> {
+  const key = windowKey();
+  const responses = await requestWindow(accountId);
+  if (windowKey() !== key) return; // navigated away mid-request — drop this stale window
+  applyEventResponses(responses, "q", "ev");
 }
 
 // Fetch calendars + the agenda window in one round trip (Calendar/get, then the canonical
@@ -166,26 +189,21 @@ async function requestWindow(accountId: string): Promise<MethodResponse[]> {
 
 // Re-run the visible-window query → get and reconcile. Used by syncCalendar / the mutation paths when
 // an event changed: the agenda + grids are an EXPANDED view, so we can't upsert a base-event delta into
-// them by id (see below) — re-querying the window is the correct, simple refresh.
+// them by id (see below) — re-querying the window is the correct, simple refresh. Window-key-guarded
+// (see requestAndApplyWindow) so a reconcile in flight when the user navigates can't apply its old
+// window over the new one.
 async function refetchEvents(accountId: string): Promise<void> {
-  applyEventResponses(await requestWindow(accountId), "q", "ev");
+  await requestAndApplyWindow(accountId);
 }
-
-// Monotonic token for view-navigation re-queries: a fast prev/prev/next can fire several refetchWindow
-// calls, so only the LATEST one's response is applied (a stale earlier window must not clobber the
-// current one). Mirrors the resolve-supersede token discipline in EventView ([[qelo-review-checklist]]
-// PR #34). The mutation/sync reconcile path (refetchEvents) isn't tokened — it re-queries the SAME
-// current window and its callers depend on its store write landing.
-let navSeq = 0;
 
 /**
  * Re-query the visible window after a view-mode/anchor change (navigation). Awaits any in-flight first
  * load so a nav done before the initial fetch completes still wins (it re-queries the now-current
- * window on top of the load), then applies the new window — unless a newer nav superseded it
- * (`navSeq`). No-op until the calendar has loaded (the lazy first load owns the initial window) or when
- * the capability is absent. Never rejects; an auth failure raises the global re-auth gate, anything
- * else is logged (the previous window stays on screen). The Calendar surface calls this from an effect
- * watching `calendarViewMode`/`calendarAnchor`.
+ * window on top of the load), then applies the new window — unless the user navigated again mid-request
+ * (the {@link windowKey} guard in requestAndApplyWindow drops the stale result). No-op until the
+ * calendar has loaded (the lazy first load owns the initial window) or when the capability is absent.
+ * Never rejects; an auth failure raises the global re-auth gate, anything else is logged (the previous
+ * window stays on screen). The Calendar surface calls this from an effect watching the mode + anchor.
  */
 export async function refetchWindow(): Promise<void> {
   if (loadInFlight) {
@@ -199,11 +217,8 @@ export async function refetchWindow(): Promise<void> {
   if (!calendarReady()) return;
   const accountId = calendarAccountId();
   if (!accountId) return;
-  const token = ++navSeq;
   try {
-    const responses = await requestWindow(accountId);
-    if (token !== navSeq) return; // a newer nav superseded this window — drop the stale result
-    applyEventResponses(responses, "q", "ev");
+    await refetchEvents(accountId);
   } catch (err) {
     if (handleAuthFailure(err)) return;
     console.error("Calendar window re-query failed:", err);
@@ -519,12 +534,14 @@ export type CreateEventResult =
  * The agenda is the EXPANDED (synthetic-keyed) view, and the create returns the BASE id (Stalwart's
  * created map carries only `id`). So after the create: optimistically seed the new base event for an
  * instant render, then reconcile via a full window re-query ({@link refetchEvents}) — where the new
- * event re-appears under its SYNTHETIC occurrence id (if it falls in the today→+window range). The
+ * event re-appears under its SYNTHETIC occurrence id IF it falls in the currently VISIBLE window. The
  * selection is then re-pointed from the base id to that occurrence by a fail-safe suffix match (the
  * inverse of resolveBaseEvent): a single freshly-appeared occurrence ending in the base id is selected,
- * otherwise the selection is cleared rather than left dangling on a base id absent from the store. An
- * event created OUTSIDE the window (far future/past) simply isn't in the agenda — the form closes and
- * the detail shows the empty state; acceptable (same posture as saveEvent moving an event out of window).
+ * otherwise the selection is cleared rather than left dangling on a base id absent from the store. The
+ * create form seeds its default date INTO the visible window (lib `createSeedDate`), so a normal create
+ * lands in view even when the calendar is navigated away from today; an event placed outside the window
+ * (an explicit far date) isn't in the view — the form closes and the detail shows the empty state;
+ * acceptable (same posture as saveEvent moving an event out of the visible window).
  */
 export async function createEvent(
   edits: EditableEvent,

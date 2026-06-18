@@ -23,6 +23,9 @@ export const [selectedCalendarId, setSelectedCalendarId] = createSignal<string |
 // (see todayAnchor); changing either re-queries the window (the Calendar surface watches them).
 // Default mode is "agenda" — this scaffold branch keeps the CRUD landing; the month-grid branch
 // flips the default to "month". The store derives the query window via lib/calendar `visibleRange`.
+// These deliberately PERSIST across a calendar↔mail surface switch (no onCleanup reset, unlike the
+// transient `creatingEvent` below): they're a navigational position, so returning to the calendar
+// lands on the same view + date — standard calendar behavior. resetStores() resets them for tests.
 export const [calendarViewMode, setCalendarViewMode] = createSignal<CalendarViewMode>("agenda");
 export const [calendarAnchor, setCalendarAnchor] = createSignal<Date>(todayAnchor());
 

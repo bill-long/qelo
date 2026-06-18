@@ -2,7 +2,9 @@ import { For } from "solid-js";
 import type { CalendarViewMode } from "@/lib/calendar";
 import { calendarViewMode, setCalendarViewMode } from "@/stores/ui";
 
-const MODES: { mode: CalendarViewMode; label: string }[] = [
+/** The view modes in switch order, with their labels. The single source of truth for mode labels —
+ * CalendarMain's placeholder reads it too, so a label rename / new mode lives in one place. */
+export const MODES: { mode: CalendarViewMode; label: string }[] = [
   { mode: "agenda", label: "Agenda" },
   { mode: "day", label: "Day" },
   { mode: "week", label: "Week" },
