@@ -2386,6 +2386,71 @@ textarea.event-edit-input {
   opacity: 0.55;
 }
 
+/* The recurring-edit apply-mode chooser (this / this-and-following / all): replaces the actions row
+   with a stacked column of full-width choices + a Back link. A <fieldset> for its group semantics. */
+.event-edit-apply {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+  padding-top: 1rem;
+  border: 0;
+  border-top: 1px solid var(--line);
+  min-inline-size: 0;
+}
+
+.event-edit-apply > legend {
+  padding: 0;
+  margin-bottom: 0.5rem;
+}
+
+.event-edit-apply-option {
+  padding: 0.55rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  text-align: start;
+  cursor: pointer;
+}
+
+.event-edit-apply-option:hover:not([aria-disabled="true"]):not(:disabled) {
+  border-color: var(--accent);
+}
+
+/* aria-disabled (not native disabled) keeps the option focusable so AT users can reach it and the
+   hint that follows explains why it's unavailable (the qelo-review-checklist disabled-state rule). */
+.event-edit-apply-option[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.event-edit-apply-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.event-edit-apply-hint {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+}
+
+.event-edit-apply .event-edit-cancel {
+  align-self: start;
+  margin-top: 0.25rem;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--raised);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
 /* ---- Calendar: full-width surface + month grid (Calendar Views milestone) --------------- */
 
 /* The calendar view spans both content columns (the grid needs the room); the event detail rides

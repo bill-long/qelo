@@ -426,6 +426,38 @@ export interface RecurrenceRule {
 }
 
 /**
+ * One entry of an event's `recurrenceOverrides` (RFC 8984 §4.3.5): a JSCalendar PatchObject that
+ * overrides properties of the single occurrence keyed by its `recurrenceId` (the occurrence's
+ * original computed local date-time), or `{ excluded: true }` to remove that occurrence. Keys are
+ * JSON pointers relative to the event (`"title"`, `"start"`, `"locations/l1/name"`, …); a value of
+ * `null` removes the pointed-at value. Typed loosely (the patch can name any event property).
+ *
+ * WIRE NOTE (dev Stalwart v0.16, probed live 2026-06-18): `recurrenceOverrides` is WRITE-ONLY here —
+ * `CalendarEvent/get` never returns it (so overrides can't be read back to merge; rely on the
+ * server-side whole-map MERGE). A POINTER patch into the map (`recurrenceOverrides/<key>`) is
+ * REJECTED — always send the whole `recurrenceOverrides` map value. And an overridden occurrence is
+ * DROPPED from an `expandRecurrences` expansion UNLESS its patch includes a `title` — so Qelo always
+ * carries the occurrence's title into a property override (see `overridePatch` in lib/calendar).
+ */
+export type RecurrenceOverride = Record<string, unknown>;
+
+/**
+ * JSCalendar `relatedTo` (RFC 8984 §4.1.5): an event's `relatedTo` maps each linked object's `uid` to
+ * a {@link Relation}, whose `relation` is a `String[Boolean]` SET of relation types — e.g. to chain a
+ * split series the tail's `relatedTo` is `{ "<head-uid>": { relation: { first: true } } }` and the
+ * head's is `{ "<tail-uid>": { relation: { next: true } } }`.
+ * TYPED BUT UNUSED — split-LINKING is DEFERRED on Stalwart because `CalendarEvent/get` never returns
+ * `uid`, so a series we didn't create has no readable uid to link to (see the recurrence milestone
+ * plan). The "this and following" split ships FUNCTIONALLY without the link.
+ */
+export interface Relation {
+  "@type"?: "Relation";
+  /** The set of relation types (RFC 8984 §4.1.5 — `String[Boolean]`, each value MUST be true), e.g.
+   * `{ next: true }` / `{ first: true }`. */
+  relation?: Record<string, true>;
+}
+
+/**
  * A JSCalendar Event (RFC 8984) as returned by `CalendarEvent/get`. Only the subset
  * Qelo reads is fully typed; rarer properties (alerts, links, virtualLocations, …) are
  * left out until a feature needs them rather than guessed.
@@ -455,6 +487,8 @@ export interface CalendarEvent {
   locations?: Record<string, EventLocation>;
   participants?: Record<string, EventParticipant>;
   recurrenceRule?: RecurrenceRule;
+  recurrenceOverrides?: Record<string, RecurrenceOverride>;
+  relatedTo?: Record<string, Relation>;
   recurrenceId?: string;
   recurrenceIdTimeZone?: string;
   isDraft?: boolean;

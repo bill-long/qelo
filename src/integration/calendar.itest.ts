@@ -64,6 +64,7 @@ interface EventSpec {
   start: string;
   duration?: string;
   weekly?: boolean;
+  daily?: boolean;
 }
 
 describe("calendar (live Stalwart)", () => {
@@ -109,8 +110,13 @@ describe("calendar (live Stalwart)", () => {
         start: spec.start,
         timeZone: "America/New_York",
         duration: spec.duration ?? "PT1H",
-        ...(spec.weekly
-          ? { recurrenceRule: { "@type": "RecurrenceRule", frequency: "weekly" } }
+        ...(spec.weekly || spec.daily
+          ? {
+              recurrenceRule: {
+                "@type": "RecurrenceRule",
+                frequency: spec.daily ? "daily" : "weekly",
+              },
+            }
           : {}),
       };
     });
@@ -239,6 +245,15 @@ describe("calendar (live Stalwart)", () => {
     const id = eventIds().find((eid) => calendarEvents[eid]?.title === title);
     if (!id) throw new Error(`no loaded occurrence titled "${title}"`);
     return id;
+  }
+
+  /** The synthetic id + recurrenceId of the `index`-th occurrence (start order) carrying `title`. */
+  function occurrenceAt(title: string, index: number): { id: Id; recurrenceId: string } {
+    const ids = eventIds().filter((eid) => calendarEvents[eid]?.title === title);
+    const id = ids[index];
+    const recurrenceId = id ? calendarEvents[id]?.recurrenceId : undefined;
+    if (!id || !recurrenceId) throw new Error(`no occurrence #${index} titled "${title}"`);
+    return { id, recurrenceId };
   }
 
   it("resolves a synthetic occurrence to its base event and edits it, preserving recurrence", async () => {
@@ -482,5 +497,137 @@ describe("calendar (live Stalwart)", () => {
 
     await loadUntil(() => countByTitle(`Noop ${tag}`) >= 1);
     expect(countByTitle(`Noop ${tag}`)).toBe(1);
+  });
+
+  it("edits ONE occurrence with the 'this' mode (recurrenceOverrides; others untouched)", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    await seedEvents(calId, [{ title: `This ${tag}`, start: localDateTime(3, 9), weekly: true }]);
+    await loadUntil(() => countByTitle(`This ${tag}`) >= 3);
+    const total = countByTitle(`This ${tag}`);
+
+    // Override the 2nd occurrence's title via the "this" mode (a recurrenceOverrides whole-map write).
+    const { id: occId, recurrenceId } = occurrenceAt(`This ${tag}`, 1);
+    const base = await resolveBaseEvent(occId);
+    if (!base) throw new Error("unreachable");
+    const result = await saveEvent(
+      occId,
+      base.id,
+      base,
+      { ...eventToEditable(base), title: `This ${tag} ONE` },
+      "this",
+      recurrenceId,
+    );
+    expect(result.ok).toBe(true);
+
+    // Exactly one occurrence is renamed; the rest keep the series title; the total is preserved (the
+    // overridden occurrence stays VISIBLE because the override carries a title — the Stalwart workaround).
+    await loadUntil(
+      () => countByTitle(`This ${tag} ONE`) === 1 && countByTitle(`This ${tag}`) === total - 1,
+    );
+    expect(countByTitle(`This ${tag} ONE`)).toBe(1);
+    expect(countByTitle(`This ${tag}`)).toBe(total - 1);
+    // The base series rule is untouched (the override didn't rewrite it).
+    const after = await resolveBaseEvent(occurrenceIdFor(`This ${tag}`));
+    expect(after?.recurrenceRule?.frequency).toBe("weekly");
+  });
+
+  it("splits the series with the 'this and following' mode (head capped, tail created)", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    await seedEvents(calId, [{ title: `Split ${tag}`, start: localDateTime(3, 9), weekly: true }]);
+    await loadUntil(() => countByTitle(`Split ${tag}`) >= 4);
+    const total = countByTitle(`Split ${tag}`);
+    const headBefore = 2; // occurrences before the split (indices 0,1)
+
+    // Split at the 3rd occurrence, renaming the forward part — the head is capped, a tail is created.
+    const { id: occId, recurrenceId } = occurrenceAt(`Split ${tag}`, headBefore);
+    const base = await resolveBaseEvent(occId);
+    if (!base) throw new Error("unreachable");
+    const result = await saveEvent(
+      occId,
+      base.id,
+      base,
+      { ...eventToEditable(base), title: `Split ${tag} TAIL` },
+      "following",
+      recurrenceId,
+    );
+    expect(result.ok).toBe(true);
+
+    // The head keeps the occurrences before the split (original title); the tail carries the rest
+    // (renamed), and the split occurrence is in the TAIL only (no duplication across the boundary).
+    await loadUntil(
+      () =>
+        countByTitle(`Split ${tag}`) === headBefore &&
+        countByTitle(`Split ${tag} TAIL`) === total - headBefore,
+    );
+    expect(countByTitle(`Split ${tag}`)).toBe(headBefore);
+    expect(countByTitle(`Split ${tag} TAIL`)).toBe(total - headBefore);
+    // Track the tail's base id for cleanup (it's a server-created event the seed list doesn't know).
+    const tailBase = await resolveBaseEvent(occurrenceIdFor(`Split ${tag} TAIL`));
+    if (tailBase) createdIds.push(tailBase.id);
+  });
+
+  it("splits a DAILY series at the correct boundary (until = split − 1 day; tightest spacing)", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    // Daily interval-1 occurrences are exactly one day apart — the tightest case for the −1-day cap.
+    await seedEvents(calId, [{ title: `Day ${tag}`, start: localDateTime(2, 9), daily: true }]);
+    await loadUntil(() => countByTitle(`Day ${tag}`) >= 5);
+    const total = countByTitle(`Day ${tag}`);
+    const headBefore = 3; // occurrences before the split (indices 0,1,2)
+
+    const { id: occId, recurrenceId } = occurrenceAt(`Day ${tag}`, headBefore);
+    const base = await resolveBaseEvent(occId);
+    if (!base) throw new Error("unreachable");
+    const result = await saveEvent(
+      occId,
+      base.id,
+      base,
+      { ...eventToEditable(base), title: `Day ${tag} TAIL` },
+      "following",
+      recurrenceId,
+    );
+    expect(result.ok).toBe(true);
+
+    // The head keeps exactly the occurrences before the split (no off-by-one swallowing the prior day,
+    // no leaking the split day into the head); the tail carries the split onward.
+    await loadUntil(
+      () =>
+        countByTitle(`Day ${tag}`) === headBefore &&
+        countByTitle(`Day ${tag} TAIL`) === total - headBefore,
+    );
+    expect(countByTitle(`Day ${tag}`)).toBe(headBefore);
+    expect(countByTitle(`Day ${tag} TAIL`)).toBe(total - headBefore);
+    const tailBase = await resolveBaseEvent(occurrenceIdFor(`Day ${tag} TAIL`));
+    if (tailBase) createdIds.push(tailBase.id);
+  });
+
+  it("changes EVERY occurrence with the 'all' mode", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    await seedEvents(calId, [{ title: `All ${tag}`, start: localDateTime(3, 9), weekly: true }]);
+    await loadUntil(() => countByTitle(`All ${tag}`) >= 3);
+    const total = countByTitle(`All ${tag}`);
+
+    const { id: occId, recurrenceId } = occurrenceAt(`All ${tag}`, 0);
+    const base = await resolveBaseEvent(occId);
+    if (!base) throw new Error("unreachable");
+    const result = await saveEvent(
+      occId,
+      base.id,
+      base,
+      { ...eventToEditable(base), title: `All ${tag} EVERY` },
+      "all",
+      recurrenceId,
+    );
+    expect(result.ok).toBe(true);
+
+    // The base title patch retitles every occurrence; none keep the old title.
+    await loadUntil(
+      () => countByTitle(`All ${tag} EVERY`) === total && countByTitle(`All ${tag}`) === 0,
+    );
+    expect(countByTitle(`All ${tag} EVERY`)).toBe(total);
+    expect(countByTitle(`All ${tag}`)).toBe(0);
   });
 });

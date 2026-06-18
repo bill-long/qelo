@@ -36,10 +36,10 @@ import { creatingEvent, selectedEventId, setCreatingEvent, setSelectedEventId } 
  *
  * Inside: a focused-complete render of the selected event — title, when (day + time range + time zone),
  * calendar, location(s), description, status/free-busy/privacy, participants (read-only), recurrence
- * badge — with Edit (resolves the BASE event behind the selected occurrence → {@link EventEditForm}),
- * Delete (two-step confirm), and the create form (via `creatingEvent`). Editing a recurring event's
- * rule via the form changes the WHOLE series (the per-occurrence apply modes land in a later branch);
- * participant editing stays deferred.
+ * badge — with Edit (resolves the BASE event behind the selected occurrence → {@link EventEditForm},
+ * passing the occurrence's recurrenceId so the form can offer the this/this-and-following/all apply
+ * modes), Delete (two-step confirm), and the create form (via `creatingEvent`). Per-occurrence DELETE
+ * modes and participant editing stay deferred.
  */
 export function EventView() {
   const [editing, setEditing] = createSignal(false);
@@ -50,6 +50,9 @@ export function EventView() {
   // resolved.
   const [editBase, setEditBase] = createSignal<CalendarEvent | null>(null);
   const [editOccurrenceId, setEditOccurrenceId] = createSignal<string | null>(null);
+  // The viewed occurrence's recurrenceId, captured alongside the base at edit-open. Feeds the form's
+  // per-occurrence apply modes (this / this-and-following); null for a non-recurring event.
+  const [editRecurrenceId, setEditRecurrenceId] = createSignal<string | null>(null);
   const [resolving, setResolving] = createSignal(false);
   const [resolveError, setResolveError] = createSignal<string | null>(null);
   // A failed delete surfaces here, ABOVE the detail: deleteEvent prunes the occurrence optimistically,
@@ -79,6 +82,7 @@ export function EventView() {
       setEditing(false);
       setEditBase(null);
       setEditOccurrenceId(null);
+      setEditRecurrenceId(null);
       setResolveError(null);
       // Also clear a stale delete error — a genuine selection change drops it; the null→same-id churn
       // of a refused delete's restore re-runs this BEFORE handleDelete sets the error, so the error
@@ -111,6 +115,8 @@ export function EventView() {
       if (base) {
         setEditBase(base);
         setEditOccurrenceId(id);
+        // Capture the occurrence's recurrenceId (server truth via the store) for the apply-mode chooser.
+        setEditRecurrenceId(calendarEvents[id]?.recurrenceId ?? null);
         setEditing(true);
       } else {
         setResolveError("Couldn't open this event for editing. It may have been deleted.");
@@ -237,10 +243,12 @@ export function EventView() {
                         mode="edit"
                         event={base()}
                         occurrenceId={editOccurrenceId() as string}
+                        recurrenceId={editRecurrenceId()}
                         onClose={() => {
                           setEditing(false);
                           setEditBase(null);
                           setEditOccurrenceId(null);
+                          setEditRecurrenceId(null);
                         }}
                       />
                     )}

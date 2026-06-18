@@ -50,7 +50,13 @@ afterEach(() => {
 describe("EventEditForm", () => {
   it("seeds the inputs from the base event", () => {
     render(() => (
-      <EventEditForm mode="edit" event={timed} occurrenceId="eaaaaau" onClose={() => {}} />
+      <EventEditForm
+        mode="edit"
+        event={timed}
+        occurrenceId="eaaaaau"
+        recurrenceId={null}
+        onClose={() => {}}
+      />
     ));
     expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("Standup");
     expect((screen.getByLabelText("Start") as HTMLInputElement).value).toBe("2026-07-06T09:00");
@@ -65,7 +71,13 @@ describe("EventEditForm", () => {
 
   it("hides the time-zone picker and uses date inputs when all-day is toggled on", () => {
     render(() => (
-      <EventEditForm mode="edit" event={timed} occurrenceId="eaaaaau" onClose={() => {}} />
+      <EventEditForm
+        mode="edit"
+        event={timed}
+        occurrenceId="eaaaaau"
+        recurrenceId={null}
+        onClose={() => {}}
+      />
     ));
     expect(screen.getByLabelText("Time zone")).toBeTruthy();
     fireEvent.click(screen.getByLabelText("All day"));
@@ -78,7 +90,13 @@ describe("EventEditForm", () => {
 
   it("restores the original times when all-day is toggled off again", () => {
     render(() => (
-      <EventEditForm mode="edit" event={timed} occurrenceId="eaaaaau" onClose={() => {}} />
+      <EventEditForm
+        mode="edit"
+        event={timed}
+        occurrenceId="eaaaaau"
+        recurrenceId={null}
+        onClose={() => {}}
+      />
     ));
     fireEvent.click(screen.getByLabelText("All day")); // on → date-only
     fireEvent.click(screen.getByLabelText("All day")); // off → restore the remembered time-of-day
@@ -88,7 +106,13 @@ describe("EventEditForm", () => {
 
   it("blocks save with an inline error when the end is before the start", () => {
     render(() => (
-      <EventEditForm mode="edit" event={timed} occurrenceId="eaaaaau" onClose={() => {}} />
+      <EventEditForm
+        mode="edit"
+        event={timed}
+        occurrenceId="eaaaaau"
+        recurrenceId={null}
+        onClose={() => {}}
+      />
     ));
     fireEvent.input(screen.getByLabelText("End"), { target: { value: "2026-07-06T08:00" } });
     expect(screen.getByRole("alert").textContent).toMatch(/end can't be before/i);
@@ -110,7 +134,13 @@ describe("EventEditForm recurrence editor", () => {
 
   it("seeds the repeat select + interval from the base rule and shows the weekday picker", () => {
     render(() => (
-      <EventEditForm mode="edit" event={weekly} occurrenceId="eaaaaau" onClose={() => {}} />
+      <EventEditForm
+        mode="edit"
+        event={weekly}
+        occurrenceId="eaaaaau"
+        recurrenceId="2026-07-06T09:00:00"
+        onClose={() => {}}
+      />
     ));
     expect((screen.getByLabelText("Repeat") as HTMLSelectElement).value).toBe("weekly");
     expect((screen.getByLabelText("Repeat every") as HTMLInputElement).value).toBe("2");
@@ -131,7 +161,13 @@ describe("EventEditForm recurrence editor", () => {
 
   it("reveals the occurrences field and blocks save on a non-positive count", () => {
     render(() => (
-      <EventEditForm mode="edit" event={weekly} occurrenceId="eaaaaau" onClose={() => {}} />
+      <EventEditForm
+        mode="edit"
+        event={weekly}
+        occurrenceId="eaaaaau"
+        recurrenceId="2026-07-06T09:00:00"
+        onClose={() => {}}
+      />
     ));
     fireEvent.change(screen.getByLabelText("Ends"), { target: { value: "count" } });
     const occ = screen.getByLabelText("Occurrences") as HTMLInputElement;
@@ -143,7 +179,13 @@ describe("EventEditForm recurrence editor", () => {
 
   it("surfaces the when error AND the recurrence error at once (neither masks the other)", () => {
     render(() => (
-      <EventEditForm mode="edit" event={weekly} occurrenceId="eaaaaau" onClose={() => {}} />
+      <EventEditForm
+        mode="edit"
+        event={weekly}
+        occurrenceId="eaaaaau"
+        recurrenceId="2026-07-06T09:00:00"
+        onClose={() => {}}
+      />
     ));
     fireEvent.input(screen.getByLabelText("End"), { target: { value: "2026-07-06T08:00" } }); // when
     fireEvent.input(screen.getByLabelText("Repeat every"), { target: { value: "0" } }); // recurrence
@@ -158,7 +200,13 @@ describe("EventEditForm recurrence editor", () => {
   it("keeps at least one weekday checked (can't uncheck the last one)", () => {
     // `weekly` starts 2026-07-06 (Monday) with no byDay → Mon is the lone seeded day.
     render(() => (
-      <EventEditForm mode="edit" event={weekly} occurrenceId="eaaaaau" onClose={() => {}} />
+      <EventEditForm
+        mode="edit"
+        event={weekly}
+        occurrenceId="eaaaaau"
+        recurrenceId="2026-07-06T09:00:00"
+        onClose={() => {}}
+      />
     ));
     const mon = screen.getByLabelText("Mon") as HTMLInputElement;
     expect(mon.checked).toBe(true);
@@ -172,6 +220,73 @@ describe("EventEditForm recurrence editor", () => {
     fireEvent.input(screen.getByLabelText("Start"), { target: { value: "2026-07-08T09:00" } }); // Wed
     fireEvent.change(screen.getByLabelText("Repeat"), { target: { value: "weekly" } });
     expect((screen.getByLabelText("Wed") as HTMLInputElement).checked).toBe(true);
+  });
+});
+
+describe("EventEditForm recurring apply-mode chooser", () => {
+  const weekly = event({
+    title: "Standup",
+    start: "2026-07-06T09:00:00",
+    timeZone: "America/New_York",
+    duration: "PT30M",
+    recurrenceRule: { "@type": "RecurrenceRule", frequency: "weekly" },
+  });
+
+  it("opens the apply-mode chooser on Save for a recurring event (instead of submitting)", () => {
+    render(() => (
+      <EventEditForm
+        mode="edit"
+        event={weekly}
+        occurrenceId="eaaaaau"
+        recurrenceId="2026-07-20T09:00:00"
+        onClose={() => {}}
+      />
+    ));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(screen.getByRole("button", { name: "This event" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "This and following events" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "All events" })).toBeTruthy();
+    // Back returns to the form (the Save button reappears, the chooser is gone).
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "This event" })).toBeNull();
+  });
+
+  it("disables 'This event' once the recurrence rule changed (a rule change is whole-series)", () => {
+    render(() => (
+      <EventEditForm
+        mode="edit"
+        event={weekly}
+        occurrenceId="eaaaaau"
+        recurrenceId="2026-07-20T09:00:00"
+        onClose={() => {}}
+      />
+    ));
+    // Unchanged rule → "This event" is enabled.
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(
+      screen.getByRole("button", { name: "This event" }).getAttribute("aria-disabled"),
+    ).toBeNull();
+    // Change the interval (a rule change) — the fields stay visible while choosing, so it re-gates.
+    fireEvent.input(screen.getByLabelText("Repeat every"), { target: { value: "3" } });
+    expect(screen.getByRole("button", { name: "This event" }).getAttribute("aria-disabled")).toBe(
+      "true",
+    );
+    expect(screen.getByText(/applies to the whole series/i)).toBeTruthy();
+  });
+
+  it("does NOT show the chooser for a non-recurring event (saves directly)", () => {
+    render(() => (
+      <EventEditForm
+        mode="edit"
+        event={timed}
+        occurrenceId="eaaaaau"
+        recurrenceId={null}
+        onClose={() => {}}
+      />
+    ));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(screen.queryByRole("button", { name: "This event" })).toBeNull();
   });
 });
 

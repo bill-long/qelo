@@ -1168,7 +1168,7 @@ export function editableToRule(
 // reads), so fiddling an inactive field and reverting — e.g. setting an Occurrences count then
 // switching End back to "Never" — stays a no-op instead of forcing a rebuild. Field-wise (like
 // whenChanged), not JSON.stringify, and the weekday SET is compared order-insensitively.
-function recurrenceChanged(baseline: CalendarEvent, edits: EditableEvent): boolean {
+export function recurrenceChanged(baseline: CalendarEvent, edits: EditableEvent): boolean {
   const b = ruleToEditable(baseline);
   const e = edits.recurrence;
   if (b.frequency !== e.frequency) return true;
@@ -1527,6 +1527,168 @@ export function editableToPatch(baseline: CalendarEvent, edits: EditableEvent): 
     patch[key] = rebuilt ?? null;
   }
   return patch;
+}
+
+// ---------------------------------------------------------------------------
+// Per-occurrence EDIT modes (Recurrence-Editing milestone, Branch 2). When SAVING an edit to a
+// recurring event the user picks how widely it applies; the store routes to one of these pure
+// transforms (the form stays seeded from the BASE/series-master event, so "all" is the existing
+// editableToPatch path and a no-op stays a no-op):
+//   - "all"        → editableToPatch(base, edits): the whole-series patch (the Branch-1 path).
+//   - "this"       → overridePatch: the user's delta written into recurrenceOverrides[recurrenceId]
+//                    on the BASE id (a WHOLE-MAP merge write — pointer-into-map is rejected; the
+//                    server merges so we needn't read existing overrides).
+//   - "following"  → splitSeries: cap the base rule's `until` before the split + create a tail event
+//                    carrying the remaining rule and the forward edits.
+//
+// LIVE-PROBED Stalwart quirks these encode (dev v0.16, 2026-06-18 — the milestone plan has the full
+// findings):
+//   * An overridden occurrence is DROPPED from the expandRecurrences expansion UNLESS its override
+//     PatchObject carries a `title` — so overridePatch ALWAYS carries the (possibly unchanged) title.
+//     With a title present, every override round-trips AND a per-occurrence `start` MOVES correctly.
+//   * `until` is compared DATE-inclusively (a `splitStart − 1s` cap kept the whole split day, leaving
+//     the split occurrence in BOTH head and tail) — so the head caps at `splitStart − 1 DAY`, which
+//     keeps the prior occurrence and excludes the split for every editor frequency (≥ 1-day spacing).
+//   * relatedTo split-LINKING is infeasible (uid unreadable) → the tail is an UNLINKED standalone
+//     event; functional, the next/first link is deferred (see types `Relation`).
+// ---------------------------------------------------------------------------
+
+/** How widely a save to a recurring event applies. A non-recurring event always uses "all". */
+export type RecurrenceEditMode = "this" | "following" | "all";
+
+// The local date-time one day before `dt` (keeping its time-of-day), as a JSCalendar LocalDateTime —
+// the head's capped `until` for a split (Stalwart keeps the whole until-date, so a full day back
+// excludes the split occurrence while keeping the prior one). Returns `dt` unchanged if unparseable.
+function minusOneDayLocalDateTime(dt: string): string {
+  const p = parseDateParts(dt);
+  if (!p) return dt;
+  const d = new Date(Date.UTC(p.year, p.month - 1, p.day) - DAY_MS);
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}T${pad2(p.hour)}:${pad2(p.minute)}:${pad2(p.second)}`;
+}
+
+/**
+ * The "this occurrence" override: the user's delta (vs the form's BASE baseline) written as a
+ * JSCalendar PatchObject under `recurrenceOverrides[recurrenceId]` (a whole-map merge write on the
+ * base id). Returns null when there's nothing to override on ONE occurrence — i.e. nothing changed, OR
+ * the ONLY change was the `recurrenceRule` (a single occurrence can't carry its own rule, so the rule
+ * is dropped from the delta BEFORE the emptiness check). So a null result is NOT a guaranteed full no-op
+ * — the caller (`saveEvent`) degrades a null override to the whole-series patch. `recurrenceRule` is
+ * never overridden per-occurrence. The override ALWAYS carries a `title` (the Stalwart
+ * visibility workaround above) — the changed title if edited, else the baseline's, so the override
+ * never strips the occurrence out of the expansion. Since the form is base-seeded, a `start` in the
+ * delta moves the occurrence to exactly the date/time the form showed (WYSIWYG); the form opening on
+ * the series' first-occurrence date — rather than the clicked occurrence's date — is a documented
+ * limitation (occurrence-date seeding is a deferred follow-up). Pure.
+ */
+export function overridePatch(
+  recurrenceId: string,
+  baseline: CalendarEvent,
+  edits: EditableEvent,
+): CalendarEventPatch | null {
+  const delta = editableToPatch(baseline, edits);
+  delete delta.recurrenceRule; // a per-occurrence override can't change the series rule
+  if (Object.keys(delta).length === 0) return null; // nothing changed → no override to write
+  // Carry a title KEY so Stalwart keeps the occurrence in the expansion. Probed live: an ABSENT title
+  // key drops the occurrence, but an empty-string value does NOT — so the `?? ""` fallback (for a
+  // titleless baseline) is safe and keeps the occurrence visible with a blank title. A title-removing
+  // `null` from the delta is replaced with the baseline title (else the key would carry null).
+  if (typeof delta.title !== "string") {
+    delta.title = baseline.title ?? "";
+  }
+  return { recurrenceOverrides: { [recurrenceId]: delta } };
+}
+
+/** The two writes a "this and following" split issues in ONE CalendarEvent/set: a patch capping the
+ * base (head) series and a create body for the tail series. */
+export interface SeriesSplit {
+  basePatch: CalendarEventPatch;
+  tailCreate: Record<string, unknown>;
+}
+
+/**
+ * The "this and following" split (RFC 8984 §4.1.3 — there is no native "this and future", every
+ * conformant client splits the series). The HEAD (the base event) is capped to end before the split
+ * occurrence; a new TAIL event carries the occurrences from the split onward with the user's forward
+ * edits. Returns null when the base isn't a recurring series (no rule to cap) — the caller falls back
+ * to a plain "all" save.
+ *
+ *  - HEAD: the base's ORIGINAL rule with `count` dropped and `until` set to one day before the split
+ *    (the date-inclusive cap above) — past occurrences keep their original pattern, the split + after
+ *    are excluded.
+ *  - TAIL: the base event with the user's edits overlaid ({@link editableToEvent}), restarted at the
+ *    split occurrence's date (keeping the possibly-edited time-of-day), carrying the remaining rule
+ *    (the EDITED rule when the user changed how it repeats, else the original verbatim). Server-managed
+ *    / occurrence-specific fields (id, uid, recurrenceId, recurrenceOverrides, relatedTo, …) are
+ *    stripped so it's a clean create. The tail is UNLINKED (no relatedTo — uid unreadable on Stalwart);
+ *    a count-bounded original makes the tail re-count its full `count` from the split (the exact
+ *    remaining-count needs client-side recurrence enumeration, which we avoid — a documented tradeoff).
+ * Pure.
+ */
+export function splitSeries(
+  baseline: CalendarEvent,
+  recurrenceId: string,
+  edits: EditableEvent,
+): SeriesSplit | null {
+  const baseRule = baseline.recurrenceRule;
+  if (!baseRule) return null; // not a series — nothing to split
+  // Head: original rule, capped. Drop count (until now bounds the head). `@type` is re-asserted (the
+  // server strips it on read, but a write wants it) — same as editableToRule's emitted rule.
+  const headRule: RecurrenceRule = {
+    ...baseRule,
+    "@type": "RecurrenceRule",
+    until: minusOneDayLocalDateTime(recurrenceId),
+  };
+  delete headRule.count;
+  const basePatch: CalendarEventPatch = { recurrenceRule: headRule };
+
+  // Tail: the fully-edited event, restarted at the split with the remaining rule.
+  const edited = editableToEvent(baseline, edits);
+  const tail = { ...edited } as Record<string, unknown>;
+  for (const k of [
+    "id",
+    "uid",
+    "recurrenceId",
+    "recurrenceIdTimeZone",
+    "recurrenceOverrides",
+    "relatedTo",
+    "isOrigin",
+    "isDraft",
+    "updated",
+  ]) {
+    delete tail[k];
+  }
+  // Restart at the split occurrence's DATE, keeping the (possibly edited) time-of-day from the rebuild.
+  const editedStart = edited.start ?? baseline.start ?? recurrenceId;
+  const timeOfDay = editedStart.length >= 19 ? editedStart.slice(11, 19) : "00:00:00";
+  tail.start = `${recurrenceId.slice(0, 10)}T${timeOfDay}`;
+  // The remaining rule rides along from `edited` (via the {@link tail} spread): the EDITED rule when the
+  // user changed the repeat, the base rule VERBATIM when untouched, or ABSENT when the user turned the
+  // repeat OFF (editableToEvent drops the key) — then the tail is a single non-recurring event. Only
+  // re-assert `@type` (stripped on read) when a rule is actually present; never re-add the base rule.
+  if (tail.recurrenceRule) {
+    tail.recurrenceRule = { "@type": "RecurrenceRule", ...(tail.recurrenceRule as RecurrenceRule) };
+  }
+  return { basePatch, tailCreate: tail };
+}
+
+/**
+ * The id of the loaded occurrence whose `recurrenceId` matches `recurrenceId`, or null. Re-points the
+ * selection after a per-occurrence save: an override reshuffles the synthetic occurrence ids, so we
+ * re-find the occurrence by its recurrenceId rather than the now-stale synthetic id. BEST-EFFORT —
+ * Stalwart reports an occurrence's `recurrenceId` as its RESOLVED start (probed live), so a match
+ * succeeds only when the occurrence's TIME did NOT move; a time move / split re-times the occurrence
+ * (its recurrenceId becomes the new start), so the original recurrenceId no longer matches and this
+ * returns null. Also null when none match (occurrence left the window) or several do (ambiguous). The
+ * caller treats null as "clear the selection" rather than guess. Pure; the store passes the live ids +
+ * event lookup.
+ */
+export function occurrenceIdByRecurrenceId(
+  recurrenceId: string,
+  ids: readonly string[],
+  events: Record<string, CalendarEvent | undefined>,
+): string | null {
+  const matches = ids.filter((id) => events[id]?.recurrenceId === recurrenceId);
+  return matches.length === 1 ? (matches[0] as string) : null;
 }
 
 // ---------------------------------------------------------------------------

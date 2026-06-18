@@ -11,6 +11,8 @@ import {
   eventToEditable,
   FREQ_UNIT,
   parseDateParts,
+  type RecurrenceEditMode,
+  recurrenceChanged,
   recurrenceErrorMessage,
   startWeekdayCode,
   whenErrorMessage,
@@ -62,9 +64,17 @@ function timeZoneOptions(current: string): string[] {
  * `NewEventButton` affordance only renders when one exists), but the form doesn't rely on that: an
  * empty list leaves `calendarId()` null, which disables Create and is guarded again at submit. */
 export type EventEditFormProps = { onClose: () => void } & (
-  | { mode: "edit"; event: CalendarEvent; occurrenceId: string }
+  | { mode: "edit"; event: CalendarEvent; occurrenceId: string; recurrenceId: string | null }
   | { mode: "create"; calendars: Calendar[] }
 );
+
+// The apply-mode chooser's options (recurring edit only). "this" is disabled when the recurrence rule
+// itself changed (a single occurrence can't carry its own rule — that's inherently a whole-series edit).
+const APPLY_MODES: { value: RecurrenceEditMode; label: string }[] = [
+  { value: "this", label: "This event" },
+  { value: "following", label: "This and following events" },
+  { value: "all", label: "All events" },
+];
 
 /**
  * Edit an existing event, or create a new one, in place (column 3, replacing the read-only
@@ -74,10 +84,10 @@ export type EventEditFormProps = { onClose: () => void } & (
  * chosen calendar), which own the JMAP round trip + the agenda reconcile. Covers title, when
  * (start/end/all-day/timeZone), location, description, the status/free-busy/privacy enums, AND the
  * recurrence rule (frequency/interval/weekdays/end — the `RecurrenceEditor` below); participants stay
- * present-but-uneditable and carry through untouched. For a RECURRING event this edits the whole series
- * (it patches the base event); the per-occurrence apply modes (this / this-and-following) land in a
- * later branch. Errors surface inline (toasts are success-only); a successful save/create confirms with
- * a toast and closes back to the detail.
+ * present-but-uneditable and carry through untouched. Saving a RECURRING event opens an apply-mode
+ * chooser (this occurrence / this and following / all events — the `APPLY_MODES` footer); a
+ * non-recurring event and a create submit directly. Errors surface inline (toasts are success-only);
+ * a successful save/create confirms with a toast and closes back to the detail.
  */
 export function EventEditForm(props: EventEditFormProps) {
   // Freeze a plain-object snapshot of the base event at open (edit mode only). It seeds the working
@@ -90,6 +100,16 @@ export function EventEditForm(props: EventEditFormProps) {
   const baseline = editEvent ? (structuredClone(unwrap(editEvent)) as CalendarEvent) : null;
   // eslint-disable-next-line solid/reactivity
   const occurrenceId = props.mode === "edit" ? props.occurrenceId : "";
+  // The viewed occurrence's recurrenceId (edit mode) — feeds the per-occurrence apply modes. Captured
+  // once at open like the baseline.
+  // eslint-disable-next-line solid/reactivity
+  const recurrenceId = props.mode === "edit" ? props.recurrenceId : null;
+  // Whether this edit is over an already-recurring series (the apply-mode chooser appears then — making
+  // a NON-recurring event recurring, or any non-recurring edit, just saves as "all"). The per-occurrence
+  // modes additionally need a recurrenceId; when it's absent (a degenerate occurrence record) the chooser
+  // still shows but disables "this"/"following" (see `modeDisabled`), so a real series never silently
+  // saves whole-series without the user choosing.
+  const wasRecurring = baseline?.recurrenceRule !== undefined;
   // Edit seeds from the base event; create seeds a default slot in the VISIBLE window (createSeedDate
   // reads the current mode + anchor) so a new event made while the calendar is navigated away from
   // today lands on screen, not off-window on today. Keyed off `baseline` (null only in create mode) so
@@ -108,6 +128,20 @@ export function EventEditForm(props: EventEditFormProps) {
   );
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+  // The recurring-edit apply-mode chooser: clicking Save on a recurring event opens it (swapping the
+  // footer actions for the mode choice) rather than submitting straight away; a non-recurring event
+  // and a create submit directly. Reset implicitly — the form unmounts on a selection change.
+  const [choosingMode, setChoosingMode] = createSignal(false);
+  // Whether the recurrence RULE changed — disables the "This event" mode (a single occurrence can't
+  // carry its own rule, so a rule change is inherently whole-series). Reactive over the form.
+  const ruleChanged = createMemo(() => (baseline ? recurrenceChanged(baseline, form) : false));
+  // Which apply-mode options are unavailable: "this" when the rule changed; "this"/"following" without
+  // a recurrenceId (can't target/split one occurrence). "all" is always available.
+  function modeDisabled(value: RecurrenceEditMode): boolean {
+    if (value === "this") return ruleChanged() || recurrenceId === null;
+    if (value === "following") return recurrenceId === null;
+    return false;
+  }
   // The when-validation message (end-before-start, unparseable) — reactive over the form, shown by
   // the end field. In edit mode it only flags a CHANGED when (an untouched event stays submittable,
   // its empty patch a no-op); in create mode any invalid when is flagged (a create needs a concrete
@@ -159,40 +193,62 @@ export function EventEditForm(props: EventEditFormProps) {
     );
   }
 
-  async function handleSubmit(event: Event) {
+  // Save router: a recurring edit opens the apply-mode chooser (the actual save fires from the chooser
+  // via doSave); a non-recurring edit saves as "all"; a create creates. Gated on canSubmit/busy.
+  function handleSubmit(event: Event) {
     event.preventDefault();
     if (busy() || !canSubmit()) return;
+    if (baseline) {
+      if (wasRecurring) setChoosingMode(true);
+      else void doSave("all");
+      return;
+    }
+    void doCreate();
+  }
+
+  async function doSave(mode: RecurrenceEditMode) {
+    // Re-check the submit gate: the form fields stay editable while the chooser is open, so the user can
+    // invalidate the when/recurrence after opening it — don't dispatch an invalid save (the options are
+    // also disabled then, this is the defensive backstop).
+    if (busy() || !baseline || !canSubmit()) return;
     setBusy(true);
     setError(null);
     // unwrap the store proxy to a plain EditableEvent for the pure transforms in the store action.
-    const edits = unwrap(form);
-    if (baseline) {
-      const result = await saveEvent(occurrenceId, baseline.id, baseline, edits);
-      setBusy(false);
-      if (result.ok) {
-        notify("Event saved");
-        props.onClose();
-        return;
-      }
-      // The auth case raises the global re-auth gate — keep the form as-is and say nothing here.
-      if (result.reason === "auth") return;
-      setError(
-        result.reason === "refused"
-          ? "The server refused the change. The calendar may be read-only, or the event may have changed elsewhere."
-          : result.reason === "invalid"
-            ? "Enter a valid start and end."
-            : "Couldn't save the event. Please try again.",
-      );
+    const result = await saveEvent(
+      occurrenceId,
+      baseline.id,
+      baseline,
+      unwrap(form),
+      mode,
+      recurrenceId,
+    );
+    setBusy(false);
+    if (result.ok) {
+      notify("Event saved");
+      props.onClose();
       return;
     }
+    setChoosingMode(false); // a failure drops back to the form so the error shows under the fields
+    // The auth case raises the global re-auth gate — keep the form as-is and say nothing here.
+    if (result.reason === "auth") return;
+    setError(
+      result.reason === "refused"
+        ? "The server refused the change. The calendar may be read-only, or the event may have changed elsewhere."
+        : result.reason === "invalid"
+          ? "Enter a valid start and end."
+          : "Couldn't save the event. Please try again.",
+    );
+  }
 
+  async function doCreate() {
     const cal = calendarId();
     if (!cal) {
-      setBusy(false);
       setError("No writable calendar to create the event in.");
       return;
     }
-    const result = await createEvent(edits, { [cal]: true });
+    setBusy(true);
+    setError(null);
+    const result = await createEvent(unwrap(form), { [cal]: true });
     setBusy(false);
     if (result.ok) {
       notify("Event created");
@@ -355,25 +411,75 @@ export function EventEditForm(props: EventEditFormProps) {
         )}
       </Show>
 
-      <footer class="event-edit-actions">
-        <button type="submit" class="event-edit-save" disabled={busy() || !canSubmit()}>
-          {busy()
-            ? props.mode === "create"
-              ? "Creating…"
-              : "Saving…"
-            : props.mode === "create"
-              ? "Create"
-              : "Save"}
-        </button>
-        <button
-          type="button"
-          class="event-edit-cancel"
-          disabled={busy()}
-          onClick={() => props.onClose()}
-        >
-          Cancel
-        </button>
-      </footer>
+      <Show
+        when={choosingMode()}
+        fallback={
+          <footer class="event-edit-actions">
+            <button type="submit" class="event-edit-save" disabled={busy() || !canSubmit()}>
+              {busy()
+                ? props.mode === "create"
+                  ? "Creating…"
+                  : "Saving…"
+                : props.mode === "create"
+                  ? "Create"
+                  : "Save"}
+            </button>
+            <button
+              type="button"
+              class="event-edit-cancel"
+              disabled={busy()}
+              onClick={() => props.onClose()}
+            >
+              Cancel
+            </button>
+          </footer>
+        }
+      >
+        {/* Recurring edit: pick how widely the change applies. Each option fires the save directly.
+            "This event" is disabled when the repeat rule changed (a per-occurrence override can't carry
+            a rule); "this"/"this and following" are disabled without a recurrenceId (can't target one
+            occurrence). aria-disabled (not native disabled) keeps them discoverable, with a hint. */}
+        <fieldset class="event-edit-apply" aria-label="Apply this change to">
+          <legend class="event-edit-label">Apply to</legend>
+          <For each={APPLY_MODES}>
+            {(opt) => {
+              const disabled = () => modeDisabled(opt.value);
+              return (
+                <button
+                  type="button"
+                  class="event-edit-apply-option"
+                  aria-disabled={disabled() ? "true" : undefined}
+                  disabled={busy() || !canSubmit()}
+                  onClick={() => {
+                    if (disabled() || busy() || !canSubmit()) return;
+                    void doSave(opt.value);
+                  }}
+                >
+                  {opt.label}
+                </button>
+              );
+            }}
+          </For>
+          <Show when={ruleChanged()}>
+            <p class="event-edit-apply-hint">
+              Changing how the event repeats applies to the whole series.
+            </p>
+          </Show>
+          <Show when={recurrenceId === null}>
+            <p class="event-edit-apply-hint">
+              This occurrence couldn’t be identified, so only “All events” is available.
+            </p>
+          </Show>
+          <button
+            type="button"
+            class="event-edit-cancel"
+            disabled={busy()}
+            onClick={() => setChoosingMode(false)}
+          >
+            Back
+          </button>
+        </fieldset>
+      </Show>
     </form>
   );
 }
