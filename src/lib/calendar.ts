@@ -1164,22 +1164,25 @@ export function editableToRule(
 // Whether the user changed the recurrence vs the baseline's derived editable. Drives "carry the
 // original rule verbatim" (unchanged) vs "rebuild from the editor" (changed) — the same lossy-rebuild
 // guard the when-fields use, so the no-op invariant holds regardless of editableToRule's fidelity.
-// Field-wise (like whenChanged), NOT JSON.stringify — so the comparison can't hinge on key order.
+// Compares ONLY the fields semantically active for the current mode (the same ones editableToRule
+// reads), so fiddling an inactive field and reverting — e.g. setting an Occurrences count then
+// switching End back to "Never" — stays a no-op instead of forcing a rebuild. Field-wise (like
+// whenChanged), not JSON.stringify, and the weekday SET is compared order-insensitively.
 function recurrenceChanged(baseline: CalendarEvent, edits: EditableEvent): boolean {
   const b = ruleToEditable(baseline);
   const e = edits.recurrence;
-  return (
-    b.frequency !== e.frequency ||
-    b.interval !== e.interval ||
-    // Order-insensitive: the weekday SET is what matters, so toggling days off then back on (same
-    // set, different order) stays a no-op rather than rewriting the rule.
-    b.weekdays.slice().sort().join(",") !== e.weekdays.slice().sort().join(",") ||
-    b.monthlyNth !== e.monthlyNth ||
-    b.end !== e.end ||
-    b.count !== e.count ||
-    b.until !== e.until
-  );
+  if (b.frequency !== e.frequency) return true;
+  if (b.frequency === "") return false; // not repeating → no other field is active
+  if (b.interval !== e.interval) return true;
+  if (b.frequency === "weekly" && sortedJoin(b.weekdays) !== sortedJoin(e.weekdays)) return true;
+  if (b.frequency === "monthly" && b.monthlyNth !== e.monthlyNth) return true;
+  if (b.end !== e.end) return true;
+  if (b.end === "count" && b.count !== e.count) return true;
+  if (b.end === "until" && b.until !== e.until) return true;
+  return false;
 }
+
+const sortedJoin = (xs: string[]): string => xs.slice().sort().join(",");
 
 /** Whether the recurrence working copy is internally valid: a positive interval, and (when chosen) a
  * positive count or a parseable until date. A non-repeating recurrence is always valid. Pure. */

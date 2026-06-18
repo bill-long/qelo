@@ -10,6 +10,7 @@ import {
   emptyEditableEvent,
   eventToEditable,
   FREQ_UNIT,
+  parseDateParts,
   recurrenceErrorMessage,
   startWeekdayCode,
   whenErrorMessage,
@@ -523,8 +524,8 @@ function RecurrenceEditor(props: {
               type="date"
               class="event-edit-input"
               value={props.recurrence.until}
-              aria-invalid={props.recurrence.until === "" ? "true" : undefined}
-              aria-describedby={describe(props.recurrence.until === "")}
+              aria-invalid={parseDateParts(props.recurrence.until) === null ? "true" : undefined}
+              aria-describedby={describe(parseDateParts(props.recurrence.until) === null)}
               onInput={(e) => props.onChange({ until: e.currentTarget.value })}
             />
           </label>

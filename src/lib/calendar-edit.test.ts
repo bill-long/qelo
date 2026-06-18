@@ -602,6 +602,17 @@ describe("recurrence in the patch builder", () => {
     expect(patch.recurrenceRule).toMatchObject({ frequency: "weekly", interval: 3 });
   });
 
+  it("ignores inactive recurrence fields — fiddling a count then reverting End to Never is a no-op", () => {
+    const base = timedEvent({ recurrenceRule: { frequency: "weekly" } });
+    // End stays "never" but the (inactive) count differs from the baseline's default → must NOT count
+    // as a change, so no recurrenceRule patch is emitted.
+    const patch = editableToPatch(
+      base,
+      edit(base, { recurrence: { ...ruleToEditable(base), end: "never", count: 99 } }),
+    );
+    expect(patch).not.toHaveProperty("recurrenceRule");
+  });
+
   it("treats a reordered weekday set as unchanged (no spurious recurrenceRule patch)", () => {
     const base = timedEvent({
       recurrenceRule: { frequency: "weekly", byDay: [{ day: "mo" }, { day: "we" }] },
