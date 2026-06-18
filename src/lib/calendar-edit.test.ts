@@ -19,6 +19,7 @@ import {
   eventMayDelete,
   eventMayWrite,
   eventToEditable,
+  excludeOverride,
   occurrenceIdByRecurrenceId,
   overridePatch,
   pickBaseEvent,
@@ -27,8 +28,10 @@ import {
   recurrenceValid,
   resolveBaseEventId,
   ruleToEditable,
+  sameLocalDateTime,
   splitSeries,
   startWeekdayCode,
+  truncateSeriesBefore,
   whenErrorMessage,
 } from "./calendar";
 
@@ -799,5 +802,63 @@ describe("occurrenceIdByRecurrenceId — selection re-point after a recurring sa
   it("returns null when several match (ambiguous — don't guess)", () => {
     const dup = { ...events, d: event({ id: "d", recurrenceId: RID }) };
     expect(occurrenceIdByRecurrenceId(RID, ["a", "b", "c", "d"], dup)).toBeNull();
+  });
+});
+
+describe("sameLocalDateTime — format-tolerant instant equality", () => {
+  it("matches the same instant across omitted/included seconds", () => {
+    expect(sameLocalDateTime("2026-09-07T09:00", "2026-09-07T09:00:00")).toBe(true);
+    expect(sameLocalDateTime("2026-09-07T09:00:00.500", "2026-09-07T09:00:00")).toBe(true);
+    expect(sameLocalDateTime("2026-09-07T09:00:00", "2026-09-07T09:00:00")).toBe(true);
+  });
+
+  it("is false for different instants and for an unparseable/absent value", () => {
+    expect(sameLocalDateTime("2026-09-07T09:00:00", "2026-09-14T09:00:00")).toBe(false);
+    expect(sameLocalDateTime("2026-09-07T09:00:00", "2026-09-07T09:30:00")).toBe(false);
+    // An unknown value never spuriously matches — so a destructive branch gated on equality fails safe.
+    expect(sameLocalDateTime(undefined, "2026-09-07T09:00:00")).toBe(false);
+    expect(sameLocalDateTime("garbage", "2026-09-07T09:00:00")).toBe(false);
+  });
+});
+
+describe("excludeOverride — the 'this occurrence' delete", () => {
+  it("writes an excluded:true exception under recurrenceOverrides[recurrenceId]", () => {
+    expect(excludeOverride(RID)).toEqual({
+      recurrenceOverrides: { [RID]: { excluded: true } },
+    });
+  });
+
+  it("carries NO title (unlike overridePatch — an excluded occurrence is meant to vanish)", () => {
+    const ov = (
+      excludeOverride(RID).recurrenceOverrides as Record<string, Record<string, unknown>>
+    )[RID];
+    expect(ov).toEqual({ excluded: true });
+    expect(ov).not.toHaveProperty("title");
+  });
+});
+
+describe("truncateSeriesBefore — the 'this and following' delete cap", () => {
+  it("returns null for a non-recurring event (no rule to cap)", () => {
+    const base = timedEvent({ recurrenceRule: undefined });
+    expect(truncateSeriesBefore(base, RID)).toBeNull();
+  });
+
+  it("caps the rule one DAY before the split and drops count, re-asserting @type", () => {
+    const base = timedEvent({ recurrenceRule: { frequency: "weekly", count: 10 } });
+    expect(truncateSeriesBefore(base, RID)).toEqual({
+      recurrenceRule: {
+        "@type": "RecurrenceRule",
+        frequency: "weekly",
+        until: "2026-07-19T09:00:00", // 2026-07-20 minus one day, keeping the time-of-day
+      },
+    });
+  });
+
+  it("matches the head cap splitSeries produces (one source of the boundary)", () => {
+    // splitSeries reuses truncateSeriesBefore for its head, so the two must agree exactly — guarding
+    // against the EDIT split and the DELETE cap ever drifting on the off-by-one boundary.
+    const base = timedEvent({ recurrenceRule: { frequency: "daily", count: 5 } });
+    const split = splitSeries(base, RID, eventToEditable(base));
+    expect(truncateSeriesBefore(base, RID)).toEqual(split?.basePatch);
   });
 });

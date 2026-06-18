@@ -26,14 +26,18 @@ import {
   editableHasContent,
   editableToEvent,
   editableToPatch,
+  excludeOverride,
   freshOccurrenceIdForBase,
   occurrenceIdByRecurrenceId,
   overridePatch,
   pickBaseEvent,
+  type RecurrenceDeleteMode,
   type RecurrenceEditMode,
   recurrenceChanged,
   recurrenceValid,
+  sameLocalDateTime,
   splitSeries,
+  truncateSeriesBefore,
   visibleRange,
 } from "@/lib/calendar";
 import { handleAuthFailure, jmap, session } from "./account";
@@ -734,43 +738,60 @@ export type DeleteEventResult =
   | { ok: true }
   | {
       ok: false;
-      reason: "no-account" | "unresolved" | "auth" | "refused" | "error";
+      reason: "no-account" | "unresolved" | "invalid" | "auth" | "refused" | "error";
       error?: SetError;
     };
 
 /**
- * Delete an event. The agenda is keyed by SYNTHETIC expanded-occurrence ids, but `CalendarEvent/set
- * destroy` — like `set update` — REJECTS a synthetic id (`invalidProperties: "Deleting synthetic ids
- * is not yet supported."`, probed live 2026-06-17) and needs the BASE event id. So `occurrenceId` is
- * first resolved to its base via the same {@link resolveBaseEvent} the edit path uses (paged
- * non-expanded query → suffix candidates → content disambiguation, fail-safe to null), then ONE
- * `CalendarEvent/set destroy` targets that base. A null resolution returns `unresolved` rather than
- * risk destroying the wrong series, so the caller keeps the read-only detail.
- *
- * RECURRING-EVENT CAVEAT: destroying the base id removes the WHOLE series (probed live — every
- * occurrence vanishes), not just the viewed occurrence; per-occurrence delete (a `recurrenceOverrides`
- * `excluded` exception) is not yet wired here (a later branch of the recurrence-editing milestone), so
- * a delete still acts on the whole series. The confirm copy says as much.
+ * Delete an event, optionally scoped to part of a recurring series. The agenda is keyed by SYNTHETIC
+ * expanded-occurrence ids, but `CalendarEvent/set` — destroy AND update — REJECTS a synthetic id
+ * (`invalidProperties: "… synthetic ids is not yet supported."`, probed live) and needs the BASE event
+ * id. So `occurrenceId` is first resolved to its base via the same {@link resolveBaseEvent} the edit
+ * path uses (paged non-expanded query → suffix candidates → content disambiguation, fail-safe to null);
+ * a null resolution returns `unresolved` rather than risk touching the wrong series. `mode` chooses how
+ * widely the delete applies to a RECURRING event (a non-recurring event always uses the default "all");
+ * `recurrenceId` is the viewed occurrence's recurrence id, required for the per-occurrence modes. The
+ * mode routes ONE `CalendarEvent/set` ([[jmap-set-quirks]]):
+ *  - "all"       → `destroy [baseId]`: removes the WHOLE series (probed live — every occurrence
+ *                  vanishes). The only mode for a non-recurring event.
+ *  - "this"      → `update { [baseId]: { recurrenceOverrides: { [recurrenceId]: { excluded: true } } } }`
+ *                  ({@link excludeOverride}): a NON-destructive whole-map merge that drops just this
+ *                  occurrence; the rest of the series is untouched and the base object survives.
+ *  - "following" → `update { [baseId]: { recurrenceRule: <capped> } }` ({@link truncateSeriesBefore}):
+ *                  cap the series `until` one day before the split so this occurrence and every later
+ *                  one are excluded (no tail — unlike the EDIT split). Also non-destructive — UNLESS
+ *                  the split is the series' FIRST occurrence (recurrenceId === the master start), where
+ *                  capping would leave an empty orphan series, so it degrades to the whole-series destroy.
+ * A "this"/"following" on a recurring base with NO recurrenceId can't be scoped to one occurrence, so it
+ * FAILS CLOSED (`reason:"invalid"`) rather than fall through to a whole-series destroy — a scoped delete
+ * must never silently wipe a series on a bad/absent recurrenceId (the UI disables those modes without one;
+ * this is the store-boundary backstop). A non-recurring base is exempt ("this" = delete the single event).
  *
  * The clicked occurrence is pruned from `calendarEvents` + `eventIds` (and the selection cleared if it
- * pointed at it) optimistically for instant feedback; on success a full-window reconcile re-query
- * ({@link refetchEvents}) drops the rest of a recurring series (the expanded, synthetic-keyed store
- * can't be upserted by base id — the same reason saveEvent/syncCalendar re-query). Discipline mirrors
- * the contacts `deleteContact` / email `deleteForever` ([[jmap-set-quirks]] / [[qelo-review-checklist]]):
- * `requireNewState:false` (a fully-refused destroy omits newState on Stalwart; this path syncs via
- * `CalendarEvent/changes`, not this token, and the reconcile re-query recaptures `eventState` from a
- * full /get exactly like load/sync); a `notFound` refusal counts as gone (kept pruned); only a
- * substantive refusal or a transport error restores the occurrence, guarded against a concurrent sync
- * having re-added it / moved the selection. Resolves (never rejects) so the caller can surface a
- * failure inline.
+ * pointed at it) optimistically for instant feedback — correct for every mode, since the clicked
+ * occurrence is gone in all three; the reconcile re-query ({@link refetchEvents}) then drops the rest
+ * (the whole series for "all", this-and-after for "following", nothing more for "this") — the expanded,
+ * synthetic-keyed store can't be upserted by base id, the same reason saveEvent/syncCalendar re-query.
+ * Discipline mirrors the contacts `deleteContact` / email `deleteForever`
+ * ([[jmap-set-quirks]] / [[qelo-review-checklist]]): `requireNewState:false` (a fully-refused /set omits
+ * newState on Stalwart; this path syncs via `CalendarEvent/changes`, not this token, and the reconcile
+ * recaptures `eventState` from a full /get exactly like load/sync); a `notFound` refusal counts as gone
+ * (kept pruned) for destroy AND update alike (a base destroyed elsewhere means the occurrence is gone
+ * either way); only a substantive refusal or a transport error restores the occurrence, guarded against
+ * a concurrent sync having re-added it / moved the selection. Resolves (never rejects) so the caller can
+ * surface a failure inline.
  */
-export async function deleteEvent(occurrenceId: string): Promise<DeleteEventResult> {
+export async function deleteEvent(
+  occurrenceId: string,
+  mode: RecurrenceDeleteMode = "all",
+  recurrenceId: string | null = null,
+): Promise<DeleteEventResult> {
   const accountId = calendarAccountId();
   if (!accountId) return { ok: false, reason: "no-account" };
 
   // Resolve the BASE id BEFORE any optimistic change — a resolve failure then needs no restore. An
   // auth failure during the resolve raises the global gate; a null result means the base can't be
-  // safely identified (gone/ambiguous), so we refuse rather than destroy a guessed-wrong series.
+  // safely identified (gone/ambiguous), so we refuse rather than touch a guessed-wrong series.
   let base: CalendarEvent | null;
   try {
     base = await resolveBaseEvent(occurrenceId);
@@ -781,6 +802,33 @@ export async function deleteEvent(occurrenceId: string): Promise<DeleteEventResu
   }
   if (!base) return { ok: false, reason: "unresolved" };
   const baseId = base.id;
+
+  // FAIL CLOSED on a scoped delete we can't safely scope: a "this"/"following" on a RECURRING base with
+  // no recurrenceId can't identify WHICH occurrence to drop, and falling through to a whole-series
+  // destroy would be silent, irreversible data loss (a far riskier degrade than saveEvent's, which
+  // degrades to a non-destructive whole-series UPDATE). The UI disables these modes without a
+  // recurrenceId; this is the store-boundary backstop (the PR #15 store-is-the-boundary lesson). A
+  // non-recurring base is exempt — "this" there is just deleting the single event (handled below).
+  if (mode !== "all" && base.recurrenceRule && !recurrenceId) {
+    return { ok: false, reason: "invalid" };
+  }
+
+  // Build the CalendarEvent/set body for the chosen mode. With the guard above, the whole-series destroy
+  // is now reached only by: the "all" mode, a non-recurring base ("this"/"following" there = delete the
+  // single event), or a "following" from the very FIRST occurrence (recurrenceId === the master start) —
+  // where capping before the series start would leave an empty orphan series, so it deliberately means
+  // "delete the whole series". `cap` is null for each of those "following" cases (truncateSeriesBefore
+  // returns null for a non-recurring base), so the destroy branch below stays reachable.
+  let setOpts: { update?: Record<string, CalendarEventPatch>; destroy?: Id[] };
+  if (mode === "this" && recurrenceId && base.recurrenceRule) {
+    setOpts = { update: { [baseId]: excludeOverride(recurrenceId) } };
+  } else {
+    const cap =
+      mode === "following" && recurrenceId && !sameLocalDateTime(recurrenceId, base.start)
+        ? truncateSeriesBefore(base, recurrenceId)
+        : null;
+    setOpts = cap ? { update: { [baseId]: cap } } : { destroy: [baseId] };
+  }
 
   // Optimistic prune of the clicked occurrence: snapshot it (to a plain object — not a live store
   // proxy, which the delete empties) for a guarded restore, and remember whether it was selected so a
@@ -802,20 +850,21 @@ export async function deleteEvent(occurrenceId: string): Promise<DeleteEventResu
   let refused: SetError | undefined;
   try {
     const responses = await client.request(
-      [calendarEventSet(accountId, "set", { destroy: [baseId] })],
+      [calendarEventSet(accountId, "set", setOpts)],
       CALENDAR_USING,
     );
     const r = setResult<CalendarEvent>(responses, "set", { requireNewState: false });
-    // notFound = already gone (destroyed elsewhere) → keep it pruned; only a substantive refusal
-    // leaves the event on the server and warrants a restore.
-    const err = r.notDestroyed[baseId];
+    // The per-occurrence modes are a /set UPDATE (notUpdated), the whole-series mode a /set DESTROY
+    // (notDestroyed). For EITHER, notFound = already gone (the base was destroyed elsewhere, so the
+    // occurrence is gone too) → keep it pruned; only a substantive refusal warrants a restore.
+    const err = setOpts.destroy ? r.notDestroyed[baseId] : r.notUpdated[baseId];
     if (err && err.type !== "notFound") refused = err;
   } catch (err) {
-    // The destroy never applied — restore the occurrence + selection, independent of the re-auth gate
+    // The /set never applied — restore the occurrence + selection, independent of the re-auth gate
     // (the deletion didn't persist either way), then raise that gate / report the error.
     restoreOccurrence(removed, wasSelected);
     if (handleAuthFailure(err)) return { ok: false, reason: "auth" };
-    console.error("CalendarEvent/set destroy failed:", err);
+    console.error("CalendarEvent/set delete failed:", err);
     return { ok: false, reason: "error" };
   }
 
@@ -824,8 +873,10 @@ export async function deleteEvent(occurrenceId: string): Promise<DeleteEventResu
     return { ok: false, reason: "refused", error: refused };
   }
 
-  // Success: drop the rest of a recurring series (and confirm the prune) by reconciling the agenda to
-  // server truth. Best-effort — a re-query blip leaves any lingering occurrences until the next sync.
+  // Success: reconcile the agenda to server truth (and confirm the prune) — this drops whatever the
+  // chosen mode removed beyond the clicked occurrence (the whole series for "all", this-and-after for
+  // "following", nothing more for "this"). Best-effort — a re-query blip leaves any lingering
+  // occurrences until the next sync.
   try {
     await refetchEvents(accountId);
   } catch (err) {

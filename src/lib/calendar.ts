@@ -65,6 +65,26 @@ export function parseDateParts(s: string | undefined): DateParts | null {
   return parts;
 }
 
+/**
+ * Whether two JSCalendar LocalDateTime strings denote the SAME instant, tolerant of format differences
+ * (omitted vs included seconds, a fractional part) — both are parsed to their literal components and
+ * compared, so "2026-09-07T09:00" and "2026-09-07T09:00:00" match. Returns false when EITHER is
+ * unparseable/absent, so an unknown value never spuriously matches (callers that gate a destructive
+ * branch on equality then take the safe non-equal path). Pure. */
+export function sameLocalDateTime(a: string | undefined, b: string | undefined): boolean {
+  const pa = parseDateParts(a);
+  const pb = parseDateParts(b);
+  if (!pa || !pb) return false;
+  return (
+    pa.year === pb.year &&
+    pa.month === pb.month &&
+    pa.day === pb.day &&
+    pa.hour === pb.hour &&
+    pa.minute === pb.minute &&
+    pa.second === pb.second
+  );
+}
+
 interface Duration {
   years: number;
   months: number;
@@ -1556,6 +1576,11 @@ export function editableToPatch(baseline: CalendarEvent, edits: EditableEvent): 
 /** How widely a save to a recurring event applies. A non-recurring event always uses "all". */
 export type RecurrenceEditMode = "this" | "following" | "all";
 
+/** How widely a DELETE of a recurring event applies (mirrors {@link RecurrenceEditMode}): "this" =
+ * exclude just the clicked occurrence; "following" = drop the clicked occurrence and every one after
+ * it (cap the series); "all" = destroy the whole series. A non-recurring event always uses "all". */
+export type RecurrenceDeleteMode = "this" | "following" | "all";
+
 // The local date-time one day before `dt` (keeping its time-of-day), as a JSCalendar LocalDateTime —
 // the head's capped `until` for a split (Stalwart keeps the whole until-date, so a full day back
 // excludes the split occurrence while keeping the prior one). Returns `dt` unchanged if unparseable.
@@ -1606,6 +1631,44 @@ export interface SeriesSplit {
 }
 
 /**
+ * Cap a recurring series to END before `recurrenceId`: the base's original rule with `count` dropped
+ * and `until` set to one day before the split occurrence (the date-inclusive cap — Stalwart keeps the
+ * whole until-date, so a full day back excludes the split occurrence while keeping the prior one;
+ * `@type` is re-asserted since the server strips it on read). Returns the `{ recurrenceRule }` patch,
+ * or null when the base isn't a recurring series (no rule to cap). The SINGLE source of the
+ * head-cap, shared by {@link splitSeries} (the "this and following" EDIT, which also creates a tail)
+ * and the "this and following" DELETE (which caps WITHOUT a tail — the split occurrence and everything
+ * after it are simply removed). Pure.
+ */
+export function truncateSeriesBefore(
+  baseline: CalendarEvent,
+  recurrenceId: string,
+): CalendarEventPatch | null {
+  const baseRule = baseline.recurrenceRule;
+  if (!baseRule) return null;
+  const headRule: RecurrenceRule = {
+    ...baseRule,
+    "@type": "RecurrenceRule",
+    until: minusOneDayLocalDateTime(recurrenceId),
+  };
+  delete headRule.count;
+  return { recurrenceRule: headRule };
+}
+
+/**
+ * The "this occurrence" DELETE: an `excluded:true` exception written under
+ * `recurrenceOverrides[recurrenceId]` (RFC 8984 §4.3.6) — a whole-map merge write on the base id that
+ * drops JUST this occurrence from the expansion, leaving the rest of the series intact. Unlike
+ * {@link overridePatch}, it carries NO `title`: the title key is the Stalwart workaround for keeping an
+ * EDITED occurrence VISIBLE, but an excluded occurrence is meant to VANISH, and `excluded` is the only
+ * key the exception needs (probed live, Branch 2). A non-destructive `set update` on the base — the
+ * series object survives. Pure.
+ */
+export function excludeOverride(recurrenceId: string): CalendarEventPatch {
+  return { recurrenceOverrides: { [recurrenceId]: { excluded: true } } };
+}
+
+/**
  * The "this and following" split (RFC 8984 §4.1.3 — there is no native "this and future", every
  * conformant client splits the series). The HEAD (the base event) is capped to end before the split
  * occurrence; a new TAIL event carries the occurrences from the split onward with the user's forward
@@ -1629,17 +1692,10 @@ export function splitSeries(
   recurrenceId: string,
   edits: EditableEvent,
 ): SeriesSplit | null {
-  const baseRule = baseline.recurrenceRule;
-  if (!baseRule) return null; // not a series — nothing to split
-  // Head: original rule, capped. Drop count (until now bounds the head). `@type` is re-asserted (the
-  // server strips it on read, but a write wants it) — same as editableToRule's emitted rule.
-  const headRule: RecurrenceRule = {
-    ...baseRule,
-    "@type": "RecurrenceRule",
-    until: minusOneDayLocalDateTime(recurrenceId),
-  };
-  delete headRule.count;
-  const basePatch: CalendarEventPatch = { recurrenceRule: headRule };
+  // Head: the base's original rule capped to end before the split ({@link truncateSeriesBefore} owns
+  // the −1-day cap + count drop). Null means a non-recurring base — nothing to split.
+  const basePatch = truncateSeriesBefore(baseline, recurrenceId);
+  if (!basePatch) return null;
 
   // Tail: the fully-edited event, restarted at the split with the remaining rule.
   const edited = editableToEvent(baseline, edits);
