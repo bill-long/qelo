@@ -21,12 +21,12 @@ export const [selectedCalendarId, setSelectedCalendarId] = createSignal<string |
 // Calendar view navigation (Calendar Views milestone): which view the surface renders and the
 // focused date that drives the visible window. `calendarAnchor` is always a LOCAL-midnight Date
 // (see todayAnchor); changing either re-queries the window (the Calendar surface watches them).
-// Default mode is "agenda" — this scaffold branch keeps the CRUD landing; the month-grid branch
-// flips the default to "month". The store derives the query window via lib/calendar `visibleRange`.
+// Default mode is "month" — the conventional calendar landing (the month grid is live as of the
+// month-grid branch). The store derives the query window via lib/calendar `visibleRange`.
 // These deliberately PERSIST across a calendar↔mail surface switch (no onCleanup reset, unlike the
 // transient `creatingEvent` below): they're a navigational position, so returning to the calendar
 // lands on the same view + date — standard calendar behavior. resetStores() resets them for tests.
-export const [calendarViewMode, setCalendarViewMode] = createSignal<CalendarViewMode>("agenda");
+export const [calendarViewMode, setCalendarViewMode] = createSignal<CalendarViewMode>("month");
 export const [calendarAnchor, setCalendarAnchor] = createSignal<Date>(todayAnchor());
 
 // Whether the create-contact form owns the detail pane (column 3). Set by the "+ New contact"

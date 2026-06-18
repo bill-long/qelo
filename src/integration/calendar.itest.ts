@@ -68,6 +68,10 @@ describe("calendar (live Stalwart)", () => {
   afterAll(disconnectTestClient);
   beforeEach(() => {
     resetStores(); // also resets calendar state
+    // The default view mode is now "month" (a ~6-week window around today); these tests seed events
+    // across a today→+56d span and assert via the agenda window, so pin agenda mode. The nav test
+    // switches to month explicitly to exercise the grid window.
+    setCalendarViewMode("agenda");
   });
   afterEach(async () => {
     if (createdIds.length > 0) {

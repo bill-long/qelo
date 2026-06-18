@@ -24,15 +24,21 @@ import {
 import { handleAuthFailure } from "@/stores/account";
 import { calendarEvents, calendars, deleteEvent, resolveBaseEvent } from "@/stores/calendar";
 import { notify } from "@/stores/toasts";
-import { creatingEvent, selectedEventId, setCreatingEvent } from "@/stores/ui";
+import { creatingEvent, selectedEventId, setCreatingEvent, setSelectedEventId } from "@/stores/ui";
 
 /**
- * The event detail (column 3, where ThreadView sits in mail view): a focused-complete render of the
- * selected event — title, when (day + time range + time zone), calendar, location(s), description,
- * status/free-busy/privacy, participants (read-only), and a recurrence badge. Empty-state when no
- * event is selected. An Edit affordance (gated on the event's calendar granting write rights) resolves
- * the BASE event behind the selected occurrence and swaps in {@link EventEditForm} in place;
- * create + delete are later Phase-2 branches. Recurrence + participant editing stay deferred.
+ * The event detail, re-homed (Calendar Views milestone) from the fixed column-3 pane into a modal
+ * slide-over over the now-full-width calendar surface — so the month grid (and the week/day time-grid)
+ * can span the freed columns. A native `<dialog>` opened with `showModal()` (the composer's pattern)
+ * gives real modal semantics for free — focus trapped inside, background inert to AT, Escape→cancel,
+ * `::backdrop` — rather than bolting a partial trap onto a div. Mounted only while an event is selected
+ * or the create form is open; closing clears the selection / create mode.
+ *
+ * Inside: a focused-complete render of the selected event — title, when (day + time range + time zone),
+ * calendar, location(s), description, status/free-busy/privacy, participants (read-only), recurrence
+ * badge — with Edit (resolves the BASE event behind the selected occurrence → {@link EventEditForm}),
+ * Delete (two-step confirm), and the create form (via `creatingEvent`). Recurrence + participant editing
+ * stay deferred.
  */
 export function EventView() {
   const [editing, setEditing] = createSignal(false);
@@ -158,53 +164,99 @@ export function EventView() {
     );
   }
 
+  // The slide-over is open while the create form is up OR a selected event actually resolves to a
+  // loaded record — NOT merely a non-null `selectedEventId`. The nav signals persist across a window
+  // change, so a selection can outlive the window that held it (a sync/nav reconcile prunes the event);
+  // gating on `event()` means the modal auto-closes then instead of popping an empty "Select an event"
+  // panel over the grid.
+  let dialogRef: HTMLDialogElement | undefined;
+  const open = () => creatingEvent() || Boolean(event());
+  function close() {
+    // close() the native dialog FIRST so the browser restores focus to the element that opened it (the
+    // grid chip / agenda row), then clear the signals (which unmounts the now-closed dialog via Show).
+    // Guard on `open` so this is a single, well-defined close (the dialog may already be closed on some
+    // paths) — close() is the one place that closes, paired with the cancel handler's preventDefault.
+    if (dialogRef?.open) dialogRef.close();
+    setCreatingEvent(false);
+    setSelectedEventId(null);
+  }
+  // Promote to the modal top layer when it opens, but only if it isn't ALREADY open: this effect
+  // re-runs whenever any signal in open() changes (e.g. opening the create form while an event is
+  // selected), and showModal() on an open <dialog> throws InvalidStateError — the `!dialogRef.open`
+  // guard makes the re-run a no-op. Escape fires the dialog's native `cancel`, routed through close().
+  createEffect(() => {
+    if (open() && dialogRef && !dialogRef.open) dialogRef.showModal();
+  });
+
   return (
-    <div class="event-view">
-      <Show
-        when={creatingEvent()}
-        fallback={
-          <Show when={event()} fallback={<p class="event-empty">Select an event</p>}>
-            {(e) => (
-              <Show
-                when={editing() && editBase()}
-                fallback={
-                  <EventDetail
-                    event={e()}
-                    canEdit={eventMayWrite(e(), calendars)}
-                    canDelete={eventMayDelete(e(), calendars)}
-                    resolving={resolving()}
-                    resolveError={resolveError()}
-                    deleteError={deleteError()}
-                    deleting={deleting()}
-                    onEdit={() => void handleEdit()}
-                    onDelete={(id) => void handleDelete(id)}
-                  />
-                }
-              >
-                {(base) => (
-                  <EventEditForm
-                    mode="edit"
-                    event={base()}
-                    occurrenceId={editOccurrenceId() as string}
-                    onClose={() => {
-                      setEditing(false);
-                      setEditBase(null);
-                      setEditOccurrenceId(null);
-                    }}
-                  />
+    <Show when={open()}>
+      <dialog
+        ref={dialogRef}
+        class="event-slideover"
+        aria-label={creatingEvent() ? "New event" : "Event details"}
+        onCancel={(e) => {
+          // Escape: stop the browser's default close so this component is the single closer (close()
+          // runs dialogRef.close() + clears the signals), matching the composer's ownership pattern.
+          e.preventDefault();
+          close();
+        }}
+      >
+        <button
+          type="button"
+          class="event-slideover-close"
+          aria-label="Close"
+          onClick={() => close()}
+        >
+          <span aria-hidden="true">×</span>
+        </button>
+        <div class="event-view">
+          <Show
+            when={creatingEvent()}
+            fallback={
+              <Show when={event()} fallback={<p class="event-empty">Select an event</p>}>
+                {(e) => (
+                  <Show
+                    when={editing() && editBase()}
+                    fallback={
+                      <EventDetail
+                        event={e()}
+                        canEdit={eventMayWrite(e(), calendars)}
+                        canDelete={eventMayDelete(e(), calendars)}
+                        resolving={resolving()}
+                        resolveError={resolveError()}
+                        deleteError={deleteError()}
+                        deleting={deleting()}
+                        onEdit={() => void handleEdit()}
+                        onDelete={(id) => void handleDelete(id)}
+                      />
+                    }
+                  >
+                    {(base) => (
+                      <EventEditForm
+                        mode="edit"
+                        event={base()}
+                        occurrenceId={editOccurrenceId() as string}
+                        onClose={() => {
+                          setEditing(false);
+                          setEditBase(null);
+                          setEditOccurrenceId(null);
+                        }}
+                      />
+                    )}
+                  </Show>
                 )}
               </Show>
-            )}
+            }
+          >
+            <EventEditForm
+              mode="create"
+              calendars={writableCalendars(calendars)}
+              onClose={() => setCreatingEvent(false)}
+            />
           </Show>
-        }
-      >
-        <EventEditForm
-          mode="create"
-          calendars={writableCalendars(calendars)}
-          onClose={() => setCreatingEvent(false)}
-        />
-      </Show>
-    </div>
+        </div>
+      </dialog>
+    </Show>
   );
 }
 

@@ -1,5 +1,4 @@
 import { createMemo, For, Show } from "solid-js";
-import type { CalendarEvent } from "@/jmap/types";
 import {
   eventDisplayTitle,
   formatTimeRange,
@@ -7,8 +6,8 @@ import {
   isAllDay,
   isRecurring,
 } from "@/lib/calendar";
-import { calendarEvents, calendarReady, eventIds } from "@/stores/calendar";
-import { selectedCalendarId, selectedEventId, setSelectedEventId } from "@/stores/ui";
+import { calendarEvents, calendarReady, selectedCalendarEvents } from "@/stores/calendar";
+import { selectedEventId, setSelectedEventId } from "@/stores/ui";
 
 /**
  * The agenda body (the "agenda" view mode): the loaded date window's events, grouped by day with a
@@ -16,19 +15,9 @@ import { selectedCalendarId, selectedEventId, setSelectedEventId } from "@/store
  * this component is purely the agenda render of the current window.
  */
 export function EventList() {
-  // Resolve eventIds (query order) → events, filtered to the selected calendar (null = all), then
-  // grouped by day. groupEventsByDay sorts within each day, so the agenda order is deterministic.
-  const groups = createMemo(() => {
-    const calId = selectedCalendarId();
-    const events: CalendarEvent[] = [];
-    for (const id of eventIds()) {
-      const event = calendarEvents[id];
-      if (!event) continue;
-      if (calId !== null && event.calendarIds?.[calId] !== true) continue;
-      events.push(event);
-    }
-    return groupEventsByDay(events);
-  });
+  // The selected calendar's loaded events (shared with the month grid), grouped by day.
+  // groupEventsByDay sorts within each day, so the agenda order is deterministic.
+  const groups = createMemo(() => groupEventsByDay(selectedCalendarEvents()));
 
   return (
     <div class="agenda">

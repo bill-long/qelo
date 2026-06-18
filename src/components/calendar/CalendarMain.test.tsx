@@ -27,11 +27,21 @@ describe("CalendarMain", () => {
     expect(screen.getByRole("button", { name: "Today" })).toBeTruthy();
   });
 
-  it("renders a placeholder for a not-yet-built grid mode", () => {
+  it("renders the month grid in month mode", () => {
+    setCalendarReady(true); // so the grid shows its cells, not the loading note
     setCalendarViewMode("month");
     render(() => <CalendarMain />);
-    expect(screen.getByText(/Month view arrives later/)).toBeTruthy();
-    // The agenda's empty-state must NOT render in month mode.
+    // The month grid renders its weekday header; the not-built placeholder must NOT show.
+    expect(screen.getByText("Sun")).toBeTruthy();
+    expect(screen.queryByText(/arrives later/)).toBeNull();
+    expect(screen.queryByText("No events in this range")).toBeNull();
+  });
+
+  it("renders a placeholder for a not-yet-built grid mode", () => {
+    setCalendarViewMode("week");
+    render(() => <CalendarMain />);
+    expect(screen.getByText(/Week view arrives later/)).toBeTruthy();
+    // The agenda's empty-state must NOT render in week mode.
     expect(screen.queryByText("No events in this range")).toBeNull();
   });
 });

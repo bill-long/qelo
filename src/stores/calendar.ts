@@ -31,7 +31,13 @@ import {
 } from "@/lib/calendar";
 import { handleAuthFailure, jmap, session } from "./account";
 import { syncCollection } from "./sync-collection";
-import { calendarAnchor, calendarViewMode, selectedEventId, setSelectedEventId } from "./ui";
+import {
+  calendarAnchor,
+  calendarViewMode,
+  selectedCalendarId,
+  selectedEventId,
+  setSelectedEventId,
+} from "./ui";
 
 export const [calendars, setCalendars] = createStore<Record<string, Calendar>>({});
 export const [calendarEvents, setCalendarEvents] = createStore<Record<string, CalendarEvent>>({});
@@ -726,6 +732,24 @@ function restoreOccurrence(removed: CalendarEvent | null, reselect: boolean): vo
     setEventIds((ids) => [...ids, removed.id]);
   }
   if (reselect && selectedEventId() === null) setSelectedEventId(removed.id);
+}
+
+/**
+ * The loaded window's events in query order, filtered to the selected calendar (null = all calendars)
+ * and skipping any id not yet in the store — the shared event source for BOTH the agenda (EventList)
+ * and the month grid (MonthGrid), so the filter rule lives in one place. Reactive: reads `eventIds`,
+ * `calendarEvents`, and `selectedCalendarId`; callers wrap it in a memo.
+ */
+export function selectedCalendarEvents(): CalendarEvent[] {
+  const calId = selectedCalendarId();
+  const list: CalendarEvent[] = [];
+  for (const id of eventIds()) {
+    const event = calendarEvents[id];
+    if (!event) continue;
+    if (calId !== null && event.calendarIds?.[calId] !== true) continue;
+    list.push(event);
+  }
+  return list;
 }
 
 /** Test seam: drop all calendar state so a suite starts clean (wired into the harness resetStores). */

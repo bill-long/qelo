@@ -20,8 +20,9 @@ import { activeView } from "@/stores/ui";
 /**
  * The app shell: a top-level Mail / Contacts / Calendar switch over the three-pane layout. Each view
  * swaps a sidebar + two panes across the same grid columns — Mail: folders | conversations | reading
- * pane; Contacts: address books | contact list | contact detail; Calendar: calendars | view (agenda
- * or a grid, with a view-mode switch + window nav) | event detail. Composer + ToastHost stay mounted.
+ * pane; Contacts: address books | contact list | contact detail. Calendar differs: its view (the
+ * agenda or a grid, with a view-mode switch + window nav) spans BOTH content columns for room, and the
+ * event detail rides over it as a modal slide-over (EventView). Composer + ToastHost stay mounted.
  */
 export function Shell() {
   // Load the sending identities up front (Shell mounts only once connected) so a reply-all can
@@ -72,12 +73,12 @@ export function Shell() {
           </section>
         </Match>
         <Match when={activeView() === "calendar"}>
-          <section class="shell-threads">
+          {/* The calendar view spans both content columns; the event detail is a modal slide-over
+              (EventView renders a top-layer <dialog>, so it takes no grid track). */}
+          <section class="shell-calendar">
             <CalendarMain />
           </section>
-          <section class="shell-view">
-            <EventView />
-          </section>
+          <EventView />
         </Match>
       </Switch>
       <Show when={composeOpen()}>
