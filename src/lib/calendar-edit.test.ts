@@ -236,7 +236,8 @@ describe("eventToEditable", () => {
       recurrence: {
         frequency: "weekly",
         interval: 1,
-        weekdays: [],
+        // 2026-07-06 is a Monday; a weekly rule with no byDay surfaces the start's weekday as selected.
+        weekdays: ["mo"],
         monthlyNth: false,
         end: "never",
         count: 10,
@@ -444,6 +445,14 @@ describe("ruleToEditable", () => {
     expect(rec.end).toBe("until");
     expect(rec.until).toBe("2026-08-01");
   });
+
+  it("surfaces the start weekday for a weekly rule with no byDay (else the picker shows none)", () => {
+    // 2026-07-08 is a Wednesday.
+    const rec = ruleToEditable(
+      event({ start: "2026-07-08T09:00:00", recurrenceRule: { frequency: "weekly" } }),
+    );
+    expect(rec.weekdays).toEqual(["we"]);
+  });
 });
 
 describe("editableToRule", () => {
@@ -591,6 +600,18 @@ describe("recurrence in the patch builder", () => {
       edit(base, { recurrence: { ...ruleToEditable(base), interval: 3 } }),
     );
     expect(patch.recurrenceRule).toMatchObject({ frequency: "weekly", interval: 3 });
+  });
+
+  it("treats a reordered weekday set as unchanged (no spurious recurrenceRule patch)", () => {
+    const base = timedEvent({
+      recurrenceRule: { frequency: "weekly", byDay: [{ day: "mo" }, { day: "we" }] },
+    });
+    // Same set, different order (e.g. toggled off then back on) → no-op.
+    const patch = editableToPatch(
+      base,
+      edit(base, { recurrence: { ...ruleToEditable(base), weekdays: ["we", "mo"] } }),
+    );
+    expect(patch).not.toHaveProperty("recurrenceRule");
   });
 
   it("emits recurrenceRule: null when the repeat is turned off", () => {

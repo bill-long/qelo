@@ -629,9 +629,10 @@ export type DeleteEventResult =
  * `CalendarEvent/set destroy` targets that base. A null resolution returns `unresolved` rather than
  * risk destroying the wrong series, so the caller keeps the read-only detail.
  *
- * RECURRING-EVENT CAVEAT: with no recurrence editing this milestone, destroying the base id removes the
- * WHOLE series (probed live — every occurrence vanishes), not just the viewed occurrence; deleting a
- * single occurrence (a `recurrenceOverrides` exception) is out of scope. The confirm copy says as much.
+ * RECURRING-EVENT CAVEAT: destroying the base id removes the WHOLE series (probed live — every
+ * occurrence vanishes), not just the viewed occurrence; per-occurrence delete (a `recurrenceOverrides`
+ * `excluded` exception) is not yet wired here (a later branch of the recurrence-editing milestone), so
+ * a delete still acts on the whole series. The confirm copy says as much.
  *
  * The clicked occurrence is pruned from `calendarEvents` + `eventIds` (and the selection cleared if it
  * pointed at it) optimistically for instant feedback; on success a full-window reconcile re-query

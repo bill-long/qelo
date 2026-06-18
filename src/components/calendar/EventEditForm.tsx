@@ -405,7 +405,11 @@ function RecurrenceEditor(props: {
   function toggleWeekday(code: string, on: boolean) {
     const current = props.recurrence.weekdays;
     const next = on ? [...current, code] : current.filter((c) => c !== code);
-    props.onChange({ weekdays: next });
+    // Keep at least one weekday: a weekly rule with an empty byDay still repeats (on the start's
+    // weekday), so an empty picker would show "weekly, no days" while the rule keeps firing. If
+    // unchecking would empty it, re-assert the current set (a fresh array ref) so the bound checkbox
+    // snaps back to checked instead of the native uncheck sticking.
+    props.onChange({ weekdays: next.length === 0 ? [...current] : next });
   }
   return (
     <fieldset class="event-edit-recurrence">

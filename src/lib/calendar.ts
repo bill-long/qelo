@@ -1093,6 +1093,11 @@ export function emptyRecurrence(): EditableRecurrence {
  * unknown/absent frequency → non-repeating; `byDay` codes populate `weekdays`; a byDay carrying
  * `nthOfPeriod` flags the monthly "Nth weekday" pattern; `count`/`until` set the end. Pure +
  * deterministic, so re-deriving an unchanged event reproduces identical fields (the no-op foundation).
+ *
+ * A WEEKLY rule with no `byDay` repeats on the event's start weekday (the server's implicit default),
+ * so we surface that day as selected — otherwise the editor would show "weekly" with no day checked,
+ * contradicting what the rule actually does. The verbatim-carry guard keeps this from emitting a
+ * spurious byDay on an untouched save (both sides of recurrenceChanged seed the same day).
  */
 export function ruleToEditable(event: CalendarEvent): EditableRecurrence {
   const e = emptyRecurrence();
@@ -1104,6 +1109,10 @@ export function ruleToEditable(event: CalendarEvent): EditableRecurrence {
   e.weekdays = (rule?.byDay ?? [])
     .map((d) => d.day?.toLowerCase())
     .filter((d): d is string => Boolean(d));
+  if (e.frequency === "weekly" && e.weekdays.length === 0) {
+    const start = eventStartParts(event);
+    if (start) e.weekdays = [weekdayCode(start)];
+  }
   e.monthlyNth = (rule?.byDay ?? []).some((d) => typeof d.nthOfPeriod === "number");
   if (typeof rule?.count === "number") {
     e.end = "count";
@@ -1162,7 +1171,9 @@ function recurrenceChanged(baseline: CalendarEvent, edits: EditableEvent): boole
   return (
     b.frequency !== e.frequency ||
     b.interval !== e.interval ||
-    b.weekdays.join(",") !== e.weekdays.join(",") ||
+    // Order-insensitive: the weekday SET is what matters, so toggling days off then back on (same
+    // set, different order) stays a no-op rather than rewriting the rule.
+    b.weekdays.slice().sort().join(",") !== e.weekdays.slice().sort().join(",") ||
     b.monthlyNth !== e.monthlyNth ||
     b.end !== e.end ||
     b.count !== e.count ||

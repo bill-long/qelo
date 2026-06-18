@@ -155,6 +155,17 @@ describe("EventEditForm recurrence editor", () => {
     );
   });
 
+  it("keeps at least one weekday checked (can't uncheck the last one)", () => {
+    // `weekly` starts 2026-07-06 (Monday) with no byDay → Mon is the lone seeded day.
+    render(() => (
+      <EventEditForm mode="edit" event={weekly} occurrenceId="eaaaaau" onClose={() => {}} />
+    ));
+    const mon = screen.getByLabelText("Mon") as HTMLInputElement;
+    expect(mon.checked).toBe(true);
+    fireEvent.click(mon); // try to uncheck the only selected day
+    expect((screen.getByLabelText("Mon") as HTMLInputElement).checked).toBe(true); // stays checked
+  });
+
   it("seeds the start's weekday when switching a fresh event to weekly", () => {
     // A create seeded at a known date; switching to Weekly should check that day, not show none.
     render(() => <EventEditForm mode="create" calendars={[calendar({})]} onClose={() => {}} />);
