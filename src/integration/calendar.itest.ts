@@ -7,7 +7,12 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { CAP_CALENDARS, CAP_CORE, methodResult } from "@/jmap/methods";
 import type { Id } from "@/jmap/types";
-import { emptyEditableEvent, emptyRecurrence, eventToEditable } from "@/lib/calendar";
+import {
+  type EditableEvent,
+  emptyEditableEvent,
+  emptyRecurrence,
+  eventToEditable,
+} from "@/lib/calendar";
 import {
   calendarAccountId,
   calendarEvents,
@@ -372,6 +377,20 @@ describe("calendar (live Stalwart)", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.reason).toBe("empty");
+  });
+
+  it("rejects a create with an invalid recurrence at the store boundary", async () => {
+    // A valid title + when but an invalid repeat (count 0) — the store enforces recurrence validity
+    // before any CalendarEvent/set, even though the form's Save gate would already block it.
+    const edits: EditableEvent = {
+      ...emptyEditableEvent(),
+      title: "Bad recur",
+      recurrence: { ...emptyRecurrence(), frequency: "weekly", end: "count", count: 0 },
+    };
+    const result = await createEvent(edits, { b: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toBe("invalid");
   });
 
   it("deletes an event via the store action, resolving the base id from the synthetic occurrence", async () => {

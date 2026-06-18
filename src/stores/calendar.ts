@@ -27,6 +27,7 @@ import {
   editableToPatch,
   freshOccurrenceIdForBase,
   pickBaseEvent,
+  recurrenceValid,
   visibleRange,
 } from "@/lib/calendar";
 import { handleAuthFailure, jmap, session } from "./account";
@@ -522,7 +523,7 @@ export type CreateEventResult =
   | { ok: true; id: Id }
   | {
       ok: false;
-      reason: "empty" | "no-account" | "auth" | "refused" | "error";
+      reason: "empty" | "invalid" | "no-account" | "auth" | "refused" | "error";
       error?: SetError;
     };
 
@@ -556,6 +557,9 @@ export async function createEvent(
   calendarIds: Record<string, true>,
 ): Promise<CreateEventResult> {
   if (!editableHasContent(edits)) return { ok: false, reason: "empty" };
+  // Enforce recurrence validity at the store boundary too (not just the form): a programmatic caller
+  // with an invalid repeat (interval/count < 1, bad until) must be refused before any CalendarEvent/set.
+  if (!recurrenceValid(edits.recurrence)) return { ok: false, reason: "invalid" };
   const accountId = calendarAccountId();
   if (!accountId) return { ok: false, reason: "no-account" };
 
