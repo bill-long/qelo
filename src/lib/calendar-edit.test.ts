@@ -682,8 +682,9 @@ describe("overridePatch — the 'this occurrence' override", () => {
   it("carries the baseline title rather than a title-removing null (which would hide the occurrence)", () => {
     const base = timedEvent();
     // Clearing the title would diff to `title: null`; the override falls back to the baseline title so
-    // the patch never strips the title (a null/blank title drops the occurrence from the Stalwart
-    // expansion) — clearing a single occurrence's title is an accepted limitation.
+    // the patch always carries a title KEY (an ABSENT title key drops the occurrence from the Stalwart
+    // expansion — an empty-string value does NOT, probed live) — clearing a single occurrence's title
+    // is an accepted limitation.
     const patch = overridePatch(RID, base, edit(base, { title: "", description: "x" }));
     const ov = (patch?.recurrenceOverrides as Record<string, Record<string, unknown>>)[RID];
     expect(ov?.title).toBe("Standup");
