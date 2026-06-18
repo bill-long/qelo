@@ -77,11 +77,11 @@ export function MonthGrid() {
 }
 
 function MonthWeek(props: { week: DayCell[]; layout: MonthWeekLayout }) {
-  // Until the day time-grid lands (Branch C), revealing a day's hidden events opens the AGENDA anchored
-  // at that day (which is built and lists the day's events) rather than the not-yet-built day view.
+  // Revealing a day's hidden events drills into the Day time-grid anchored at that day — the natural
+  // drill-down now that the day view exists (it replaced the agenda stand-in from Branch B).
   function openDay(key: string) {
     setCalendarAnchor(keyToAnchor(key));
-    setCalendarViewMode("agenda");
+    setCalendarViewMode("day");
   }
   return (
     <div class="month-week">

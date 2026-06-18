@@ -92,7 +92,7 @@ describe("MonthGrid", () => {
     expect(screen.queryByRole("button", { name: /Theirs/ })).toBeNull();
   });
 
-  it("collapses overflow into a '+N more' that opens that day's agenda", () => {
+  it("collapses overflow into a '+N more' that opens that day's time-grid", () => {
     // Four chips on the same day exceed the 3 visible lanes → one hidden → "+1 more".
     const events: Record<string, CalendarEvent> = {};
     const ids: string[] = [];
@@ -106,9 +106,8 @@ describe("MonthGrid", () => {
     const more = screen.getByRole("button", { name: /1 more event\b/ });
     expect(more.textContent).toContain("+1 more");
     fireEvent.click(more);
-    // Until the day time-grid lands, the overflow opens the agenda anchored at that day (built +
-    // reachable), not the not-yet-built day view.
-    expect(calendarViewMode()).toBe("agenda");
+    // The overflow drills into the Day time-grid anchored at that day.
+    expect(calendarViewMode()).toBe("day");
     expect(calendarAnchor()).toEqual(new Date(2026, 5, 17));
   });
 });

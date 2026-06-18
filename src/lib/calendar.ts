@@ -613,6 +613,236 @@ export function layoutMonth(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Week + day time-grid (Calendar Views milestone, Branch C). Pure layout for an hour-axis grid: the
+// day-key columns of the visible week/day (weekDays), a timed event's vertical placement within one day
+// column in minutes-from-midnight (eventDayPlacement, clamped to the day so a block crossing midnight
+// renders one piece per day it covers), side-by-side packing of concurrent events (packDayColumns), the
+// all-day bar lane (layoutAllDayLane), the current-time line offset (nowIndicatorOffset), and the shared
+// per-block accessible name (eventAccessibleName). Same UTC-on-the-literal-components day math as the
+// rest of the file.
+// ---------------------------------------------------------------------------
+
+/** Minutes in a day — the time grid's vertical extent (00:00 → 24:00). */
+export const MINUTES_PER_DAY = 1440;
+
+/**
+ * The "YYYY-MM-DD" day keys of the week (count 7, Sun-start) or single day (count 1) containing
+ * `anchor` — the time-grid's columns. Matches {@link visibleRange}'s week/day window exactly (week =
+ * the Sun…Sat around the anchor; day = the anchor's own day), so the rendered columns and the queried
+ * window can't diverge (the {@link monthGridBounds} discipline, here for the time grid).
+ */
+export function weekDays(anchor: Date, count: number): string[] {
+  const start = count === 1 ? localMidnight(anchor) : startOfWeek(anchor);
+  const out: string[] = [];
+  const d = new Date(start);
+  for (let i = 0; i < count; i += 1) {
+    out.push(localDateKey(d));
+    d.setDate(d.getDate() + 1);
+  }
+  return out;
+}
+
+// UTC ms for a DateParts INCLUDING its clock time — the scalar that places a timed event against a day
+// column. (The month helpers compare whole days via keyToUtcMs; the time grid needs the wall-clock
+// instant.)
+function partsUtcMs(p: DateParts): number {
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+}
+
+/** A timed event's vertical placement within ONE day column: `top`/`height` in minutes-from-midnight,
+ * clamped to [0, {@link MINUTES_PER_DAY}]. The `event` rides along for packing/rendering. */
+export interface DayPlacement {
+  event: CalendarEvent;
+  top: number;
+  height: number;
+}
+
+/**
+ * Place a TIMED event within the `dayKey` column, or null when it doesn't belong there: an all-day /
+ * `showWithoutTime` event (those go to the all-day lane, never the time grid), an unparseable start, or
+ * an event that doesn't overlap the day. `top`/`height` are minutes-from-midnight clamped to the day,
+ * so a midnight-crossing event yields a block per covered day (e.g. 23:00→01:00 → [1380,1440] on day 1,
+ * then [0,60] on day 2). A zero-duration event keeps height 0 (the renderer floors a visible minimum)
+ * and still shows on the day its instant falls in. Intervals are half-open: an event ending exactly at
+ * a day's 00:00 boundary occupies no time on that later day, so it doesn't render there. Placed by the
+ * event's LITERAL local components (Date.UTC on the parts — the file's convention), so the block lands
+ * at its written wall-clock time; this only shares a reference frame with the local now-indicator when
+ * the viewer's zone matches the event's (viewer-tz conversion is a later nicety, same posture as the
+ * agenda/month). Pure.
+ */
+export function eventDayPlacement(event: CalendarEvent, dayKey: string): DayPlacement | null {
+  if (isAllDay(event)) return null;
+  const start = eventStartParts(event);
+  if (!start) return null;
+  const end = eventEndParts(event) ?? start;
+  const dayMs = keyToUtcMs(dayKey);
+  if (Number.isNaN(dayMs)) return null;
+  const startMin = (partsUtcMs(start) - dayMs) / 60_000;
+  const endMin = (partsUtcMs(end) - dayMs) / 60_000;
+  // Touches this day? A zero-duration event shows when its instant is in [0, day); a positive-length
+  // event shows when its half-open [start,end) overlaps [0, day) — exact-touch at a day edge doesn't.
+  const touches =
+    endMin === startMin
+      ? startMin >= 0 && startMin < MINUTES_PER_DAY
+      : startMin < MINUTES_PER_DAY && endMin > 0;
+  if (!touches) return null;
+  const top = Math.max(0, Math.min(MINUTES_PER_DAY, startMin));
+  const bottom = Math.max(0, Math.min(MINUTES_PER_DAY, endMin));
+  return { event, top, height: Math.max(0, bottom - top) };
+}
+
+/** A {@link DayPlacement} assigned a sub-column for side-by-side rendering of concurrent events:
+ * `column` (0-based, left→right) of `columns` total in its overlap cluster, so the renderer sets
+ * width = 1/`columns` and left = `column`/`columns`. */
+export interface PackedPlacement extends DayPlacement {
+  column: number;
+  columns: number;
+}
+
+/**
+ * Pack a day column's timed placements into side-by-side sub-columns (the classic interval-graph greedy
+ * packing): events are grouped into overlap CLUSTERS (a maximal run of transitively-overlapping events),
+ * and within each cluster every event takes the leftmost sub-column free at its start; the cluster's
+ * column count (its peak concurrency) is shared by all its members so they tile to full width.
+ * Intervals are half-open [top, top+height): exact-touch (one ends where the next starts) does NOT
+ * overlap and shares a column. `minHeight` is the renderer's visual floor (a short/zero-duration block
+ * is drawn at least this tall): overlap is computed against `max(height, minHeight)` so two events that
+ * don't overlap in TIME but WOULD overlap once floored to the minimum still get side-by-side columns —
+ * packing then matches what's actually drawn (and two zero-duration events at the same instant tile
+ * side-by-side instead of visually colliding). The OUTPUT keeps the true `top`/`height`; the renderer
+ * applies the same floor. Deterministic input order — earlier `top`, then taller, then
+ * {@link compareEvents} — so the packing is stable across renders. Pure; returns a flat list (the
+ * cluster grouping is internal).
+ */
+export function packDayColumns(
+  placements: DayPlacement[],
+  minHeight: number = 0,
+): PackedPlacement[] {
+  const sorted = [...placements].sort(
+    (a, b) => a.top - b.top || b.height - a.height || compareEvents(a.event, b.event),
+  );
+  const result: PackedPlacement[] = [];
+  let cluster: PackedPlacement[] = [];
+  let colEnds: number[] = [];
+  let clusterEnd = Number.NEGATIVE_INFINITY;
+
+  const flush = () => {
+    if (cluster.length === 0) return;
+    const columns = colEnds.length;
+    for (const p of cluster) p.columns = columns;
+    result.push(...cluster);
+    cluster = [];
+    colEnds = [];
+    clusterEnd = Number.NEGATIVE_INFINITY;
+  };
+
+  for (const p of sorted) {
+    // Effective end uses the rendered minimum so packing matches the floored visual height.
+    const end = p.top + Math.max(p.height, minHeight);
+    // A new cluster begins once this event starts at/after every prior cluster member has ended (no
+    // overlap with any — they're start-sorted, so clusterEnd, the running max end, bounds them all).
+    if (cluster.length > 0 && p.top >= clusterEnd) flush();
+    // Leftmost sub-column whose last event has ended by this event's start (exact-touch frees it).
+    let column = colEnds.findIndex((colEnd) => colEnd <= p.top);
+    if (column === -1) {
+      column = colEnds.length;
+      colEnds.push(end);
+    } else {
+      colEnds[column] = end;
+    }
+    cluster.push({ ...p, column, columns: 1 });
+    clusterEnd = Math.max(clusterEnd, end);
+  }
+  flush();
+  return result;
+}
+
+/** One all-day bar in the week's all-day lane: its clipped column span [startCol,endCol] (0-based within
+ * the visible days), `lane` (stacked row), and whether it continues past the visible window (open edges). */
+export interface AllDaySegment {
+  event: CalendarEvent;
+  startCol: number;
+  endCol: number;
+  lane: number;
+  continuesBefore: boolean;
+  continuesAfter: boolean;
+}
+
+/**
+ * Lay the all-day events covering the visible `days` into stacked lanes of clipped bars (the time
+ * grid's top all-day lane). ONLY `showWithoutTime` events appear here — timed events (even multi-day
+ * ones) render as per-day blocks in the grid via {@link eventDayPlacement}. A bar is clipped to the
+ * visible columns and flagged continuesBefore/After when the event extends past them (the {after,before}
+ * query returns events overlapping the window). Greedy lane packing — the lowest non-overlapping lane —
+ * with the same deterministic order as {@link layoutMonth} (earlier start, longer span, then
+ * {@link compareEvents}). Pure; `days` is the {@link weekDays} key list (length 1 or 7).
+ */
+export function layoutAllDayLane(events: CalendarEvent[], days: string[]): AllDaySegment[] {
+  const first = days[0];
+  const last = days[days.length - 1];
+  if (!first || !last) return [];
+  const firstMs = keyToUtcMs(first);
+  const lastMs = keyToUtcMs(last);
+  const maxCol = days.length - 1;
+  const items = events
+    .map((event) => {
+      if (!isAllDay(event)) return null;
+      const range = eventDayRange(event);
+      if (!range || range.lastMs < firstMs || range.firstMs > lastMs) return null;
+      return {
+        event,
+        startCol: Math.max(0, Math.round((range.firstMs - firstMs) / DAY_MS)),
+        endCol: Math.min(maxCol, Math.round((range.lastMs - firstMs) / DAY_MS)),
+        continuesBefore: range.firstMs < firstMs,
+        continuesAfter: range.lastMs > lastMs,
+      };
+    })
+    .filter((x): x is NonNullable<typeof x> => x !== null)
+    .sort(
+      (a, b) =>
+        a.startCol - b.startCol ||
+        b.endCol - b.startCol - (a.endCol - a.startCol) ||
+        compareEvents(a.event, b.event),
+    );
+  const laneRanges: [number, number][][] = [];
+  const segments: AllDaySegment[] = [];
+  for (const s of items) {
+    let lane = 0;
+    while (laneRanges[lane]?.some(([ls, le]) => s.startCol <= le && ls <= s.endCol)) lane += 1;
+    let row = laneRanges[lane];
+    if (!row) {
+      row = [];
+      laneRanges[lane] = row;
+    }
+    row.push([s.startCol, s.endCol]);
+    segments.push({ ...s, lane });
+  }
+  return segments;
+}
+
+/** Minutes-from-midnight for the current-time line on the `dayKey` column, or null when `now`'s LOCAL
+ * day isn't that column (only today shows the indicator). Decorative — the renderer marks it
+ * aria-hidden. Pure; `now` is a parameter for deterministic tests. */
+export function nowIndicatorOffset(now: Date, dayKey: string): number | null {
+  if (localDateKey(now) !== dayKey) return null;
+  return now.getHours() * 60 + now.getMinutes();
+}
+
+/**
+ * A self-describing accessible name for an event button in a grid cell/column: title, the cell's day,
+ * then the time range. `dayKey` is the CELL/COLUMN's day — NOT necessarily the event's own start day —
+ * so a clipped piece of a midnight-crossing block names the day it's drawn on, not where the event
+ * began. The time grid is a pointer-centric visual layout (the agenda is the linear accessible
+ * equivalent), so each block must name its own day rather than rely on a column-header association.
+ */
+export function eventAccessibleName(event: CalendarEvent, dayKey: string): string {
+  const parts = [eventDisplayTitle(event), formatDayHeading(dayKey)];
+  const range = formatTimeRange(event);
+  if (range) parts.push(range);
+  return parts.join(", ");
+}
+
 const FREQ_LABEL: Record<string, string> = {
   daily: "Daily",
   weekly: "Weekly",
