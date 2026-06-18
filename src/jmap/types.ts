@@ -442,14 +442,18 @@ export interface RecurrenceRule {
 export type RecurrenceOverride = Record<string, unknown>;
 
 /**
- * JSCalendar `relatedTo` (RFC 8984 §4.1.3): links this object to others by their `uid`, each with a
- * set of relation types (e.g. `{ next: true }` / `{ first: true }`) used to chain a split series.
+ * JSCalendar `relatedTo` (RFC 8984 §4.1.5): an event's `relatedTo` maps each linked object's `uid` to
+ * a {@link Relation}, whose `relation` is a `String[Boolean]` SET of relation types — e.g. to chain a
+ * split series the tail's `relatedTo` is `{ "<head-uid>": { relation: { first: true } } }` and the
+ * head's is `{ "<tail-uid>": { relation: { next: true } } }`.
  * TYPED BUT UNUSED — split-LINKING is DEFERRED on Stalwart because `CalendarEvent/get` never returns
  * `uid`, so a series we didn't create has no readable uid to link to (see the recurrence milestone
  * plan). The "this and following" split ships FUNCTIONALLY without the link.
  */
 export interface Relation {
   "@type"?: "Relation";
+  /** The set of relation types (RFC 8984 §4.1.5 — `String[Boolean]`, each value MUST be true), e.g.
+   * `{ next: true }` / `{ first: true }`. */
   relation?: Record<string, true>;
 }
 
