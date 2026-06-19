@@ -214,8 +214,8 @@ function zoneFormatter(zone: string): Intl.DateTimeFormat {
 
 /** A UTC instant (ms since epoch) projected to its wall-clock {@link DateParts} in `zone`. The single
  * UTC→zone projection (Branch 2's generalization of Branch 1's browser-local getters); pure given a
- * fixed zone. `hour` is taken mod 24 to defend against engines that emit "24" for midnight under
- * `hourCycle: "h23"`. */
+ * fixed zone. `hourCycle: "h23"` is spec-guaranteed (ECMA-402) to report hours 00–23 with midnight as
+ * "00" (only `h24` ever emits "24"), so no hour normalization is needed and `day` stays consistent. */
 function partsInZone(ms: number, zone: string): DateParts {
   const o: Record<string, string> = {};
   for (const p of zoneFormatter(zone).formatToParts(ms)) {
@@ -225,7 +225,7 @@ function partsInZone(ms: number, zone: string): DateParts {
     year: Number(o.year),
     month: Number(o.month),
     day: Number(o.day),
-    hour: Number(o.hour) % 24,
+    hour: Number(o.hour),
     minute: Number(o.minute),
     second: Number(o.second),
   };
@@ -660,11 +660,14 @@ export function rangeLabel(
 }
 
 /**
- * The Date to seed a NEW event's default slot from, given the visible window: `now` when today is in
- * view (the familiar next-hour-today default), otherwise the anchor's day at the current time-of-day.
- * So a create made while the window is navigated away from today lands somewhere VISIBLE (in the window
- * the user is looking at) instead of on today — off-window, where the reconcile re-query would drop it
- * from view. Feeds {@link emptyEditableEvent}; pure, `now` parameterized for tests.
+ * The Date to seed a NEW event's default slot from, given the visible window: today (at the current
+ * time-of-day) when today is in view (the familiar next-hour-today default), otherwise the anchor's day
+ * at that same time-of-day. So a create made while the window is navigated away from today lands
+ * somewhere VISIBLE (in the window the user is looking at) instead of on today — off-window, where the
+ * reconcile re-query would drop it from view. The returned Date is a browser-local CARRIER whose
+ * components are the DISPLAY-ZONE (`zone`, default {@link LOCAL_ZONE}) wall-clock of `now` (minute
+ * precision; seconds dropped), so {@link emptyEditableEvent}'s local-getter formatting yields a default
+ * slot in the zone the user is viewing. Pure; `now`/`zone` parameterized for tests.
  */
 export function createSeedDate(
   mode: CalendarViewMode,
