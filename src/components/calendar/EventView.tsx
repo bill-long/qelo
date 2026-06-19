@@ -18,6 +18,7 @@ import {
   formatDayHeading,
   formatTimeRange,
   isRecurring,
+  RECURRENCE_SCOPE_MODES,
   type RecurrenceDeleteMode,
   recurrenceSummary,
   writableCalendars,
@@ -306,16 +307,11 @@ function participantLabel(p: {
   const uri = p.sendTo ? Object.values(p.sendTo)[0] : undefined;
   return uri ? uri.replace(/^mailto:/i, "") : null;
 }
-
-// The recurring-delete scope chooser's options (mirrors EventEditForm's APPLY_MODES). "this"/"following"
-// need the occurrence's recurrenceId; without one (a degenerate record / a selected series master) they
-// disable and only "All events" stays available. A non-recurring event never shows these (a single
-// Delete). The store maps "all" → base destroy, "this" → an excluded override, "following" → a capped rule.
-const DELETE_MODES: { value: RecurrenceDeleteMode; label: string }[] = [
-  { value: "this", label: "This event" },
-  { value: "following", label: "This and following events" },
-  { value: "all", label: "All events" },
-];
+// The recurring-delete scope chooser uses the shared {@link RECURRENCE_SCOPE_MODES} (delete + edit modes
+// are the same union). "this"/"following" need the occurrence's recurrenceId; without one (a degenerate
+// record / a selected series master) they disable and only "All events" stays available. A non-recurring
+// event never shows these (a single Delete). The store maps "all" → base destroy, "this" → an excluded
+// override, "following" → a capped rule.
 
 function EventDetail(props: {
   event: CalendarEvent;
@@ -446,7 +442,7 @@ function EventDetail(props: {
                     need the occurrence's recurrenceId; without one they're aria-disabled (kept
                     focusable + a hint, the qelo-review-checklist disabled-state rule) and only
                     "All events" fires. Each option dispatches the delete directly. */}
-                <For each={DELETE_MODES}>
+                <For each={RECURRENCE_SCOPE_MODES}>
                   {(opt) => {
                     const disabled = () => opt.value !== "all" && occRecurrenceId() === null;
                     return (

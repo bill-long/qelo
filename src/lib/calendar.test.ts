@@ -7,10 +7,12 @@ import {
   createEventBody,
   createEventError,
   createSeedDate,
+  dateTimeInput,
   dayKey,
   defaultWritableCalendarId,
   displayEndParts,
   displayStartParts,
+  dropToSourceStart,
   type EditableEvent,
   editableHasContent,
   emptyEditableEvent,
@@ -33,8 +35,12 @@ import {
   packDayColumns,
   parseDateParts,
   parseDuration,
+  partsAddMs,
+  partsUtcMs,
+  pointerToGrid,
   rangeLabel,
   recurrenceSummary,
+  snapMinutes,
   stepAnchor,
   todayAnchor,
   visibleRange,
@@ -1336,5 +1342,146 @@ describe("viewer-tz selectable display zone (Branch 2)", () => {
     );
     expect(todayAnchor(now, LOCAL_ZONE).getTime()).toBe(todayAnchor(now).getTime());
     expect(formatTimeRange(tzEvent, LOCAL_ZONE)).toBe(formatTimeRange(tzEvent));
+  });
+});
+
+describe("dropToSourceStart (drag reschedule inverse of placement)", () => {
+  // FIXED-OFFSET zones so assertions are tzdb/DST-proof (Etc/GMT sign inverted: Etc/GMT+4 = UTC−4).
+  const WEST = "Etc/GMT+4"; // UTC−4 display
+  const SRC = "Etc/GMT-9"; // UTC+9 source zone (so source ≠ display, exercising the round-trip)
+
+  // A timed event whose source zone is SRC (UTC+9): instant 2026-07-02T02:00:00Z = 11:00 Jul 2 in SRC.
+  const tzEvent = event({
+    start: "2026-07-02T11:00:00",
+    timeZone: SRC,
+    duration: "PT1H",
+    utcStart: "2026-07-02T02:00:00Z",
+    utcEnd: "2026-07-02T03:00:00Z",
+  });
+
+  it("inverts a display-zone drop back to the event's SOURCE-zone wall-clock", () => {
+    // Drop at 22:00 (1320 min) on the WEST day 2026-07-01 — that display position is the instant
+    // 2026-07-02T02:00:00Z, which in the SOURCE zone (UTC+9) is 11:00 Jul 2.
+    expect(dropToSourceStart(tzEvent, "2026-07-01", 22 * 60, WEST)).toEqual({
+      year: 2026,
+      month: 7,
+      day: 2,
+      hour: 11,
+      minute: 0,
+      second: 0,
+    });
+  });
+
+  it("round-trips with displayStartParts: drop where it's placed → its own source start", () => {
+    // Placing the event in WEST puts it on 2026-07-01 at 22:00 (1320 min); dropping it right there must
+    // recover the literal source start — the read (displayStartParts) and write (dropToSourceStart) use
+    // the SAME convertsToViewerZone gate + instant, so the frames match exactly.
+    const placed = displayStartParts(tzEvent, WEST);
+    if (!placed) throw new Error("unreachable");
+    const back = dropToSourceStart(tzEvent, "2026-07-01", placed.hour * 60 + placed.minute, WEST);
+    expect(back).toEqual({ ...parseDateParts(tzEvent.start), second: 0 });
+  });
+
+  it("crosses a DST boundary correctly (real zone, two-pass civil→instant)", () => {
+    // A NY-source event; drop on the WEST display day that maps across the US spring-forward. NY clocks
+    // jump 02:00→03:00 on 2026-03-08, so the source projection of the dropped instant must honor the
+    // post-transition offset. Pinned to a settled DST date.
+    const ny = event({
+      start: "2026-03-08T10:00:00",
+      timeZone: "America/New_York",
+      duration: "PT1H",
+      utcStart: "2026-03-08T14:00:00Z", // 10:00 EDT
+      utcEnd: "2026-03-08T15:00:00Z",
+    });
+    // Drop at 10:00 on the UTC display day → instant 2026-03-08T10:00:00Z → NY (EDT, −4) = 06:00.
+    expect(dropToSourceStart(ny, "2026-03-08", 10 * 60, "UTC")).toEqual({
+      year: 2026,
+      month: 3,
+      day: 8,
+      hour: 6,
+      minute: 0,
+      second: 0,
+    });
+  });
+
+  it("treats a floating event's drop as the face-value source start (no zone math)", () => {
+    const floating = event({ start: "2026-07-01T09:00:00", timeZone: null, duration: "PT1H" });
+    // The grid shows a floating event at face value, so the drop IS the source start — even when the
+    // display zone is non-local, no projection happens.
+    expect(dropToSourceStart(floating, "2026-07-05", 14 * 60 + 30, WEST)).toEqual({
+      year: 2026,
+      month: 7,
+      day: 5,
+      hour: 14,
+      minute: 30,
+      second: 0,
+    });
+  });
+
+  it("rolls the date when a face-value drop runs past midnight", () => {
+    const floating = event({ start: "2026-07-01T09:00:00", timeZone: null, duration: "PT1H" });
+    // 1450 minutes = 24h10m → next day 00:10.
+    expect(dropToSourceStart(floating, "2026-07-01", 1450, WEST)).toMatchObject({
+      day: 2,
+      hour: 0,
+      minute: 10,
+    });
+  });
+
+  it("returns null for a malformed day key", () => {
+    expect(dropToSourceStart(tzEvent, "not-a-day", 540, WEST)).toBeNull();
+  });
+});
+
+describe("partsAddMs / partsUtcMs / dateTimeInput", () => {
+  it("shifts parts by a millisecond delta via UTC arithmetic", () => {
+    const p = { year: 2026, month: 7, day: 1, hour: 9, minute: 0, second: 0 };
+    expect(partsAddMs(p, 90 * 60_000)).toEqual({
+      year: 2026,
+      month: 7,
+      day: 1,
+      hour: 10,
+      minute: 30,
+      second: 0,
+    });
+    // Crosses a day boundary backwards.
+    expect(partsAddMs(p, -10 * 60 * 60_000)).toMatchObject({ day: 30, month: 6, hour: 23 });
+  });
+
+  it("partsUtcMs differences equal a duration regardless of zone", () => {
+    const a = { year: 2026, month: 7, day: 1, hour: 9, minute: 0, second: 0 };
+    const b = { year: 2026, month: 7, day: 1, hour: 10, minute: 30, second: 0 };
+    expect(partsUtcMs(b) - partsUtcMs(a)).toBe(90 * 60_000);
+  });
+
+  it("formats parts as a datetime-local input value", () => {
+    expect(dateTimeInput({ year: 2026, month: 7, day: 1, hour: 9, minute: 5, second: 0 })).toBe(
+      "2026-07-01T09:05",
+    );
+  });
+});
+
+describe("snapMinutes / pointerToGrid (drag engine geometry)", () => {
+  it("snaps to the nearest step boundary", () => {
+    expect(snapMinutes(547, 15)).toBe(540); // 09:07 → 09:00
+    expect(snapMinutes(553, 15)).toBe(555); // 09:13 → 09:15
+    expect(snapMinutes(660, 30)).toBe(660);
+  });
+
+  it("maps a pointer position to a day column + minutes-from-midnight", () => {
+    const rect = { left: 0, top: 0, width: 700, height: 1440 }; // 7 cols × 100px; 1px = 1min
+    expect(pointerToGrid(350, 540, rect, 7)).toEqual({ colIndex: 3, minutes: 540 });
+    expect(pointerToGrid(0, 0, rect, 7)).toEqual({ colIndex: 0, minutes: 0 });
+  });
+
+  it("clamps the column and the minutes to the visible grid / day", () => {
+    const rect = { left: 0, top: 0, width: 700, height: 1440 };
+    expect(pointerToGrid(9999, 9999, rect, 7)).toEqual({ colIndex: 6, minutes: 1440 });
+    expect(pointerToGrid(-50, -50, rect, 7)).toEqual({ colIndex: 0, minutes: 0 });
+  });
+
+  it("accounts for the rect offset (scrolled/positioned container)", () => {
+    const rect = { left: 100, top: 200, width: 700, height: 1440 };
+    expect(pointerToGrid(450, 740, rect, 7)).toEqual({ colIndex: 3, minutes: 540 });
   });
 });
