@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { CAP_CALENDARS, CAP_CORE, methodResult } from "@/jmap/methods";
 import type { Id } from "@/jmap/types";
 import {
+  dayKey,
   displayStartParts,
   type EditableEvent,
   emptyEditableEvent,
@@ -244,6 +245,31 @@ describe("calendar (live Stalwart)", () => {
     // A weekly event over the ~8-week window expands to several occurrences (each its own row).
     await loadUntil(() => countByTitle(title) >= 2);
     expect(countByTitle(title)).toBeGreaterThanOrEqual(2);
+  });
+
+  it("gives each expanded occurrence its OWN utcStart, so they convert to distinct viewer days", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    const title = `DailyTZ ${tag}`;
+    // A daily tz-bearing series: each occurrence must carry an occurrence-specific utcStart (not the
+    // base's), or every occurrence would bucket onto one viewer-day and the series would collapse.
+    await seedEvents(calId, [{ title, start: localDateTime(2, 15), daily: true }]);
+    await loadUntil(() => countByTitle(title) >= 3);
+
+    const occ = eventIds()
+      .map((id) => calendarEvents[id])
+      .filter((e): e is NonNullable<typeof e> => Boolean(e) && e?.title === title);
+    expect(occ.length).toBeGreaterThanOrEqual(3);
+    // Each occurrence carries a real timeZone + its own UTC instant.
+    for (const e of occ) {
+      expect(e.timeZone).toBe("America/New_York");
+      expect(e.utcStart).toMatch(/Z$/);
+    }
+    // The utcStarts are distinct (one per day), and the converted day-keys are likewise distinct.
+    const utcStarts = new Set(occ.map((e) => e.utcStart));
+    expect(utcStarts.size).toBe(occ.length);
+    const days = new Set(occ.map((e) => dayKey(e)));
+    expect(days.size).toBe(occ.length);
   });
 
   it("picks up a server-side create and destroy via syncCalendar", async () => {

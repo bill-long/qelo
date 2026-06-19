@@ -463,7 +463,8 @@ export function calendarEventQuery(
  * opt-in; verified live on Stalwart v0.16). Requesting the whole typed set explicitly preserves the
  * prior full-fetch behavior exactly; the ONLY addition is the UTC instants the viewer-tz conversion
  * needs. `@type` is omitted (the server returns it regardless). Keep in sync with the type — the
- * methods test asserts every typed field is present so a new rendered field can't silently drop.
+ * methods test asserts the fields the detail view + edit form read are present, so a new rendered
+ * field that's added there can't silently drop from the fetch.
  */
 export const CALENDAR_EVENT_PROPERTIES: readonly string[] = [
   "id",

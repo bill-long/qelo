@@ -171,10 +171,23 @@ export function eventEndParts(event: CalendarEvent): DateParts | null {
 // exactly "a timed event with a real IANA `timeZone`"; everything else uses its literal components.
 // ---------------------------------------------------------------------------
 
-/** Whether the event's instant should be converted to the viewer's zone for display: a TIMED event
- * (not all-day) carrying a non-empty IANA `timeZone`. Floating/all-day render at face value. */
+/**
+ * Whether the event's instants should be converted to the viewer's zone for display: a TIMED event
+ * (not all-day) carrying a non-empty IANA `timeZone` AND BOTH server-computed instants (`utcStart` +
+ * `utcEnd`). Floating/all-day events, and any event missing an instant (older/partial server), render
+ * at face value. Requiring BOTH instants is what keeps the start and end in ONE frame — converting the
+ * start from `utcStart` while the end fell back to the literal source-zone time would mix frames and
+ * produce a backwards/oversized range. The gate is zone-INDEPENDENT (Branch 2's selectable zone
+ * doesn't change WHETHER an event converts, only the target zone), so it carries forward unchanged.
+ */
 function convertsToViewerZone(event: CalendarEvent): boolean {
-  return !isAllDay(event) && typeof event.timeZone === "string" && event.timeZone.length > 0;
+  return (
+    !isAllDay(event) &&
+    typeof event.timeZone === "string" &&
+    event.timeZone.length > 0 &&
+    typeof event.utcStart === "string" &&
+    typeof event.utcEnd === "string"
+  );
 }
 
 /** The browser-local {@link DateParts} of a UTC instant string ("…Z"), or null when unparseable.
@@ -195,28 +208,29 @@ function localPartsFromUtc(utc: string | undefined): DateParts | null {
   };
 }
 
+// The viewer-zone parts of one of the event's instants, or null to signal "use face value". Shared by
+// the start/end display helpers so the convert-or-literal decision is made identically for both — when
+// the event doesn't convert (floating/all-day/missing-instant) BOTH fall back to their literal parts,
+// never one converted and one literal.
+function viewerInstantParts(event: CalendarEvent, instant: string | undefined): DateParts | null {
+  return convertsToViewerZone(event) ? localPartsFromUtc(instant) : null;
+}
+
 /**
  * The event's start parts AS DISPLAYED in the viewer's zone: for a timed event with a real `timeZone`
- * and a present `utcStart`, the browser-local parts of that instant; otherwise (floating, all-day, or
- * `utcStart` absent on an older server) the literal {@link eventStartParts}, face value. The single
- * helper every placement/grouping/label path uses so they share one frame. Pure.
+ * and both server-computed instants, the browser-local parts of `utcStart`; otherwise (floating,
+ * all-day, or an instant absent on an older server) the literal {@link eventStartParts}, face value.
+ * The single helper every placement/grouping/label path uses so they share one frame. Pure.
  */
 export function displayStartParts(event: CalendarEvent): DateParts | null {
-  if (convertsToViewerZone(event)) {
-    const p = localPartsFromUtc(event.utcStart);
-    if (p) return p;
-  }
-  return eventStartParts(event);
+  return viewerInstantParts(event, event.utcStart) ?? eventStartParts(event);
 }
 
 /** The event's end parts as displayed in the viewer's zone — the {@link displayStartParts} rule on
- * `utcEnd` (which is the server's `start`+`duration` instant), else literal {@link eventEndParts}. */
+ * `utcEnd` (the server's `start`+`duration` instant), else literal {@link eventEndParts}. Converts in
+ * lockstep with the start (same {@link convertsToViewerZone} gate), never in a different frame. */
 export function displayEndParts(event: CalendarEvent): DateParts | null {
-  if (convertsToViewerZone(event)) {
-    const p = localPartsFromUtc(event.utcEnd);
-    if (p) return p;
-  }
-  return eventEndParts(event);
+  return viewerInstantParts(event, event.utcEnd) ?? eventEndParts(event);
 }
 
 function pad2(n: number): string {

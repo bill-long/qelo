@@ -1136,6 +1136,21 @@ describe("viewer-tz display conversion", () => {
     expect(dayKey(noUtc)).toBe("2026-07-01");
   });
 
+  it("converts ALL-OR-NOTHING: a present utcStart with an absent utcEnd keeps BOTH at face value", () => {
+    // Guards against a mixed frame — a converted start paired with a literal source-zone end would
+    // render a backwards/oversized range. With only one instant present the event must not convert.
+    const partial = event({
+      start: "2026-07-01T22:00:00",
+      timeZone: "America/New_York",
+      duration: "PT1H",
+      utcStart: "2026-07-02T02:00:00Z",
+      // utcEnd deliberately absent
+    });
+    expect(displayStartParts(partial)).toEqual(parseDateParts("2026-07-01T22:00:00"));
+    expect(displayEndParts(partial)).toEqual(parseDateParts("2026-07-01T23:00:00"));
+    expect(formatTimeRange(partial)).toBe("22:00 – 23:00"); // one frame, forward range
+  });
+
   it("orders events by their DISPLAYED instant (a converted earlier time sorts first)", () => {
     // Floating 10:00 vs a tz event converting to a viewer-local time before it. Build the tz event so
     // its utcStart is one hour before the floating event's local 10:00 in the runner's own zone.
@@ -1148,6 +1163,7 @@ describe("viewer-tz display conversion", () => {
       start: "2026-07-01T13:00:00",
       timeZone: "America/New_York",
       utcStart: targetLocal.toISOString(),
+      utcEnd: new Date(2026, 6, 1, 9, 30, 0).toISOString(),
       duration: "PT30M",
     });
     expect([floatTen, tzNine].sort(compareEvents).map((e) => e.id)).toEqual(["tz", "float"]);
