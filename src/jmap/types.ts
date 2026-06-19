@@ -478,6 +478,15 @@ export interface CalendarEvent {
   start?: string;
   timeZone?: string | null;
   duration?: string;
+  // Server-computed UTC instants (RFC 8984 §4.1.5): `start`+`timeZone` resolved to an absolute
+  // `…Z` time, and `start`+`duration` likewise. OPT-IN — Stalwart returns these ONLY when named in
+  // `properties` (a full `CalendarEvent/get` with no `properties` omits them; verified live), so the
+  // store's get must request them explicitly via {@link CALENDAR_EVENT_PROPERTIES}. For a FLOATING
+  // event (`timeZone: null`) Stalwart stamps the literal local time with `Z` (meaningless as an
+  // instant), so the viewer-tz conversion uses these ONLY for a timed event with a real `timeZone`
+  // and falls back to the literal `start` otherwise. Absent on older servers / unrequested gets.
+  utcStart?: string;
+  utcEnd?: string;
   showWithoutTime?: boolean;
   status?: string;
   freeBusyStatus?: string;

@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { CAP_CALENDARS, CAP_CORE, methodResult } from "@/jmap/methods";
 import type { Id } from "@/jmap/types";
 import {
+  displayStartParts,
   type EditableEvent,
   emptyEditableEvent,
   emptyRecurrence,
@@ -206,6 +207,32 @@ describe("calendar (live Stalwart)", () => {
     const laterPos = ordered.findIndex((e) => e.title === `Later ${tag}`);
     expect(earlierPos).toBeGreaterThanOrEqual(0);
     expect(earlierPos).toBeLessThan(laterPos);
+  });
+
+  it("delivers server-computed utcStart and converts a tz-bearing event to the viewer's zone", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    const title = `TZ ${tag}`;
+    // seedEvents stamps America/New_York; localDateTime emits the literal local wall-clock.
+    const literal = localDateTime(4, 15); // 15:00 NY, four days out
+    await seedEvents(calId, [{ title, start: literal }]);
+    await loadUntil(() => countByTitle(title) >= 1);
+
+    const ev = Object.values(calendarEvents).find((e) => e?.title === title);
+    expect(ev?.timeZone).toBe("America/New_York");
+    // The explicit property list must deliver the server-computed UTC instant (a full get omits it).
+    expect(ev?.utcStart).toMatch(/Z$/);
+    // The display parts equal the browser-local rendering of that instant — i.e. the conversion uses
+    // utcStart, derived from the SAME Date API so this holds regardless of the runner's zone.
+    const d = new Date(ev?.utcStart as string);
+    expect(displayStartParts(ev as NonNullable<typeof ev>)).toEqual({
+      year: d.getFullYear(),
+      month: d.getMonth() + 1,
+      day: d.getDate(),
+      hour: d.getHours(),
+      minute: d.getMinutes(),
+      second: d.getSeconds(),
+    });
   });
 
   it("expands a recurring event into multiple occurrences", async () => {

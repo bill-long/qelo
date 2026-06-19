@@ -2,6 +2,7 @@ import { createSignal } from "solid-js";
 import { createStore, produce, reconcile, unwrap } from "solid-js/store";
 import { drainChanges } from "@/jmap/changes";
 import {
+  CALENDAR_EVENT_PROPERTIES,
   CAP_CALENDARS,
   CAP_CORE,
   type CalendarEventPatch,
@@ -155,7 +156,10 @@ async function fetchCalendar(): Promise<void> {
     [
       calendarGet(accountId, "cal"),
       calendarEventQuery(accountId, "q", { filter: { after, before }, expandRecurrences: true }),
-      calendarEventGet(accountId, "ev", { idsRef: idsFromCalendarEventQuery("q") }),
+      calendarEventGet(accountId, "ev", {
+        idsRef: idsFromCalendarEventQuery("q"),
+        properties: CALENDAR_EVENT_PROPERTIES,
+      }),
     ],
     CALENDAR_USING,
   );
@@ -198,7 +202,10 @@ async function requestWindow(accountId: string): Promise<MethodResponse[]> {
   return client.request(
     [
       calendarEventQuery(accountId, "q", { filter: { after, before }, expandRecurrences: true }),
-      calendarEventGet(accountId, "ev", { idsRef: idsFromCalendarEventQuery("q") }),
+      calendarEventGet(accountId, "ev", {
+        idsRef: idsFromCalendarEventQuery("q"),
+        properties: CALENDAR_EVENT_PROPERTIES,
+      }),
     ],
     CALENDAR_USING,
   );

@@ -3,6 +3,7 @@ import type { EmailSubmission, MethodResponse } from "../types";
 import {
   addressBookChanges,
   addressBookGet,
+  CALENDAR_EVENT_PROPERTIES,
   clearKeyword,
   contactCardChanges,
   contactCardGet,
@@ -353,6 +354,33 @@ describe("property sets", () => {
     expect(DETAIL_PROPERTIES).toContain("bodyValues");
     expect(DETAIL_PROPERTIES).toContain("htmlBody");
     expect(LIST_PROPERTIES).not.toContain("bodyValues");
+  });
+
+  it("CALENDAR_EVENT_PROPERTIES covers every field the detail/edit read plus the UTC instants", () => {
+    // The fields EventView renders + eventToEditable reads — a new rendered field must be added here
+    // (and to the CalendarEvent type) or it silently stops loading once we request an explicit set.
+    const required = [
+      "id",
+      "calendarIds",
+      "title",
+      "description",
+      "start",
+      "timeZone",
+      "duration",
+      "showWithoutTime",
+      "status",
+      "freeBusyStatus",
+      "privacy",
+      "recurrenceRule",
+      "recurrenceId",
+      "locations",
+      "participants",
+    ];
+    for (const p of required) expect(CALENDAR_EVENT_PROPERTIES).toContain(p);
+    // The viewer-tz conversion's reason for an explicit list — the server-computed UTC instants, which
+    // a full get omits.
+    expect(CALENDAR_EVENT_PROPERTIES).toContain("utcStart");
+    expect(CALENDAR_EVENT_PROPERTIES).toContain("utcEnd");
   });
 });
 

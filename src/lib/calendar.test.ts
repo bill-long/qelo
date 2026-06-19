@@ -9,6 +9,8 @@ import {
   createSeedDate,
   dayKey,
   defaultWritableCalendarId,
+  displayEndParts,
+  displayStartParts,
   type EditableEvent,
   editableHasContent,
   emptyEditableEvent,
@@ -1045,5 +1047,109 @@ describe("eventAccessibleName", () => {
     expect(name).toContain("(no title)");
     expect(name).toContain("Wed, Jun 17");
     expect(name).not.toContain(" – "); // no range part for a startless event
+  });
+});
+
+describe("viewer-tz display conversion", () => {
+  // Expected viewer-zone parts of a UTC instant, derived from the SAME Date API the conversion uses,
+  // so these assertions hold regardless of the test runner's local zone (Windows dev / Linux CI).
+  function localParts(utc: string) {
+    const d = new Date(utc);
+    return {
+      year: d.getFullYear(),
+      month: d.getMonth() + 1,
+      day: d.getDate(),
+      hour: d.getHours(),
+      minute: d.getMinutes(),
+      second: d.getSeconds(),
+    };
+  }
+  function localKey(utc: string) {
+    const p = localParts(utc);
+    const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+    return `${p.year}-${pad(p.month)}-${pad(p.day)}`;
+  }
+
+  // A timed event in America/New_York at 22:00 local on Jul 1, whose absolute instant the server
+  // computed as 02:00Z Jul 2 — i.e. it crosses midnight when viewed west of NY (and differs from the
+  // literal wall-clock in essentially every zone, so the day-shift assertions are meaningful anywhere).
+  const tzEvent = event({
+    title: "NY meeting",
+    start: "2026-07-01T22:00:00",
+    timeZone: "America/New_York",
+    duration: "PT1H",
+    utcStart: "2026-07-02T02:00:00Z",
+    utcEnd: "2026-07-02T03:00:00Z",
+  });
+
+  it("converts a timed tz-bearing event's start/end to the viewer's zone via utcStart/utcEnd", () => {
+    expect(displayStartParts(tzEvent)).toEqual(localParts("2026-07-02T02:00:00Z"));
+    expect(displayEndParts(tzEvent)).toEqual(localParts("2026-07-02T03:00:00Z"));
+    // And it is NOT the literal source-zone wall-clock (the conversion actually moved it).
+    expect(displayStartParts(tzEvent)).not.toEqual(parseDateParts("2026-07-01T22:00:00"));
+  });
+
+  it("buckets and places a converted event on its viewer-zone day, not its source-zone day", () => {
+    expect(dayKey(tzEvent)).toBe(localKey("2026-07-02T02:00:00Z"));
+    // eventDayPlacement on the converted day column: top = viewer-zone minutes-from-midnight.
+    const p = localParts("2026-07-02T02:00:00Z");
+    const placement = eventDayPlacement(tzEvent, dayKey(tzEvent));
+    expect(placement?.top).toBe(p.hour * 60 + p.minute);
+    expect(placement?.height).toBe(60);
+  });
+
+  it("renders a floating event (timeZone null) at face value, NOT via its stamped utcStart", () => {
+    // Stalwart stamps a floating literal time with Z (09:00 → 09:00:00Z) — meaningless as an instant;
+    // a floating event must show 09:00 in any zone.
+    const floating = event({
+      start: "2026-07-01T09:00:00",
+      timeZone: null,
+      duration: "PT1H",
+      utcStart: "2026-07-01T09:00:00Z",
+      utcEnd: "2026-07-01T10:00:00Z",
+    });
+    expect(displayStartParts(floating)).toEqual(parseDateParts("2026-07-01T09:00:00"));
+    expect(dayKey(floating)).toBe("2026-07-01");
+    expect(formatTimeRange(floating)).toBe("09:00 – 10:00");
+  });
+
+  it("renders an all-day event at face value (date-based, never converted)", () => {
+    const allDay = event({
+      start: "2026-07-01T00:00:00",
+      showWithoutTime: true,
+      duration: "P1D",
+      timeZone: null,
+      utcStart: "2026-07-01T00:00:00Z",
+    });
+    expect(displayStartParts(allDay)).toEqual(parseDateParts("2026-07-01T00:00:00"));
+    expect(dayKey(allDay)).toBe("2026-07-01");
+    expect(eventCoversDays(allDay)).toEqual(["2026-07-01"]);
+  });
+
+  it("falls back to the literal start when utcStart is absent (older server / unrequested)", () => {
+    const noUtc = event({
+      start: "2026-07-01T22:00:00",
+      timeZone: "America/New_York",
+      duration: "PT1H",
+    });
+    expect(displayStartParts(noUtc)).toEqual(parseDateParts("2026-07-01T22:00:00"));
+    expect(dayKey(noUtc)).toBe("2026-07-01");
+  });
+
+  it("orders events by their DISPLAYED instant (a converted earlier time sorts first)", () => {
+    // Floating 10:00 vs a tz event converting to a viewer-local time before it. Build the tz event so
+    // its utcStart is one hour before the floating event's local 10:00 in the runner's own zone.
+    const floatTen = event({ id: "float", title: "Floating 10am", start: "2026-07-01T10:00:00" });
+    // Pick a utc instant that is 09:00 local in the runner's zone on the same day as the floating event.
+    const targetLocal = new Date(2026, 6, 1, 9, 0, 0); // Jul 1 09:00 local
+    const tzNine = event({
+      id: "tz",
+      title: "Converted 9am",
+      start: "2026-07-01T13:00:00",
+      timeZone: "America/New_York",
+      utcStart: targetLocal.toISOString(),
+      duration: "PT30M",
+    });
+    expect([floatTen, tzNine].sort(compareEvents).map((e) => e.id)).toEqual(["tz", "float"]);
   });
 });
