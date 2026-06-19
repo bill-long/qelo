@@ -1083,10 +1083,12 @@ describe("viewer-tz display conversion", () => {
   });
 
   it("converts a timed tz-bearing event's start/end to the viewer's zone via utcStart/utcEnd", () => {
+    // Equality with the local rendering of the instant proves conversion uses utcStart/utcEnd, and is
+    // zone-independent (derived from the same Date API). We deliberately do NOT also assert it differs
+    // from the literal source-zone start — that holds only when the runner's zone != America/New_York,
+    // which would make the test flaky on an Eastern-US machine.
     expect(displayStartParts(tzEvent)).toEqual(localParts("2026-07-02T02:00:00Z"));
     expect(displayEndParts(tzEvent)).toEqual(localParts("2026-07-02T03:00:00Z"));
-    // And it is NOT the literal source-zone wall-clock (the conversion actually moved it).
-    expect(displayStartParts(tzEvent)).not.toEqual(parseDateParts("2026-07-01T22:00:00"));
   });
 
   it("buckets and places a converted event on its viewer-zone day, not its source-zone day", () => {
