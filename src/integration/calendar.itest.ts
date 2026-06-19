@@ -221,8 +221,10 @@ describe("calendar (live Stalwart)", () => {
 
     const ev = Object.values(calendarEvents).find((e) => e?.title === title);
     expect(ev?.timeZone).toBe("America/New_York");
-    // The explicit property list must deliver the server-computed UTC instant (a full get omits it).
+    // The explicit property list must deliver BOTH server-computed instants (a full get omits them);
+    // conversion is gated on both, so assert both are present, not just utcStart.
     expect(ev?.utcStart).toMatch(/Z$/);
+    expect(ev?.utcEnd).toMatch(/Z$/);
     // The display parts equal the browser-local rendering of that instant — i.e. the conversion uses
     // utcStart, derived from the SAME Date API so this holds regardless of the runner's zone.
     const d = new Date(ev?.utcStart as string);
@@ -260,10 +262,21 @@ describe("calendar (live Stalwart)", () => {
       .map((id) => calendarEvents[id])
       .filter((e): e is NonNullable<typeof e> => Boolean(e) && e?.title === title);
     expect(occ.length).toBeGreaterThanOrEqual(3);
-    // Each occurrence carries a real timeZone + its own UTC instant.
+    // The browser-local "YYYY-MM-DD" of a UTC instant, via the SAME Date API the conversion uses.
+    const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+    const localDayOf = (utc: string) => {
+      const d = new Date(utc);
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    };
     for (const e of occ) {
+      // Each occurrence carries a real timeZone + BOTH its own UTC instants (conversion needs both).
       expect(e.timeZone).toBe("America/New_York");
       expect(e.utcStart).toMatch(/Z$/);
+      expect(e.utcEnd).toMatch(/Z$/);
+      // dayKey is the CONVERTED day (derived from utcStart), not the literal start day — proving
+      // conversion is actually on (a distinct-dayKeys-only check would pass even if it were off,
+      // since the literal starts are distinct per day too).
+      expect(dayKey(e)).toBe(localDayOf(e.utcStart as string));
     }
     // The utcStarts are distinct (one per day), and the converted day-keys are likewise distinct.
     const utcStarts = new Set(occ.map((e) => e.utcStart));
