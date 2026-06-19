@@ -11,6 +11,7 @@ import {
   eventToEditable,
   FREQ_UNIT,
   parseDateParts,
+  RECURRENCE_SCOPE_MODES,
   type RecurrenceEditMode,
   recurrenceChanged,
   recurrenceErrorMessage,
@@ -68,13 +69,9 @@ export type EventEditFormProps = { onClose: () => void } & (
   | { mode: "create"; calendars: Calendar[] }
 );
 
-// The apply-mode chooser's options (recurring edit only). "this" is disabled when the recurrence rule
-// itself changed (a single occurrence can't carry its own rule — that's inherently a whole-series edit).
-const APPLY_MODES: { value: RecurrenceEditMode; label: string }[] = [
-  { value: "this", label: "This event" },
-  { value: "following", label: "This and following events" },
-  { value: "all", label: "All events" },
-];
+// The apply-mode chooser uses the shared {@link RECURRENCE_SCOPE_MODES} (this/following/all). "this" is
+// disabled here when the recurrence rule itself changed (a single occurrence can't carry its own rule —
+// that's inherently a whole-series edit).
 
 /**
  * Edit an existing event, or create a new one, in place (column 3, replacing the read-only
@@ -85,7 +82,7 @@ const APPLY_MODES: { value: RecurrenceEditMode; label: string }[] = [
  * (start/end/all-day/timeZone), location, description, the status/free-busy/privacy enums, AND the
  * recurrence rule (frequency/interval/weekdays/end — the `RecurrenceEditor` below); participants stay
  * present-but-uneditable and carry through untouched. Saving a RECURRING event opens an apply-mode
- * chooser (this occurrence / this and following / all events — the `APPLY_MODES` footer); a
+ * chooser (this occurrence / this and following / all events — the `RECURRENCE_SCOPE_MODES` footer); a
  * non-recurring event and a create submit directly. Errors surface inline (toasts are success-only);
  * a successful save/create confirms with a toast and closes back to the detail.
  */
@@ -444,7 +441,7 @@ export function EventEditForm(props: EventEditFormProps) {
             occurrence). aria-disabled (not native disabled) keeps them discoverable, with a hint. */}
         <fieldset class="event-edit-apply" aria-label="Apply this change to">
           <legend class="event-edit-label">Apply to</legend>
-          <For each={APPLY_MODES}>
+          <For each={RECURRENCE_SCOPE_MODES}>
             {(opt) => {
               const disabled = () => modeDisabled(opt.value);
               return (

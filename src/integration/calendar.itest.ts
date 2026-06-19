@@ -14,6 +14,7 @@ import {
   emptyEditableEvent,
   emptyRecurrence,
   eventToEditable,
+  parseDateParts,
 } from "@/lib/calendar";
 import {
   calendarAccountId,
@@ -25,6 +26,7 @@ import {
   eventIds,
   loadCalendar,
   refetchWindow,
+  rescheduleEvent,
   resetCalendar,
   resolveBaseEvent,
   saveEvent,
@@ -755,6 +757,99 @@ describe("calendar (live Stalwart)", () => {
     expect(countByTitle(`Day ${tag} TAIL`)).toBe(total - headBefore);
     const tailBase = await resolveBaseEvent(occurrenceIdFor(`Day ${tag} TAIL`));
     if (tailBase) createdIds.push(tailBase.id);
+  });
+
+  /** The source-zone start hour of the (only) loaded event titled `title`, via its literal `start`. */
+  function startHourByTitle(title: string): number | undefined {
+    const e = Object.values(calendarEvents).find((ev) => ev?.title === title);
+    const p = e ? parseDateParts(e.start) : null;
+    return p?.hour;
+  }
+
+  it("reschedules a non-recurring event via rescheduleEvent (a drag move)", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    const title = `Move ${tag}`;
+    await seedEvents(calId, [{ title, start: localDateTime(5, 9) }]); // 09:00 NY
+    await loadUntil(() => countByTitle(title) >= 1);
+
+    // Drag it to 11:00 the same day: the new SOURCE-zone start the grid would compute (dropToSourceStart
+    // is unit-tested; here the store action writes it and Stalwart round-trips + recomputes utcStart).
+    const occId = occurrenceIdFor(title);
+    const newStart = parseDateParts(localDateTime(5, 11));
+    if (!newStart) throw new Error("unreachable");
+    const result = await rescheduleEvent(occId, newStart, null, "all", null);
+    expect(result.ok).toBe(true);
+
+    await loadUntil(() => startHourByTitle(title) === 11);
+    expect(startHourByTitle(title)).toBe(11);
+    expect(countByTitle(title)).toBe(1); // still a single event, just moved
+  });
+
+  it("reschedules a recurring series with 'all' (the whole series shifts by the drag delta)", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    const title = `Shift ${tag}`;
+    await seedEvents(calId, [{ title, start: localDateTime(3, 9), weekly: true }]); // 09:00 NY weekly
+    await loadUntil(() => countByTitle(title) >= 2);
+    const total = countByTitle(title);
+
+    // Drag the FIRST occurrence +2h with "all": the master start shifts +2h, so every occurrence moves
+    // to 11:00 (rescheduleEvent applies the occurrence's delta to the base, not an absolute time).
+    const { id: occId, recurrenceId } = occurrenceAt(title, 0);
+    const newStart = parseDateParts(localDateTime(3, 11));
+    if (!newStart) throw new Error("unreachable");
+    const result = await rescheduleEvent(occId, newStart, null, "all", recurrenceId);
+    expect(result.ok).toBe(true);
+
+    // Every occurrence now starts at 11:00 and none at 09:00, and the count is preserved (a shift, not a
+    // split/exclude).
+    await loadUntil(() => {
+      const occ = Object.values(calendarEvents).filter((e) => e?.title === title);
+      return occ.length === total && occ.every((e) => parseDateParts(e.start)?.hour === 11);
+    });
+    const occ = Object.values(calendarEvents).filter((e) => e?.title === title);
+    expect(occ.length).toBe(total);
+    expect(occ.every((e) => parseDateParts(e.start)?.hour === 11)).toBe(true);
+  });
+
+  it("reschedules ONE occurrence with 'this' (it moves; the rest of the series is untouched)", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    await seedEvents(calId, [{ title: `One ${tag}`, start: localDateTime(3, 9), weekly: true }]);
+    await loadUntil(() => countByTitle(`One ${tag}`) >= 3);
+    const total = countByTitle(`One ${tag}`);
+
+    // Drag occurrence #1 (a fresh, un-overridden occurrence) +2h with "this": a recurrenceOverrides
+    // write that moves just this occurrence to 11:00 and carries its title (the rebuild seeds the
+    // non-temporal props from the occurrence, so the series title isn't lost / nothing is retitled).
+    // NOTE: Stalwart only honors a start move on a FRESH override — re-moving an already-overridden
+    // occurrence's start is a no-op (a documented limitation), so this exercises the fresh path.
+    const occ = occurrenceAt(`One ${tag}`, 1);
+    const occStart = parseDateParts(calendarEvents[occ.id]?.start);
+    if (!occStart) throw new Error("unreachable");
+    const res = await rescheduleEvent(
+      occ.id,
+      { ...occStart, hour: 11 },
+      null,
+      "this",
+      occ.recurrenceId,
+    );
+    expect(res.ok).toBe(true);
+
+    // Exactly one occurrence now starts at 11:00; the rest stay at 09:00; the count is preserved (the
+    // override keeps the occurrence visible), and every occurrence keeps the series title.
+    await loadUntil(() => {
+      const occs = Object.values(calendarEvents).filter((e) => e?.title === `One ${tag}`);
+      return (
+        occs.length === total &&
+        occs.filter((e) => parseDateParts(e.start)?.hour === 11).length === 1
+      );
+    });
+    const occs = Object.values(calendarEvents).filter((e) => e?.title === `One ${tag}`);
+    expect(occs.length).toBe(total);
+    expect(occs.filter((e) => parseDateParts(e.start)?.hour === 11).length).toBe(1);
+    expect(occs.filter((e) => parseDateParts(e.start)?.hour === 9).length).toBe(total - 1);
   });
 
   it("changes EVERY occurrence with the 'all' mode", async () => {

@@ -216,6 +216,26 @@ function zoneFormatter(zone: string): Intl.DateTimeFormat {
   return f;
 }
 
+const zoneValidity = new Map<string, boolean>();
+/** Whether `zone` is a valid IANA time zone the Intl engine accepts (cached). {@link zoneFormatter}
+ * FALLS BACK to browser-local on an invalid zone (so a render can't crash) — fine for DISPLAY, but the
+ * drag WRITE-back ({@link dropToSourceStart}) must fail closed instead of silently projecting an
+ * event's source start in the wrong (local) zone, so it checks this first. */
+function isValidTimeZone(zone: string): boolean {
+  let v = zoneValidity.get(zone);
+  if (v === undefined) {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: zone });
+      v = true;
+    } catch (err) {
+      if (!(err instanceof RangeError)) throw err;
+      v = false;
+    }
+    zoneValidity.set(zone, v);
+  }
+  return v;
+}
+
 /** A UTC instant (ms since epoch) projected to its wall-clock {@link DateParts} in `zone`. The single
  * UTC→zone projection (Branch 2's generalization of Branch 1's browser-local getters); pure given a
  * fixed zone.
@@ -933,10 +953,11 @@ export function weekDays(anchor: Date, count: number): string[] {
   return out;
 }
 
-// UTC ms for a DateParts INCLUDING its clock time — the scalar that places a timed event against a day
-// column. (The month helpers compare whole days via keyToUtcMs; the time grid needs the wall-clock
-// instant.)
-function partsUtcMs(p: DateParts): number {
+/** UTC ms for a DateParts INCLUDING its clock time — the scalar that places a timed event against a day
+ * column AND the zone-agnostic value for diffing two parts (a move delta, an event's duration; only
+ * differences are meaningful, it's not an instant in any real zone). (The month helpers compare whole
+ * days via keyToUtcMs; the time grid needs the wall-clock instant.) */
+export function partsUtcMs(p: DateParts): number {
   return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
 }
 
@@ -1150,6 +1171,102 @@ export function eventAccessibleName(
   const range = formatTimeRange(event, zone);
   if (range) parts.push(range);
   return parts.join(", ");
+}
+
+// ---------------------------------------------------------------------------
+// Drag reschedule — the INVERSE of placement (drag milestone). A pointer drop on the time grid yields a
+// position in DISPLAY-zone terms (a display-zone civil day + minutes-from-midnight). A reschedule must
+// write the event's SOURCE start (a wall-clock in `event.timeZone`), NEVER the display value — so this
+// inverts the read: displayZone civil-day + minutes → UTC instant → project into the event's own zone.
+// Gated on the SAME {@link convertsToViewerZone} predicate as the read, so the write frame matches the
+// read frame exactly (an event the grid placed at face value — floating / no real timeZone — is dropped
+// back at face value, no zone round-trip). This is where the display-only conversion must NOT leak.
+// ---------------------------------------------------------------------------
+
+const DAY_KEY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * The SOURCE-zone wall-clock {@link DateParts} for placing a timed event's start at
+ * `minutesFromMidnight` on the display-zone civil day `dayKey`, or null when `dayKey` is malformed.
+ *  - Converting event (tz-bearing; the read projected `utcStart` into `displayZone`): invert it —
+ *    displayZone-midnight instant + the dropped minutes = the new absolute instant, projected into the
+ *    event's own `timeZone` for the wall-clock to write. `timeZone` is unchanged by a drag.
+ *  - Non-converting event (floating / no real timeZone — the grid shows it at face value): the drop IS
+ *    the face-value source start, returned directly with NO zone math (and `timeZone` stays absent).
+ * Seconds are dropped (the grid snaps to whole minutes). Pure.
+ */
+export function dropToSourceStart(
+  event: CalendarEvent,
+  dayKey: string,
+  minutesFromMidnight: number,
+  displayZone: string = LOCAL_ZONE,
+): DateParts | null {
+  const m = DAY_KEY.exec(dayKey);
+  if (!m) return null;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const minutes = Math.round(minutesFromMidnight);
+  if (!convertsToViewerZone(event)) {
+    // Face value: the dropped wall-clock IS the source start. UTC arithmetic so a drop past midnight
+    // rolls the date correctly; the components are read back as the literal wall-clock.
+    const d = new Date(Date.UTC(year, month - 1, day) + minutes * 60_000);
+    return {
+      year: d.getUTCFullYear(),
+      month: d.getUTCMonth() + 1,
+      day: d.getUTCDate(),
+      hour: d.getUTCHours(),
+      minute: d.getUTCMinutes(),
+      second: 0,
+    };
+  }
+  // FAIL CLOSED on an invalid source zone: partsInZone would silently project in the browser-local zone
+  // (zoneFormatter's fallback), computing a WRONG source wall-clock that a drag would then persist. The
+  // edit form can keep a non-curated zone, so an event may carry one Intl doesn't accept — refuse rather
+  // than write a misinterpreted start (the caller treats null as "no reschedule").
+  const tz = event.timeZone as string;
+  if (!isValidTimeZone(tz)) return null;
+  const instant = zonedMidnightMs(year, month, day, displayZone) + minutes * 60_000;
+  return { ...partsInZone(instant, tz), second: 0 };
+}
+
+/** A {@link DateParts} shifted by `ms`, via UTC arithmetic so it never drifts on a DST boundary. */
+export function partsAddMs(p: DateParts, ms: number): DateParts {
+  const d = new Date(partsUtcMs(p) + ms);
+  return {
+    year: d.getUTCFullYear(),
+    month: d.getUTCMonth() + 1,
+    day: d.getUTCDate(),
+    hour: d.getUTCHours(),
+    minute: d.getUTCMinutes(),
+    second: d.getUTCSeconds(),
+  };
+}
+
+/** Snap a minutes-from-midnight value to the nearest `step`-minute boundary (a drag/resize grid). */
+export function snapMinutes(min: number, step: number): number {
+  return Math.round(min / step) * step;
+}
+
+/**
+ * Pure pixel→grid mapping for the time-grid drag engine: the day-column index under the pointer + the
+ * minutes-from-midnight, from the columns container's bounding rect (viewport coords, so it already
+ * accounts for the canvas scroll). Clamped to the visible columns and the day [0, {@link MINUTES_PER_DAY}].
+ * Pure (rect passed in, no DOM) so it's directly unit-testable, like {@link eventDayPlacement}.
+ */
+export function pointerToGrid(
+  clientX: number,
+  clientY: number,
+  rect: { left: number; top: number; width: number; height: number },
+  columns: number,
+): { colIndex: number; minutes: number } {
+  const minutes = Math.max(
+    0,
+    Math.min(MINUTES_PER_DAY, ((clientY - rect.top) / rect.height) * MINUTES_PER_DAY),
+  );
+  const colW = rect.width / columns;
+  const colIndex = Math.max(0, Math.min(columns - 1, Math.floor((clientX - rect.left) / colW)));
+  return { colIndex, minutes };
 }
 
 const FREQ_LABEL: Record<string, string> = {
@@ -1540,7 +1657,9 @@ function dateInput(p: DateParts): string {
   return `${p.year}-${pad2(p.month)}-${pad2(p.day)}`;
 }
 
-function dateTimeInput(p: DateParts): string {
+/** A DateParts as a datetime-local input value "YYYY-MM-DDTHH:mm" — the {@link EditableEvent} start/end
+ * shape (so a drag reschedule can splice a new when into a base-derived editable). */
+export function dateTimeInput(p: DateParts): string {
   return `${dateInput(p)}T${pad2(p.hour)}:${pad2(p.minute)}`;
 }
 
@@ -1869,6 +1988,15 @@ export type RecurrenceEditMode = "this" | "following" | "all";
  * exclude just the clicked occurrence; "following" = drop the clicked occurrence and every one after
  * it (cap the series); "all" = destroy the whole series. A non-recurring event always uses "all". */
 export type RecurrenceDeleteMode = "this" | "following" | "all";
+
+/** The recurring-scope chooser options + labels, shared by every flow that scopes a per-occurrence
+ * action to a series (edit save, delete, drag-reschedule), so the wording/modes can't drift between
+ * them. Edit and delete modes are the same union, so one list serves both. */
+export const RECURRENCE_SCOPE_MODES: { value: RecurrenceEditMode; label: string }[] = [
+  { value: "this", label: "This event" },
+  { value: "following", label: "This and following events" },
+  { value: "all", label: "All events" },
+];
 
 // The local date-time one day before `dt` (keeping its time-of-day), as a JSCalendar LocalDateTime —
 // the head's capped `until` for a split (Stalwart keeps the whole until-date, so a full day back

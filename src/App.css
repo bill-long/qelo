@@ -3047,6 +3047,117 @@ textarea.event-edit-input {
   background: var(--danger);
 }
 
+/* Drag-to-reschedule: the grabbable block, the dimmed source while a drag is in flight, and the
+   translucent ghost preview that follows the pointer / holds at the drop. */
+.week-event {
+  touch-action: none; /* the column scrolls; a pointer-drag on a block must not also pan/scroll */
+}
+
+.week-event.is-dragging {
+  opacity: 0.35;
+}
+
+.week-event-ghost {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  z-index: 2;
+  opacity: 0.85;
+  border-style: dashed;
+  background: color-mix(in srgb, var(--accent) 30%, var(--raised));
+}
+
+/* The recurring-drag scope chooser — a centered modal <dialog> (showModal), same pattern as the
+   composer/slide-over. */
+.drag-scope-dialog {
+  margin: auto;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--raised);
+  color: var(--ink);
+  box-shadow: 0 18px 48px color-mix(in srgb, var(--ink) 22%, transparent);
+}
+
+.drag-scope-dialog::backdrop {
+  background: color-mix(in srgb, var(--ink) 30%, transparent);
+}
+
+.drag-scope-heading {
+  margin: 0 0 0.7rem;
+  font-size: 0.95rem;
+}
+
+.drag-scope-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.drag-scope-mode,
+.drag-scope-cancel {
+  padding: 0.45rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.drag-scope-mode:hover {
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel));
+}
+
+.drag-scope-mode[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.drag-scope-mode[aria-disabled="true"]:hover {
+  background: var(--panel);
+}
+
+.drag-scope-hint {
+  margin: 0.1rem 0 0;
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+}
+
+.drag-scope-cancel {
+  margin-top: 0.3rem;
+  text-align: center;
+  color: var(--ink-soft);
+}
+
+/* A reschedule failure surfaces as a dismissible banner over the grid. */
+.week-drag-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--line));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--danger) 12%, var(--raised));
+  color: var(--ink);
+  font-size: 0.8rem;
+}
+
+.week-drag-error-dismiss {
+  flex: none;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --paper: #1b1916;

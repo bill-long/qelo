@@ -22,15 +22,22 @@ import {
   baseEventIdCandidates,
   createdEventFor,
   createEventBody,
+  type DateParts,
+  dateTimeInput,
   type EditableEvent,
   editableEventError,
   editableHasContent,
   editableToEvent,
   editableToPatch,
+  eventEndParts,
+  eventStartParts,
+  eventToEditable,
   excludeOverride,
   freshOccurrenceIdForBase,
   occurrenceIdByRecurrenceId,
   overridePatch,
+  partsAddMs,
+  partsUtcMs,
   pickBaseEvent,
   type RecurrenceDeleteMode,
   type RecurrenceEditMode,
@@ -408,12 +415,14 @@ async function fetchAllBaseEventIds(accountId: string): Promise<string[]> {
   return [...seen];
 }
 
-/** The outcome of a {@link saveEvent}: ok on success/no-op, else why it didn't persist. */
+/** The outcome of a {@link saveEvent} / {@link rescheduleEvent}: ok on success/no-op, else why it
+ * didn't persist. `unresolved` is reschedule-only (the synthetic occurrence's base id couldn't be
+ * safely resolved); saveEvent never returns it. */
 export type SaveEventResult =
   | { ok: true }
   | {
       ok: false;
-      reason: "no-account" | "invalid" | "auth" | "refused" | "error";
+      reason: "no-account" | "invalid" | "auth" | "refused" | "error" | "unresolved";
       error?: SetError;
     };
 
@@ -644,6 +653,116 @@ async function compensateSet(
   } catch (err) {
     console.error("CalendarEvent/set split compensation failed:", err);
   }
+}
+
+/**
+ * Reschedule an event by a drag gesture: write a new `start` (a MOVE keeps the duration; a RESIZE
+ * passes `newDurationMs`). `occurrenceId` is the synthetic agenda id the user dragged; `newStart` is
+ * the new start in the event's SOURCE zone ({@link dropToSourceStart} did the display→source inversion —
+ * the drag must NOT write the viewer-display value). `mode`/`recurrenceId` scope the change to a
+ * recurring series exactly like {@link saveEvent}.
+ *
+ * Implemented as a thin builder over {@link saveEvent}: it resolves the base event ({@link resolveBaseEvent},
+ * a non-recurring occurrence resolves to itself), constructs the per-mode {@link EditableEvent} delta,
+ * and delegates — so ALL of saveEvent's machinery (the recurrence routing via overridePatch/splitSeries,
+ * the optimistic overlay + window-refetch reconcile, the recurring re-point, `requireNewState:false`,
+ * and revert-on-non-persist independent of the auth gate) is reused unchanged.
+ *
+ * Per-mode delta (the WHY a reschedule can't just set one absolute start for every mode):
+ *  - "all" / non-recurring → shift the BASE/master start by the SAME wall-clock delta the dragged
+ *    occurrence moved (so the whole series translates; setting the master to the occurrence's absolute
+ *    new time would re-anchor the pattern). The end shifts by the same delta on a move, or is set to
+ *    start+newDuration on a resize.
+ *  - "this" → set the occurrence's ABSOLUTE new start/end; overridePatch writes it into
+ *    recurrenceOverrides[recurrenceId] (carrying the title so Stalwart keeps the occurrence visible).
+ *  - "following" → saveEvent's splitSeries caps the head + creates a tail seeded from these edits.
+ *    (A day-changing "following" drag restarts the tail on the split's ORIGINAL date — its time-of-day
+ *    moves but not its weekday; full day-shift of a split tail is a documented deferral.)
+ *
+ * Resolves with a {@link SaveEventResult} (never rejects). An unresolvable base → `unresolved` (rather
+ * than touch a guessed-wrong series); an unparseable when → `invalid`.
+ */
+export async function rescheduleEvent(
+  occurrenceId: string,
+  newStart: DateParts,
+  newDurationMs: number | null = null,
+  mode: RecurrenceEditMode = "all",
+  recurrenceId: string | null = null,
+): Promise<SaveEventResult> {
+  const accountId = calendarAccountId();
+  if (!accountId) return { ok: false, reason: "no-account" };
+
+  // Resolve the BASE event up front (same as saveEvent's caller / deleteEvent). A null resolution can't
+  // be safely rescheduled — fail closed rather than write to a guessed series.
+  let base: CalendarEvent | null;
+  try {
+    base = await resolveBaseEvent(occurrenceId);
+  } catch (err) {
+    if (handleAuthFailure(err)) return { ok: false, reason: "auth" };
+    console.error("resolveBaseEvent (reschedule) failed:", err);
+    return { ok: false, reason: "error" };
+  }
+  if (!base) return { ok: false, reason: "unresolved" };
+
+  // The dragged occurrence's CURRENT source when (for the move delta + the preserved duration). The
+  // occurrence is what the user grabbed, so it's in the store; if a concurrent sync EVICTED it across
+  // the await, fail closed (`unresolved`) rather than fall back to the base — for a non-FIRST recurring
+  // occurrence the base start differs, so a base-measured delta would shift the series by the wrong
+  // (occurrence-gap-sized) amount. The reconcile re-renders and the user can retry.
+  const occurrence = calendarEvents[occurrenceId];
+  if (!occurrence) return { ok: false, reason: "unresolved" };
+  const occStart = eventStartParts(occurrence);
+  const baseStart = eventStartParts(base);
+  const baseEnd = eventEndParts(base) ?? baseStart;
+  if (!occStart || !baseStart || !baseEnd) return { ok: false, reason: "invalid" };
+
+  // The move delta is measured from the occurrence's CURRENT start; the preserved length comes from the
+  // BASE (series) duration, NOT the occurrence's — an expanded/overridden occurrence can report a quirky
+  // duration (Stalwart returns P1D for an occurrence whose override omits `duration`), and a drag move
+  // shouldn't change the length, so the series duration is the correct value to keep.
+  const durationMs = newDurationMs ?? partsUtcMs(baseEnd) - partsUtcMs(baseStart);
+  const deltaMs = partsUtcMs(newStart) - partsUtcMs(occStart);
+
+  let edits: EditableEvent;
+  if (mode === "this") {
+    // "this" writes ONE occurrence's override (overridePatch diffs `edits` vs the BASE). Overlay the
+    // occurrence's OWN display props onto the base editable so the move PRESERVES a per-occurrence
+    // title/description/location/status override (seeding from the base would reset them to the series
+    // values, since overridePatch always carries a title). Keep the base's RECURRENCE (and allDay/
+    // timeZone) so `recurrenceChanged` stays false — else saveEvent would treat it as a rule change and
+    // degrade "this" to the whole-series "all". Only the when is replaced with the drop.
+    const occEditable = eventToEditable(occurrence);
+    edits = {
+      ...eventToEditable(base),
+      title: occEditable.title,
+      description: occEditable.description,
+      location: occEditable.location,
+      status: occEditable.status,
+      freeBusyStatus: occEditable.freeBusyStatus,
+      privacy: occEditable.privacy,
+      // The occurrence's OWN timeZone: `newStart` was computed in it (dropToSourceStart projects into the
+      // occurrence's zone), so the override must carry it — both to preserve a per-occurrence timeZone
+      // override AND so the written `start` isn't reinterpreted in the base zone.
+      timeZone: occEditable.timeZone,
+      start: dateTimeInput(newStart),
+      end: dateTimeInput(partsAddMs(newStart, durationMs)),
+    };
+  } else {
+    // Shift the base by the occurrence's move delta ("all"/non-recurring/"following"). A resize sets the
+    // end to start+newDuration; a move shifts the end by the same delta (duration preserved).
+    const newBaseStart = partsAddMs(baseStart, deltaMs);
+    const newBaseEnd =
+      newDurationMs !== null
+        ? partsAddMs(newBaseStart, newDurationMs)
+        : partsAddMs(baseEnd, deltaMs);
+    edits = {
+      ...eventToEditable(base),
+      start: dateTimeInput(newBaseStart),
+      end: dateTimeInput(newBaseEnd),
+    };
+  }
+
+  return saveEvent(occurrenceId, base.id, base, edits, mode, recurrenceId);
 }
 
 /** The outcome of a {@link createEvent}: the new server id on success, else why it didn't persist. */
