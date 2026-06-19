@@ -294,8 +294,9 @@ export function WeekGrid(props: { columns: number }) {
     // Resolve BOTH edges as SOURCE-zone parts: the MOVED edge from its snapped display position
     // (dropToSourceStart inverts display→source, failing closed on a malformed day / invalid zone), and
     // the FIXED edge from the event's EXACT current value — so rounding can never drift the edge the user
-    // didn't touch. The duration is then the source-instant span between them (no minute rounding). action
-    // only words the recurring scope chooser.
+    // didn't touch. The duration is then the wall-clock delta between the two source-zone parts
+    // (partsUtcMs is a zone-agnostic part-difference, the same value the store re-applies with partsAddMs;
+    // no minute rounding). action only words the recurring scope chooser.
     //  - move: the whole block moves → a new start, the end rides along (duration kept; rescheduleEvent
     //    shifts both ends), so newEnd isn't written/compared.
     //  - resize-top: the TOP edge moved → a new start from its snapped position; the bottom stays at the
