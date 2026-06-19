@@ -3068,6 +3068,46 @@ textarea.event-edit-input {
   background: color-mix(in srgb, var(--accent) 30%, var(--raised));
 }
 
+/* Resize handles — thin pointer-only grab zones at a single-day block's top/bottom edges. aria-hidden
+   and mouse/pen/touch-only; the edit form is the accessible way to change an event's length. They sit
+   above the block's text so the edge is reliably grabbable, and show a faint grip on hover. */
+.week-event-handle {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 7px;
+  cursor: ns-resize;
+  touch-action: none; /* a resize drag must not also pan/scroll the 24h canvas */
+}
+
+.week-event-handle-top {
+  top: 0;
+}
+
+.week-event-handle-bottom {
+  bottom: 0;
+}
+
+.week-event:hover .week-event-handle::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 22px;
+  max-width: 70%;
+  height: 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 70%, var(--raised));
+}
+
+.week-event-handle-top::after {
+  top: 1px;
+}
+
+.week-event-handle-bottom::after {
+  bottom: 1px;
+}
+
 /* The recurring-drag scope chooser — a centered modal <dialog> (showModal), same pattern as the
    composer/slide-over. */
 .drag-scope-dialog {

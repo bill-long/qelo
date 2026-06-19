@@ -13,8 +13,10 @@ import {
   type EditableEvent,
   emptyEditableEvent,
   emptyRecurrence,
+  eventEndParts,
   eventToEditable,
   parseDateParts,
+  partsUtcMs,
 } from "@/lib/calendar";
 import {
   calendarAccountId,
@@ -766,6 +768,15 @@ describe("calendar (live Stalwart)", () => {
     return p?.hour;
   }
 
+  /** The duration in minutes of the (only) loaded event titled `title` (start → end). */
+  function durationMinByTitle(title: string): number | undefined {
+    const e = Object.values(calendarEvents).find((ev) => ev?.title === title);
+    if (!e) return undefined;
+    const s = parseDateParts(e.start);
+    const end = eventEndParts(e);
+    return s && end ? (partsUtcMs(end) - partsUtcMs(s)) / 60_000 : undefined;
+  }
+
   it("reschedules a non-recurring event via rescheduleEvent (a drag move)", async () => {
     const calId = await defaultCalendarId();
     const tag = Math.random().toString(36).slice(2, 8);
@@ -850,6 +861,65 @@ describe("calendar (live Stalwart)", () => {
     expect(occs.length).toBe(total);
     expect(occs.filter((e) => parseDateParts(e.start)?.hour === 11).length).toBe(1);
     expect(occs.filter((e) => parseDateParts(e.start)?.hour === 9).length).toBe(total - 1);
+  });
+
+  it("resizes a non-recurring event via rescheduleEvent (a drag of the bottom edge)", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    const title = `Grow ${tag}`;
+    await seedEvents(calId, [{ title, start: localDateTime(5, 9) }]); // 09:00 NY, PT1H (60 min)
+    await loadUntil(() => countByTitle(title) >= 1);
+    expect(durationMinByTitle(title)).toBe(60);
+
+    // Resize to 90 minutes: same start (delta 0), newDurationMs set — the store writes start + the new
+    // duration and Stalwart recomputes utcEnd (probed live before relying on it).
+    const occId = occurrenceIdFor(title);
+    const occStart = parseDateParts(calendarEvents[occId]?.start);
+    if (!occStart) throw new Error("unreachable");
+    const result = await rescheduleEvent(occId, occStart, 90 * 60_000, "all", null);
+    expect(result.ok).toBe(true);
+
+    await loadUntil(() => durationMinByTitle(title) === 90);
+    expect(durationMinByTitle(title)).toBe(90);
+    expect(startHourByTitle(title)).toBe(9); // start unchanged
+    expect(countByTitle(title)).toBe(1);
+  });
+
+  it("resizes ONE occurrence with 'this' (a fresh override duration; the rest of the series is untouched)", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    const title = `OneSize ${tag}`;
+    await seedEvents(calId, [{ title, start: localDateTime(3, 9), weekly: true }]); // weekly, 60 min
+    await loadUntil(() => countByTitle(title) >= 3);
+    const total = countByTitle(title);
+
+    // Resize occurrence #1 (a fresh, un-overridden occurrence) to 90 min with "this": a recurrenceOverrides
+    // write carrying the new duration + the title (so the occurrence stays visible). Same start (delta 0).
+    const occ = occurrenceAt(title, 1);
+    const occStart = parseDateParts(calendarEvents[occ.id]?.start);
+    if (!occStart) throw new Error("unreachable");
+    const res = await rescheduleEvent(occ.id, occStart, 90 * 60_000, "this", occ.recurrenceId);
+    expect(res.ok).toBe(true);
+
+    // Exactly one occurrence is now 90 min; the rest stay 60; the count is preserved.
+    await loadUntil(() => {
+      const occs = Object.values(calendarEvents).filter((e) => e?.title === title);
+      const dur = (e: (typeof occs)[number]) => {
+        const s = parseDateParts(e.start);
+        const end = eventEndParts(e);
+        return s && end ? (partsUtcMs(end) - partsUtcMs(s)) / 60_000 : undefined;
+      };
+      return occs.length === total && occs.filter((e) => dur(e) === 90).length === 1;
+    });
+    const occs = Object.values(calendarEvents).filter((e) => e?.title === title);
+    const dur = (e: (typeof occs)[number]) => {
+      const s = parseDateParts(e.start);
+      const end = eventEndParts(e);
+      return s && end ? (partsUtcMs(end) - partsUtcMs(s)) / 60_000 : undefined;
+    };
+    expect(occs.length).toBe(total);
+    expect(occs.filter((e) => dur(e) === 90).length).toBe(1);
+    expect(occs.filter((e) => dur(e) === 60).length).toBe(total - 1);
   });
 
   it("changes EVERY occurrence with the 'all' mode", async () => {

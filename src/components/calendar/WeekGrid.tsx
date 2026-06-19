@@ -9,6 +9,8 @@ import {
   eventAccessibleName,
   eventDayPlacement,
   eventDisplayTitle,
+  eventEndDayKey,
+  eventEndParts,
   eventMayWrite,
   eventStartParts,
   formatDayHeading,
@@ -19,9 +21,11 @@ import {
   nowIndicatorOffset,
   type PackedPlacement,
   packDayColumns,
+  partsUtcMs,
   pointerToGrid,
   RECURRENCE_SCOPE_MODES,
   type RecurrenceEditMode,
+  resizeGeometry,
   snapMinutes,
   weekDays,
 } from "@/lib/calendar";
@@ -48,6 +52,25 @@ const MIN_BLOCK_MINUTES = 24;
 // pointer travel before a press becomes a drag (below it, the press is a click that selects the event).
 const SNAP_MINUTES = 15;
 const DRAG_THRESHOLD_PX = 4;
+// A resize can't invert or zero an event — the dragged edge is floored so the block keeps at least one
+// snap-step of height (the smallest length the 15-minute grid can express).
+const MIN_RESIZE_MINUTES = SNAP_MINUTES;
+
+// What a pointer gesture on a block does: drag the whole block (move) or drag one edge (resize). A
+// resize keeps the OPPOSITE edge fixed — top changes the start, bottom changes the duration.
+type GestureKind = "move" | "resize-top" | "resize-bottom";
+
+// A pointerdown that starts a gesture on a block: the block's body starts a "move", its top/bottom
+// resize handles a "resize-top"/"resize-bottom". `blockTopMin`/`blockHeightMin` are the block's
+// grab-time geometry (the resize pins the opposite edge to them).
+type StartGesture = (
+  event: CalendarEvent,
+  occId: string,
+  e: PointerEvent,
+  kind: GestureKind,
+  blockTopMin: number,
+  blockHeightMin: number,
+) => void;
 
 function pct(minutes: number): string {
   return `${(minutes / MINUTES_PER_DAY) * 100}%`;
@@ -74,12 +97,15 @@ interface DragState {
   occId: string;
   event: CalendarEvent;
   pointerId: number;
+  kind: GestureKind;
   startX: number;
   startY: number;
-  grabOffsetMin: number; // pointer-minute − block-top-minute at grab, so the block doesn't jump
-  durationMin: number;
+  grabOffsetMin: number; // (move) pointer-minute − block-top-minute at grab, so the block doesn't jump
+  anchorTopMin: number; // the block's top/height at grab — a resize pins the opposite edge to these
+  anchorHeightMin: number;
   ghostDayKey: string;
   ghostTopMin: number;
+  ghostDurationMin: number; // the ghost's CURRENT height (a move keeps it; a resize changes it)
   moved: boolean;
 }
 
@@ -90,9 +116,13 @@ interface Committing {
   occId: string;
   event: CalendarEvent;
   newStart: DateParts;
+  // The new duration in ms for a RESIZE; null for a MOVE (rescheduleEvent then keeps the series length).
+  newDurationMs: number | null;
+  // Whether this commit is a move or a resize — only used to word the recurring scope chooser's heading.
+  action: "move" | "resize";
   ghostDayKey: string;
   ghostTopMin: number;
-  durationMin: number;
+  ghostDurationMin: number;
   // The viewed occurrence's recurrenceId (null for a non-recurring event, or a recurring occurrence
   // without one). The scope chooser shows whenever the EVENT is recurring (regardless of this), so a
   // recurring drag is never silently applied to the whole series.
@@ -146,7 +176,7 @@ export function WeekGrid(props: { columns: number }) {
         title: eventDisplayTitle(d.event),
         dayKey: d.ghostDayKey,
         topMin: d.ghostTopMin,
-        durationMin: d.durationMin,
+        durationMin: d.ghostDurationMin,
       };
     }
     const c = committing();
@@ -155,7 +185,7 @@ export function WeekGrid(props: { columns: number }) {
         title: eventDisplayTitle(c.event),
         dayKey: c.ghostDayKey,
         topMin: c.ghostTopMin,
-        durationMin: c.durationMin,
+        durationMin: c.ghostDurationMin,
       };
     }
     return null;
@@ -173,6 +203,7 @@ export function WeekGrid(props: { columns: number }) {
     event: CalendarEvent,
     occId: string,
     e: PointerEvent,
+    kind: GestureKind,
     blockTopMin: number,
     blockHeightMin: number,
   ): void {
@@ -180,29 +211,32 @@ export function WeekGrid(props: { columns: number }) {
     // prior drag that ended without a trailing click (released off any block) can't leave it set and
     // swallow the next click. (pointerdown always precedes the click, so clearing here is safe.)
     suppressClick = false;
-    // Only a primary-button press on a writable event starts a drag; everything else stays a click.
+    // Only a primary-button press on a writable event starts a gesture; everything else stays a click.
     // Also refuse while a previous drop is still committing — its ghost is pinned at the dropped slot
-    // (and a recurring scope chooser may be open); a new drag would yank that ghost away mid-write.
+    // (and a recurring scope chooser may be open); a new gesture would yank that ghost away mid-write.
     if (e.button !== 0 || !colsRef || committing() || !eventMayWrite(event, calendars)) return;
     const rect = colsRef.getBoundingClientRect();
     const { colIndex, minutes } = pointerToGrid(e.clientX, e.clientY, rect, props.columns);
     const grabbedDay = days()[colIndex] ?? dayKey(event, calendarDisplayZone());
-    // Only the event's START block initiates a drag. A midnight-crossing event renders a clipped block
-    // in each covered column; the dropped position is treated as the event's NEW start, which is only
-    // meaningful for the start block (a later piece's position maps to a different instant, so dragging
-    // it would mis-set the start AND break the dropped-back no-op check). A non-start piece stays a click
-    // (selects). B1 limitation: move a multi-day event from its first block; full delta-drag is deferred.
+    // Only the event's START block initiates a gesture. A midnight-crossing event renders a clipped block
+    // in each covered column; a move's dropped position is treated as the event's NEW start, meaningful
+    // only for the start block (a later piece's position maps to a different instant). Resize handles are
+    // only RENDERED on a single-day block (both real edges) — see TimedBlock — so a resize can't arrive
+    // here off a clipped piece; this guard is the move's belt-and-braces. A non-start piece stays a click.
     if (grabbedDay !== dayKey(event, calendarDisplayZone())) return;
     setDrag({
       occId,
       event,
       pointerId: e.pointerId,
+      kind,
       startX: e.clientX,
       startY: e.clientY,
       grabOffsetMin: minutes - blockTopMin,
-      durationMin: blockHeightMin,
+      anchorTopMin: blockTopMin,
+      anchorHeightMin: blockHeightMin,
       ghostDayKey: grabbedDay,
       ghostTopMin: blockTopMin,
+      ghostDurationMin: blockHeightMin,
       moved: false,
     });
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -215,21 +249,35 @@ export function WeekGrid(props: { columns: number }) {
       return;
     const rect = colsRef.getBoundingClientRect();
     const g = pointerToGrid(e.clientX, e.clientY, rect, props.columns);
-    // Keep the whole block within the day: clamp the top so it can't run past midnight at the bottom.
-    // Clamp against the RENDERED height — short/zero-duration blocks are floored to MIN_BLOCK_MINUTES by
-    // the ghost's min-height, so clamping by the exact (smaller) duration would let the drawn ghost spill
-    // past the day's bottom edge.
-    const maxTop = Math.max(0, MINUTES_PER_DAY - Math.max(d.durationMin, MIN_BLOCK_MINUTES));
-    const topMin = Math.max(
-      0,
-      Math.min(maxTop, snapMinutes(g.minutes - d.grabOffsetMin, SNAP_MINUTES)),
+    if (d.kind === "move") {
+      // Keep the whole block within the day: clamp the top so it can't run past midnight at the bottom.
+      // Clamp against the RENDERED height — short/zero-duration blocks are floored to MIN_BLOCK_MINUTES by
+      // the ghost's min-height, so clamping by the exact (smaller) duration would let the drawn ghost spill
+      // past the day's bottom edge.
+      const maxTop = Math.max(0, MINUTES_PER_DAY - Math.max(d.ghostDurationMin, MIN_BLOCK_MINUTES));
+      const topMin = Math.max(
+        0,
+        Math.min(maxTop, snapMinutes(g.minutes - d.grabOffsetMin, SNAP_MINUTES)),
+      );
+      setDrag({
+        ...d,
+        moved: true,
+        ghostTopMin: topMin,
+        ghostDayKey: days()[g.colIndex] ?? d.ghostDayKey,
+      });
+      return;
+    }
+    // A resize moves only the dragged edge; the day column is fixed (don't follow the pointer's column).
+    const edge = d.kind === "resize-top" ? "top" : "bottom";
+    const geo = resizeGeometry(
+      edge,
+      d.anchorTopMin,
+      d.anchorHeightMin,
+      g.minutes,
+      SNAP_MINUTES,
+      MIN_RESIZE_MINUTES,
     );
-    setDrag({
-      ...d,
-      moved: true,
-      ghostTopMin: topMin,
-      ghostDayKey: days()[g.colIndex] ?? d.ghostDayKey,
-    });
+    setDrag({ ...d, moved: true, ghostTopMin: geo.topMin, ghostDurationMin: geo.durationMin });
   }
 
   function endDrag(e: PointerEvent): void {
@@ -237,15 +285,49 @@ export function WeekGrid(props: { columns: number }) {
     if (!d || e.pointerId !== d.pointerId) return;
     setDrag(null);
     if (!d.moved) return; // a press that never moved → let the click select the event
-    const newStart = dropToSourceStart(
-      d.event,
-      d.ghostDayKey,
-      d.ghostTopMin,
-      calendarDisplayZone(),
-    );
-    // Nothing to commit (malformed day, or dropped back at the current start) → let the click select.
-    // Only SUPPRESS the trailing click once we actually commit a move, so a no-op drag still selects.
-    if (!newStart || sameWhen(newStart, eventStartParts(d.event))) return;
+
+    const currentStart = eventStartParts(d.event);
+    if (!currentStart) return; // unparseable start → can't reason about the gesture (click selects)
+    const currentEnd = eventEndParts(d.event) ?? currentStart;
+    const zone = calendarDisplayZone();
+
+    // Resolve BOTH edges as SOURCE-zone parts: the MOVED edge from its snapped display position
+    // (dropToSourceStart inverts display→source, failing closed on a malformed day / invalid zone), and
+    // the FIXED edge from the event's EXACT current value — so rounding can never drift the edge the user
+    // didn't touch. The duration is then the wall-clock delta between the two source-zone parts
+    // (partsUtcMs is a zone-agnostic part-difference, the same value the store re-applies with partsAddMs;
+    // no minute rounding). action only words the recurring scope chooser.
+    //  - move: the whole block moves → a new start, the end rides along (duration kept; rescheduleEvent
+    //    shifts both ends), so newEnd isn't written/compared.
+    //  - resize-top: the TOP edge moved → a new start from its snapped position; the bottom stays at the
+    //    event's exact end.
+    //  - resize-bottom: the BOTTOM edge moved → a new end from its snapped position; the start stays at the
+    //    event's exact start (so rescheduleEvent's delta is exactly zero — no spurious series shift).
+    let newStart: DateParts | null;
+    let newEnd: DateParts | null;
+    let action: "move" | "resize";
+    if (d.kind === "move") {
+      action = "move";
+      newStart = dropToSourceStart(d.event, d.ghostDayKey, d.ghostTopMin, zone);
+      newEnd = null;
+    } else if (d.kind === "resize-top") {
+      action = "resize";
+      newStart = dropToSourceStart(d.event, d.ghostDayKey, d.ghostTopMin, zone);
+      newEnd = currentEnd;
+    } else {
+      action = "resize";
+      newStart = currentStart;
+      newEnd = dropToSourceStart(d.event, d.ghostDayKey, d.ghostTopMin + d.ghostDurationMin, zone);
+    }
+    // Fail closed: a malformed day or an invalid source zone yields no edge → no write (click selects).
+    if (!newStart || (action === "resize" && !newEnd)) return;
+    const newDurationMs = newEnd ? partsUtcMs(newEnd) - partsUtcMs(newStart) : null;
+    // No-op detection, MINUTE-granular so it matches the move path's seconds-tolerant sameWhen (snapping a
+    // sub-minute edge to the same DISPLAYED minute must not count as a change): both edges unchanged →
+    // nothing to write, let the trailing click select. (move keeps its duration, so only its start counts.)
+    const startUnchanged = sameWhen(newStart, currentStart);
+    const endUnchanged = newEnd === null || sameWhen(newEnd, currentEnd);
+    if (startUnchanged && endUnchanged) return;
     suppressClick = true;
     // Auto-clear on the next macrotask: the synchronous trailing `click` (which fires right after this
     // pointerup) still sees it set and is swallowed, but if NO trailing click fires (pointer released off
@@ -259,9 +341,11 @@ export function WeekGrid(props: { columns: number }) {
       occId: d.occId,
       event: d.event,
       newStart,
+      newDurationMs,
+      action,
       ghostDayKey: d.ghostDayKey,
       ghostTopMin: d.ghostTopMin,
-      durationMin: d.durationMin,
+      ghostDurationMin: d.ghostDurationMin,
       recurrenceId: d.event.recurrenceId ?? null,
     };
     setCommitting(c);
@@ -286,7 +370,7 @@ export function WeekGrid(props: { columns: number }) {
       setDragError("Couldn't identify this occurrence. Try reopening the calendar.");
       return;
     }
-    const res = await rescheduleEvent(c.occId, c.newStart, null, mode, c.recurrenceId);
+    const res = await rescheduleEvent(c.occId, c.newStart, c.newDurationMs, mode, c.recurrenceId);
     // Clear the held ghost regardless — on success the reconcile re-rendered the block at its new slot;
     // on failure the store reverted to server truth, so dropping the ghost shows the unchanged block.
     setCommitting(null);
@@ -436,6 +520,7 @@ export function WeekGrid(props: { columns: number }) {
           {(c) => (
             <RescheduleScopeDialog
               title={eventDisplayTitle(c().event)}
+              action={c().action}
               recurrenceId={c().recurrenceId}
               onPick={(mode) => void dispatch(c(), mode)}
               onCancel={() => setCommitting(null)}
@@ -452,6 +537,7 @@ export function WeekGrid(props: { columns: number }) {
 // background, and Escape→cancel for free (the established Qelo modal pattern).
 function RescheduleScopeDialog(props: {
   title: string;
+  action: "move" | "resize";
   recurrenceId: string | null;
   onPick: (mode: RecurrenceEditMode) => void;
   onCancel: () => void;
@@ -472,7 +558,7 @@ function RescheduleScopeDialog(props: {
       }}
     >
       <h2 id="drag-scope-heading" class="drag-scope-heading">
-        Move “{props.title}”
+        {props.action === "resize" ? "Resize" : "Move"} “{props.title}”
       </h2>
       <div class="drag-scope-actions">
         {/* "this"/"following" need the occurrence's recurrenceId; without one they're aria-disabled
@@ -545,13 +631,7 @@ function WeekDayColumn(props: {
   events: () => CalendarEvent[];
   draggingId: () => string | null;
   ghost: () => { title: string; dayKey: string; topMin: number; durationMin: number } | null;
-  onBlockPointerDown: (
-    event: CalendarEvent,
-    occId: string,
-    e: PointerEvent,
-    blockTopMin: number,
-    blockHeightMin: number,
-  ) => void;
+  onBlockPointerDown: StartGesture;
   shouldSuppressClick: () => boolean;
 }) {
   // Timed events placed in this column, overlap-packed into side-by-side sub-columns.
@@ -613,13 +693,7 @@ function TimedBlock(props: {
   block: PackedPlacement;
   dayKey: string;
   dimmed: boolean;
-  onPointerDown: (
-    event: CalendarEvent,
-    occId: string,
-    e: PointerEvent,
-    blockTopMin: number,
-    blockHeightMin: number,
-  ) => void;
+  onPointerDown: StartGesture;
   shouldSuppressClick: () => boolean;
 }) {
   const event = () => props.block.event;
@@ -627,6 +701,26 @@ function TimedBlock(props: {
   // Name the block by the COLUMN's day (props.dayKey), so a midnight-crossing event's later-day piece
   // announces the day it's drawn on, not the event's start day.
   const name = createMemo(() => eventAccessibleName(event(), props.dayKey, calendarDisplayZone()));
+  // Resize handles only on a WRITABLE, SINGLE-DAY block — one whose start AND end both fall on this
+  // column's day, so its rendered top/bottom are the event's REAL edges (not a midnight-clipped piece of
+  // a multi-day event). For a clipped piece, resizing the clipped edge would mis-set the duration; those
+  // (and read-only events, and multi-day events) keep to the edit form. (Pointer-only affordance —
+  // aria-hidden; the edit form is the accessible resize path.) DELIBERATE edge: an event ending exactly
+  // at the next midnight has an end day-key of the next day, so it gets no handles even though it draws as
+  // one block — resize it via the edit form. (Resizing such a clipped-at-the-boundary edge is the deferred
+  // multi-day-edge work; not worth the boundary math here.)
+  const resizable = createMemo(() => {
+    if (!eventMayWrite(event(), calendars)) return false;
+    const zone = calendarDisplayZone();
+    return dayKey(event(), zone) === props.dayKey && eventEndDayKey(event(), zone) === props.dayKey;
+  });
+  // A resize handle's pointerdown must NOT also bubble to the block's move handler — stop it (Solid's
+  // delegated dispatcher honors cancelBubble), then start the edge gesture with the block's grab-time
+  // geometry (the opposite edge stays pinned to it).
+  const startResize = (kind: GestureKind, e: PointerEvent): void => {
+    e.stopPropagation();
+    props.onPointerDown(event(), event().id, e, kind, props.block.top, props.block.height);
+  };
   return (
     <button
       type="button"
@@ -643,11 +737,11 @@ function TimedBlock(props: {
       aria-label={name()}
       title={name()}
       onPointerDown={(e) =>
-        props.onPointerDown(event(), event().id, e, props.block.top, props.block.height)
+        props.onPointerDown(event(), event().id, e, "move", props.block.top, props.block.height)
       }
       onClick={() => {
-        // Swallow the click that trails a committed drag (a move must not also select); a plain click
-        // (no drag) selects as before.
+        // Swallow the click that trails a committed gesture (a move/resize must not also select); a plain
+        // click (no drag) selects as before.
         if (props.shouldSuppressClick()) return;
         setSelectedEventId(event().id);
       }}
@@ -661,6 +755,18 @@ function TimedBlock(props: {
           </span>
         </Show>
       </span>
+      <Show when={resizable()}>
+        <span
+          class="week-event-handle week-event-handle-top"
+          aria-hidden="true"
+          onPointerDown={(e) => startResize("resize-top", e)}
+        />
+        <span
+          class="week-event-handle week-event-handle-bottom"
+          aria-hidden="true"
+          onPointerDown={(e) => startResize("resize-bottom", e)}
+        />
+      </Show>
     </button>
   );
 }

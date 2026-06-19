@@ -465,6 +465,16 @@ export function dayKey(event: CalendarEvent, zone: string = LOCAL_ZONE): string 
   return p ? partsDateKey(p) : "";
 }
 
+/** A "YYYY-MM-DD" key for the event's END date AS DISPLAYED in `zone` — the {@link dayKey} rule on the
+ * end instant (falls back to the start when there's no end). "" if unparseable. Used by the time grid
+ * to tell whether a timed event is fully contained in ONE day column ({@link dayKey} === this): only
+ * then does its single block carry BOTH real edges, so the resize handles can act on the true start/end
+ * rather than a midnight-clipped edge. */
+export function eventEndDayKey(event: CalendarEvent, zone: string = LOCAL_ZONE): string {
+  const p = displayEndParts(event, zone) ?? displayStartParts(event, zone);
+  return p ? partsDateKey(p) : "";
+}
+
 /** A human day heading for a "YYYY-MM-DD" key, e.g. "Mon, Sep 7" (with year when not the current
  * year). The "current year" is `now`'s year in `zone` (default {@link LOCAL_ZONE}) so the trailing-year
  * suffix tracks the display zone near a New-Year boundary. */
@@ -1246,6 +1256,44 @@ export function partsAddMs(p: DateParts, ms: number): DateParts {
 /** Snap a minutes-from-midnight value to the nearest `step`-minute boundary (a drag/resize grid). */
 export function snapMinutes(min: number, step: number): number {
   return Math.round(min / step) * step;
+}
+
+/**
+ * Pure geometry for a RESIZE gesture on a timed block: the new `{ topMin, durationMin }` when the user
+ * drags one edge to `pointerMin` (minutes-from-midnight, snapped to `step`) while the OPPOSITE edge
+ * stays fixed at its grab-time position (`anchorTopMin`/`anchorHeightMin`).
+ *  - `"bottom"` — the top stays fixed; the bottom follows the pointer, floored so the block never
+ *    shrinks below `minMinutes` (can't invert/zero) and clamped to the day's end ({@link MINUTES_PER_DAY}).
+ *  - `"top"` — the bottom stays fixed; the top follows the pointer, capped so the block keeps at least
+ *    `minMinutes` and clamped to the day's start (0).
+ * The MOVED edge always lands on the `step` grid: the min-size floor/cap is itself rounded to the grid
+ * (ceil for the bottom, floor for the top) so a fractional / off-grid FIXED edge (an event starting at
+ * 09:07, or with seconds) can't push the dragged edge off the snap grid. The fixed edge stays where it
+ * is (its exact value is preserved by the caller's write). The day column is unchanged (a resize moves
+ * only the edge, never the day). Pure — the inverse of the placement: feed the moved edge to
+ * {@link dropToSourceStart}. Like the placement/move math this is CIVIL (display wall-clock minutes); a
+ * within-day DST transition between the two edges is the same approximation the grid renders with.
+ */
+export function resizeGeometry(
+  edge: "top" | "bottom",
+  anchorTopMin: number,
+  anchorHeightMin: number,
+  pointerMin: number,
+  step: number,
+  minMinutes: number,
+): { topMin: number; durationMin: number } {
+  const snapped = snapMinutes(pointerMin, step);
+  if (edge === "bottom") {
+    // Smallest grid line that still keeps minMinutes from the (possibly off-grid) fixed top.
+    const minBottom = Math.ceil((anchorTopMin + minMinutes) / step) * step;
+    const bottom = Math.min(MINUTES_PER_DAY, Math.max(snapped, minBottom));
+    return { topMin: anchorTopMin, durationMin: bottom - anchorTopMin };
+  }
+  const bottom = anchorTopMin + anchorHeightMin;
+  // Largest grid line that still keeps minMinutes from the (possibly off-grid) fixed bottom.
+  const maxTop = Math.floor((bottom - minMinutes) / step) * step;
+  const top = Math.max(0, Math.min(snapped, maxTop));
+  return { topMin: top, durationMin: bottom - top };
 }
 
 /**

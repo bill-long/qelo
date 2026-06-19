@@ -276,6 +276,172 @@ describe("WeekGrid", () => {
     expect(recurrenceId).toBe("2026-06-17T09:00:00");
   });
 
+  it("shows top + bottom resize handles only on a writable single-day block", () => {
+    seed({ s: ev({ id: "s", title: "Standup", start: "2026-06-17T09:00:00", duration: "PT1H" }) }, [
+      "s",
+    ]);
+    const { container } = render(() => <WeekGrid columns={7} />);
+    expect(container.querySelectorAll(".week-event-handle").length).toBe(2);
+  });
+
+  it("shows no resize handles on a multi-day (midnight-crossing) block", () => {
+    // 23:00 Jun 16 → 01:00 Jun 17: its start block's bottom is clipped at midnight, so resizing the
+    // clipped edge would mis-set the duration — no handles (the edit form changes a multi-day length).
+    seed(
+      { x: ev({ id: "x", title: "Overnight", start: "2026-06-16T23:00:00", duration: "PT2H" }) },
+      ["x"],
+    );
+    const { container } = render(() => <WeekGrid columns={7} />);
+    expect(container.querySelectorAll(".week-event-handle").length).toBe(0);
+  });
+
+  it("shows no resize handles on a read-only calendar's event", () => {
+    setCalendarReady(true);
+    setCalendars(
+      reconcile({
+        c1: {
+          ...writableCal(),
+          myRights: { ...writableCal().myRights, mayWriteAll: false, mayWriteOwn: false },
+        },
+      }),
+    );
+    setCalendarEvents(
+      reconcile({
+        s: ev({ id: "s", title: "Standup", start: "2026-06-17T09:00:00", duration: "PT1H" }),
+      }),
+    );
+    setEventIds(["s"]);
+    const { container } = render(() => <WeekGrid columns={7} />);
+    expect(container.querySelectorAll(".week-event-handle").length).toBe(0);
+  });
+
+  it("resizes a block's bottom edge to change its duration (start fixed; non-recurring → 'all')", () => {
+    seed({ s: ev({ id: "s", title: "Standup", start: "2026-06-17T09:00:00", duration: "PT1H" }) }, [
+      "s",
+    ]);
+    const { container } = render(() => <WeekGrid columns={7} />);
+    const bottom = container.querySelector(".week-event-handle-bottom") as HTMLElement;
+    expect(bottom).toBeTruthy();
+    // Grab the bottom edge (10:00 = y 600) and drag it down to 12:00 (y 720).
+    fireEvent.pointerDown(bottom, { clientX: WED_X, clientY: 600, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(bottom, { clientX: WED_X, clientY: 720, pointerId: 1 });
+    fireEvent.pointerUp(bottom, { clientX: WED_X, clientY: 720, pointerId: 1 });
+
+    expect(rescheduleMock).toHaveBeenCalledTimes(1);
+    const [occId, newStart, durMs, mode, recurrenceId] = rescheduleMock.mock.calls[0] ?? [];
+    expect(occId).toBe("s");
+    expect(newStart).toMatchObject({ year: 2026, month: 6, day: 17, hour: 9, minute: 0 }); // unchanged
+    expect(durMs).toBe(180 * 60_000); // 09:00 → 12:00 = 3h
+    expect(mode).toBe("all");
+    expect(recurrenceId).toBeNull();
+    // A committed resize must NOT also select (the trailing click is swallowed).
+    expect(selectedEventId()).toBeNull();
+  });
+
+  it("resizes a block's top edge to change its start and duration (bottom fixed)", () => {
+    seed({ s: ev({ id: "s", title: "Standup", start: "2026-06-17T09:00:00", duration: "PT1H" }) }, [
+      "s",
+    ]);
+    const { container } = render(() => <WeekGrid columns={7} />);
+    const top = container.querySelector(".week-event-handle-top") as HTMLElement;
+    // Grab the top edge (09:00 = y 540) and drag it up to 08:00 (y 480); the bottom stays at 10:00.
+    fireEvent.pointerDown(top, { clientX: WED_X, clientY: 540, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(top, { clientX: WED_X, clientY: 480, pointerId: 1 });
+    fireEvent.pointerUp(top, { clientX: WED_X, clientY: 480, pointerId: 1 });
+
+    expect(rescheduleMock).toHaveBeenCalledTimes(1);
+    const [, newStart, durMs, mode] = rescheduleMock.mock.calls[0] ?? [];
+    expect(newStart).toMatchObject({ year: 2026, month: 6, day: 17, hour: 8, minute: 0 });
+    expect(durMs).toBe(120 * 60_000); // 08:00 → 10:00 = 2h
+    expect(mode).toBe("all");
+  });
+
+  it("treats a resize that snaps back to the original geometry as a no-op (selects, no reschedule)", () => {
+    seed({ s: ev({ id: "s", title: "Standup", start: "2026-06-17T09:00:00", duration: "PT1H" }) }, [
+      "s",
+    ]);
+    const { container } = render(() => <WeekGrid columns={7} />);
+    const bottom = container.querySelector(".week-event-handle-bottom") as HTMLElement;
+    // Move past the 4px threshold but within a snap step, so the bottom snaps back to 600 (10:00) — an
+    // unchanged duration → no write, and the trailing click still selects.
+    fireEvent.pointerDown(bottom, { clientX: WED_X, clientY: 600, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(bottom, { clientX: WED_X, clientY: 606, pointerId: 1 });
+    fireEvent.pointerUp(bottom, { clientX: WED_X, clientY: 606, pointerId: 1 });
+    fireEvent.click(bottom);
+    expect(rescheduleMock).not.toHaveBeenCalled();
+    expect(selectedEventId()).toBe("s");
+  });
+
+  it("keeps the fixed (untouched) edge EXACT on a resize-top of a sub-minute event (no rounding drift)", () => {
+    // End carries seconds (10:00:30 → fractional bottom). Dragging the TOP to 08:00 must leave the bottom
+    // exactly at 10:00:30 — the duration is the source-instant span (08:00:00 → 10:00:30 = 2h30s), NOT a
+    // minute-rounded ghost height that would shift the fixed bottom by ~30s.
+    seed(
+      { s: ev({ id: "s", title: "Standup", start: "2026-06-17T09:00:00", duration: "PT1H30S" }) },
+      ["s"],
+    );
+    const { container } = render(() => <WeekGrid columns={7} />);
+    const top = container.querySelector(".week-event-handle-top") as HTMLElement;
+    fireEvent.pointerDown(top, { clientX: WED_X, clientY: 540, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(top, { clientX: WED_X, clientY: 480, pointerId: 1 }); // → 08:00
+    fireEvent.pointerUp(top, { clientX: WED_X, clientY: 480, pointerId: 1 });
+
+    expect(rescheduleMock).toHaveBeenCalledTimes(1);
+    const [, newStart, durMs] = rescheduleMock.mock.calls[0] ?? [];
+    expect(newStart).toMatchObject({ year: 2026, month: 6, day: 17, hour: 8, minute: 0 });
+    expect(durMs).toBe(2 * 60 * 60_000 + 30 * 1_000); // 08:00:00 → 10:00:30, the 30s preserved exactly
+  });
+
+  it("treats a sub-minute event resized back to its own grid minute as a no-op (minute-granular, like move)", () => {
+    // An event with seconds places at a fractional minute (top 540.5, height 60). Resizing the bottom and
+    // releasing it so the duration snaps back to 60 min must NOT write (matching the move path's
+    // seconds-tolerant sameWhen) — the trailing click still selects.
+    seed({ s: ev({ id: "s", title: "Standup", start: "2026-06-17T09:00:30", duration: "PT1H" }) }, [
+      "s",
+    ]);
+    const { container } = render(() => <WeekGrid columns={7} />);
+    const bottom = container.querySelector(".week-event-handle-bottom") as HTMLElement;
+    fireEvent.pointerDown(bottom, { clientX: WED_X, clientY: 600, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(bottom, { clientX: WED_X, clientY: 605, pointerId: 1 }); // snaps to 600 → 60min
+    fireEvent.pointerUp(bottom, { clientX: WED_X, clientY: 605, pointerId: 1 });
+    fireEvent.click(bottom);
+    expect(rescheduleMock).not.toHaveBeenCalled();
+    expect(selectedEventId()).toBe("s");
+  });
+
+  it("prompts for scope on a recurring resize (worded 'Resize') and reschedules with the chosen mode", () => {
+    seed(
+      {
+        r: ev({
+          id: "r",
+          title: "Daily sync",
+          start: "2026-06-17T09:00:00",
+          duration: "PT1H",
+          recurrenceId: "2026-06-17T09:00:00",
+          recurrenceRule: { "@type": "RecurrenceRule", frequency: "daily" },
+        }),
+      },
+      ["r"],
+    );
+    const { container } = render(() => <WeekGrid columns={7} />);
+    const bottom = container.querySelector(".week-event-handle-bottom") as HTMLElement;
+    fireEvent.pointerDown(bottom, { clientX: WED_X, clientY: 600, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(bottom, { clientX: WED_X, clientY: 720, pointerId: 1 });
+    fireEvent.pointerUp(bottom, { clientX: WED_X, clientY: 720, pointerId: 1 });
+
+    expect(rescheduleMock).not.toHaveBeenCalled(); // waits for the scope choice
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.textContent).toContain("Resize"); // the heading reflects the gesture, not "Move"
+    fireEvent.click(screen.getByRole("button", { name: "This event" }));
+
+    expect(rescheduleMock).toHaveBeenCalledTimes(1);
+    const [occId, , durMs, mode, recurrenceId] = rescheduleMock.mock.calls[0] ?? [];
+    expect(occId).toBe("r");
+    expect(durMs).toBe(180 * 60_000);
+    expect(mode).toBe("this");
+    expect(recurrenceId).toBe("2026-06-17T09:00:00");
+  });
+
   it("still prompts for scope on a recurring drag with NO recurrenceId (never silently moves the whole series)", () => {
     seed(
       {
