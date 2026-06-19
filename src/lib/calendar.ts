@@ -186,9 +186,15 @@ function convertsToViewerZone(event: CalendarEvent): boolean {
     !isAllDay(event) &&
     typeof event.timeZone === "string" &&
     event.timeZone.length > 0 &&
-    localPartsFromUtc(event.utcStart) !== null &&
-    localPartsFromUtc(event.utcEnd) !== null
+    isParseableInstant(event.utcStart) &&
+    isParseableInstant(event.utcEnd)
   );
+}
+
+/** Whether a UTC instant string parses — the gate's cheap parseability test (no `Date` allocation /
+ * getter reads, unlike {@link localPartsFromUtc} which builds the full parts). */
+function isParseableInstant(utc: string | undefined): boolean {
+  return typeof utc === "string" && !Number.isNaN(Date.parse(utc));
 }
 
 /** The browser-local {@link DateParts} of a UTC instant string ("…Z"), or null when unparseable.
