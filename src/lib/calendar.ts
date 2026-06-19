@@ -3,10 +3,12 @@
 // recurrence rule in prose. No SolidJS, no JMAP client — data → data, unit-tested in isolation.
 //
 // JSCalendar (RFC 8984) `start` is a LOCAL date-time string (no `Z`/offset) interpreted in the event's
-// `timeZone`; an all-day event is `showWithoutTime` with a date-valued `duration`. We deliberately do
-// NOT push these through `new Date(string)` (which would apply the runtime's timezone and shift the
-// wall-clock value) — we parse the components verbatim and only use UTC date math (Date.UTC) so the
-// displayed day/time matches what the server sent, regardless of where the client runs.
+// `timeZone`; an all-day event is `showWithoutTime` with a date-valued `duration`. The PARSING layer
+// deliberately does NOT push `start` through `new Date(string)` (which would apply the runtime's
+// timezone and shift the wall-clock value) — it parses the components verbatim and uses only UTC date
+// math (Date.UTC). On top of that, the viewer-tz layer (see `convertsToViewerZone`/`displayStartParts`)
+// converts a TIMED event carrying a real `timeZone` into the viewer's zone for display via the server's
+// absolute `utcStart`/`utcEnd`; floating + all-day events stay at their verbatim face value.
 
 import type { CalendarEventPatch } from "@/jmap/methods";
 import type { Calendar, CalendarEvent, EventLocation, NDay, RecurrenceRule } from "@/jmap/types";
@@ -156,6 +158,96 @@ export function eventEndParts(event: CalendarEvent): DateParts | null {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Viewer-timezone conversion (viewer-tz milestone, Branch 1). A timed event carries a LOCAL `start`
+// interpreted in its own `timeZone`; the server also computes the absolute `utcStart`/`utcEnd`
+// instants (RFC 8984, opt-in — see CALENDAR_EVENT_PROPERTIES). For PLACEMENT/GROUPING/LABELS we want
+// the event shown in the VIEWER's frame, so we convert that instant to the viewer's zone (Branch 1:
+// browser-local; Branch 2 will make the zone selectable). This is DISPLAY-ONLY — the editable model
+// (`eventToEditable`) still reads the literal `start`/`timeZone`, the event's source-of-truth.
+//
+// Floating events (`timeZone` null/absent) and all-day events do NOT convert — a floating 09:00
+// "floats" to 09:00 in any zone (decided), and all-day is date-based. So the conversion gate is
+// exactly "a timed event with a real IANA `timeZone`"; everything else uses its literal components.
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether the event's instants should be converted to the viewer's zone for display: a TIMED event
+ * (not all-day) carrying a non-empty IANA `timeZone` AND BOTH server-computed instants (`utcStart` +
+ * `utcEnd`) that PARSE. Floating/all-day events, and any event missing OR with an unparseable instant
+ * (older/partial/malformed server), render at face value. Requiring both instants to parse is what
+ * keeps the start and end in ONE frame — converting the start from `utcStart` while the end fell back
+ * to the literal source-zone time (because `utcEnd` was absent or unparseable) would mix frames and
+ * produce a backwards/oversized range. The gate is zone-INDEPENDENT (Branch 2's selectable zone
+ * doesn't change WHETHER an event converts, only the target zone), so it carries forward unchanged.
+ */
+function convertsToViewerZone(event: CalendarEvent): boolean {
+  return (
+    !isAllDay(event) &&
+    typeof event.timeZone === "string" &&
+    event.timeZone.length > 0 &&
+    isParseableInstant(event.utcStart) &&
+    isParseableInstant(event.utcEnd)
+  );
+}
+
+// An absolute instant must carry an explicit UTC designator: a trailing `Z` or a ±HH:MM / ±HHMM
+// offset (RFC 3339). A designator-LESS string ("2026-07-02T02:00:00") is parsed by `Date.parse` in
+// the VIEWER's local zone, so accepting it would let a malformed server value "convert" from a
+// misinterpreted instant instead of falling back to face value. The server's `utcStart`/`utcEnd`
+// always end in `Z`; this just fails closed on anything that doesn't.
+const UTC_DESIGNATOR = /(?:Z|[+-]\d{2}:?\d{2})$/;
+
+/** Whether a UTC instant string is an absolute instant that parses — the gate's cheap test (no `Date`
+ * allocation / getter reads, unlike {@link localPartsFromUtc} which builds the full parts). Requires an
+ * explicit `Z`/offset so a designator-less (locally-interpreted) value fails closed. */
+function isParseableInstant(utc: string | undefined): boolean {
+  return typeof utc === "string" && UTC_DESIGNATOR.test(utc) && !Number.isNaN(Date.parse(utc));
+}
+
+/** The browser-local {@link DateParts} of a UTC instant string ("…Z"), or null when unparseable.
+ * `new Date(iso)` is the absolute instant; the local getters read it in the browser's zone (Branch 1's
+ * frame — Branch 2 generalizes this to an Intl-selected zone). */
+function localPartsFromUtc(utc: string | undefined): DateParts | null {
+  if (!utc) return null;
+  const ms = Date.parse(utc);
+  if (Number.isNaN(ms)) return null;
+  const d = new Date(ms);
+  return {
+    year: d.getFullYear(),
+    month: d.getMonth() + 1,
+    day: d.getDate(),
+    hour: d.getHours(),
+    minute: d.getMinutes(),
+    second: d.getSeconds(),
+  };
+}
+
+// The viewer-zone parts of one of the event's instants, or null to signal "use face value". Shared by
+// the start/end display helpers so the convert-or-literal decision is made identically for both — when
+// the event doesn't convert (floating/all-day/missing-instant) BOTH fall back to their literal parts,
+// never one converted and one literal.
+function viewerInstantParts(event: CalendarEvent, instant: string | undefined): DateParts | null {
+  return convertsToViewerZone(event) ? localPartsFromUtc(instant) : null;
+}
+
+/**
+ * The event's start parts AS DISPLAYED in the viewer's zone: for a timed event with a real `timeZone`
+ * and both server-computed instants, the browser-local parts of `utcStart`; otherwise (floating,
+ * all-day, or an instant absent on an older server) the literal {@link eventStartParts}, face value.
+ * The single helper every placement/grouping/label path uses so they share one frame. Pure.
+ */
+export function displayStartParts(event: CalendarEvent): DateParts | null {
+  return viewerInstantParts(event, event.utcStart) ?? eventStartParts(event);
+}
+
+/** The event's end parts as displayed in the viewer's zone — the {@link displayStartParts} rule on
+ * `utcEnd` (the server's `start`+`duration` instant), else literal {@link eventEndParts}. Converts in
+ * lockstep with the start (same {@link convertsToViewerZone} gate), never in a different frame. */
+export function displayEndParts(event: CalendarEvent): DateParts | null {
+  return viewerInstantParts(event, event.utcEnd) ?? eventEndParts(event);
+}
+
 function pad2(n: number): string {
   return n < 10 ? `0${n}` : `${n}`;
 }
@@ -197,9 +289,9 @@ function monthDay(p: DateParts): string {
  * Returns "" when the start is unparseable.
  */
 export function formatTimeRange(event: CalendarEvent): string {
-  const start = eventStartParts(event);
+  const start = displayStartParts(event);
   if (!start) return "";
-  const end = eventEndParts(event) ?? start;
+  const end = displayEndParts(event) ?? start;
   if (isAllDay(event)) {
     // All-day durations are exclusive of the end date (P1D = a single day), so step back one day.
     const last = stepDays(end, -1);
@@ -223,9 +315,10 @@ function stepDays(p: DateParts, days: number): DateParts {
   };
 }
 
-/** A "YYYY-MM-DD" key for the event's start date — the agenda's day-bucket key. "" if unparseable. */
+/** A "YYYY-MM-DD" key for the event's start date AS DISPLAYED in the viewer's zone — the agenda's
+ * day-bucket key. "" if unparseable. */
 export function dayKey(event: CalendarEvent): string {
-  const p = eventStartParts(event);
+  const p = displayStartParts(event);
   return p ? `${p.year}-${pad2(p.month)}-${pad2(p.day)}` : "";
 }
 
@@ -247,10 +340,11 @@ export function eventDisplayTitle(event: CalendarEvent): string {
   return event.title?.trim() || "(no title)";
 }
 
-// Sort key: start instant (UTC-built from the literal parts, including seconds so same-minute events
-// order correctly) then title, for a deterministic order.
+// Sort key: start instant as DISPLAYED in the viewer's zone (UTC-built from the display parts,
+// including seconds so same-minute events order correctly) then title, for a deterministic order that
+// matches the rendered order (a tz-converted event sorts by where it's shown, not its source-zone time).
 function startSortKey(event: CalendarEvent): number {
-  const p = eventStartParts(event);
+  const p = displayStartParts(event);
   if (!p) return Number.POSITIVE_INFINITY; // undated events sort last
   return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
 }
@@ -515,9 +609,9 @@ export function monthGridWeeks(anchor: Date, now: Date = new Date()): DayCell[][
 // back, covering both the all-day exclusive-end AND a timed event ending at 00:00 in one rule. Clamped
 // so lastMs ≥ firstMs (a malformed end-before-start collapses to the start day).
 function eventDayRange(event: CalendarEvent): { firstMs: number; lastMs: number } | null {
-  const start = eventStartParts(event);
+  const start = displayStartParts(event);
   if (!start) return null;
-  const end = eventEndParts(event) ?? start;
+  const end = displayEndParts(event) ?? start;
   const firstMs = Date.UTC(start.year, start.month - 1, start.day);
   const endDayMs = Date.UTC(end.year, end.month - 1, end.day);
   const endAtMidnight = end.hour === 0 && end.minute === 0 && end.second === 0;
@@ -639,8 +733,8 @@ export function layoutMonth(
 // column in minutes-from-midnight (eventDayPlacement, clamped to the day so a block crossing midnight
 // renders one piece per day it covers), side-by-side packing of concurrent events (packDayColumns), the
 // all-day bar lane (layoutAllDayLane), the current-time line offset (nowIndicatorOffset), and the shared
-// per-block accessible name (eventAccessibleName). Same UTC-on-the-literal-components day math as the
-// rest of the file.
+// per-block accessible name (eventAccessibleName). Timed events are placed by their viewer-zone DISPLAY
+// components ({@link displayStartParts}); the same UTC-on-the-parts day math as the rest of the file.
 // ---------------------------------------------------------------------------
 
 /** Minutes in a day — the time grid's vertical extent (00:00 → 24:00). */
@@ -686,16 +780,15 @@ export interface DayPlacement {
  * then [0,60] on day 2). A zero-duration event keeps height 0 (the renderer floors a visible minimum)
  * and still shows on the day its instant falls in. Intervals are half-open: an event ending exactly at
  * a day's 00:00 boundary occupies no time on that later day, so it doesn't render there. Placed by the
- * event's LITERAL local components (Date.UTC on the parts — the file's convention), so the block lands
- * at its written wall-clock time; this only shares a reference frame with the local now-indicator when
- * the viewer's zone matches the event's (viewer-tz conversion is a later nicety, same posture as the
- * agenda/month). Pure.
+ * event's DISPLAY components ({@link displayStartParts} — a tz-bearing event converted to the viewer's
+ * zone, a floating event at face value), so the block lands where the viewer sees its time, sharing one
+ * frame with the now-indicator (also viewer-zone). Pure.
  */
 export function eventDayPlacement(event: CalendarEvent, dayKey: string): DayPlacement | null {
   if (isAllDay(event)) return null;
-  const start = eventStartParts(event);
+  const start = displayStartParts(event);
   if (!start) return null;
-  const end = eventEndParts(event) ?? start;
+  const end = displayEndParts(event) ?? start;
   const dayMs = keyToUtcMs(dayKey);
   if (Number.isNaN(dayMs)) return null;
   const startMin = (partsUtcMs(start) - dayMs) / 60_000;

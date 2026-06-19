@@ -8,6 +8,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { CAP_CALENDARS, CAP_CORE, methodResult } from "@/jmap/methods";
 import type { Id } from "@/jmap/types";
 import {
+  dayKey,
+  displayStartParts,
   type EditableEvent,
   emptyEditableEvent,
   emptyRecurrence,
@@ -208,6 +210,36 @@ describe("calendar (live Stalwart)", () => {
     expect(earlierPos).toBeLessThan(laterPos);
   });
 
+  it("delivers server-computed utcStart and converts a tz-bearing event to the viewer's zone", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    const title = `TZ ${tag}`;
+    // seedEvents stamps America/New_York; localDateTime emits the literal local wall-clock.
+    const literal = localDateTime(4, 15); // 15:00 NY, four days out
+    await seedEvents(calId, [{ title, start: literal }]);
+    await loadUntil(() => countByTitle(title) >= 1);
+
+    const found = Object.values(calendarEvents).find((e) => e?.title === title);
+    expect(found).toBeTruthy();
+    const ev = found as NonNullable<typeof found>;
+    expect(ev.timeZone).toBe("America/New_York");
+    // The explicit property list must deliver BOTH server-computed instants (a full get omits them);
+    // conversion is gated on both, so assert both are present, not just utcStart.
+    expect(ev.utcStart).toMatch(/Z$/);
+    expect(ev.utcEnd).toMatch(/Z$/);
+    // The display parts equal the browser-local rendering of that instant — i.e. the conversion uses
+    // utcStart, derived from the SAME Date API so this holds regardless of the runner's zone.
+    const d = new Date(ev.utcStart as string);
+    expect(displayStartParts(ev)).toEqual({
+      year: d.getFullYear(),
+      month: d.getMonth() + 1,
+      day: d.getDate(),
+      hour: d.getHours(),
+      minute: d.getMinutes(),
+      second: d.getSeconds(),
+    });
+  });
+
   it("expands a recurring event into multiple occurrences", async () => {
     const calId = await defaultCalendarId();
     const tag = Math.random().toString(36).slice(2, 8);
@@ -217,6 +249,42 @@ describe("calendar (live Stalwart)", () => {
     // A weekly event over the ~8-week window expands to several occurrences (each its own row).
     await loadUntil(() => countByTitle(title) >= 2);
     expect(countByTitle(title)).toBeGreaterThanOrEqual(2);
+  });
+
+  it("gives each expanded occurrence its OWN utcStart, so they convert to distinct viewer days", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    const title = `DailyTZ ${tag}`;
+    // A daily tz-bearing series: each occurrence must carry an occurrence-specific utcStart (not the
+    // base's), or every occurrence would bucket onto one viewer-day and the series would collapse.
+    await seedEvents(calId, [{ title, start: localDateTime(2, 15), daily: true }]);
+    await loadUntil(() => countByTitle(title) >= 3);
+
+    const occ = eventIds()
+      .map((id) => calendarEvents[id])
+      .filter((e): e is NonNullable<typeof e> => Boolean(e) && e?.title === title);
+    expect(occ.length).toBeGreaterThanOrEqual(3);
+    // The browser-local "YYYY-MM-DD" of a UTC instant, via the SAME Date API the conversion uses.
+    const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+    const localDayOf = (utc: string) => {
+      const d = new Date(utc);
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    };
+    for (const e of occ) {
+      // Each occurrence carries a real timeZone + BOTH its own UTC instants (conversion needs both).
+      expect(e.timeZone).toBe("America/New_York");
+      expect(e.utcStart).toMatch(/Z$/);
+      expect(e.utcEnd).toMatch(/Z$/);
+      // dayKey is the CONVERTED day (derived from utcStart), not the literal start day — proving
+      // conversion is actually on (a distinct-dayKeys-only check would pass even if it were off,
+      // since the literal starts are distinct per day too).
+      expect(dayKey(e)).toBe(localDayOf(e.utcStart as string));
+    }
+    // The utcStarts are distinct (one per day), and the converted day-keys are likewise distinct.
+    const utcStarts = new Set(occ.map((e) => e.utcStart));
+    expect(utcStarts.size).toBe(occ.length);
+    const days = new Set(occ.map((e) => dayKey(e)));
+    expect(days.size).toBe(occ.length);
   });
 
   it("picks up a server-side create and destroy via syncCalendar", async () => {

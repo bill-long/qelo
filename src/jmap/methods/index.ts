@@ -456,6 +456,45 @@ export function calendarEventQuery(
   return ["CalendarEvent/query", args, callId];
 }
 
+/**
+ * The `CalendarEvent/get` property set for the agenda/grid query→get chain. Enumerates every field the
+ * {@link CalendarEvent} type declares (i.e. everything the detail view + edit form read) PLUS the
+ * server-computed `utcStart`/`utcEnd` — which a full `get` (no `properties`) does NOT return (they're
+ * opt-in; verified live on Stalwart v0.16). Requesting the whole typed set explicitly preserves the
+ * prior full-fetch behavior exactly; the ONLY addition is the UTC instants the viewer-tz conversion
+ * needs. `@type` is omitted (the server returns it regardless). Keep in sync with the type — the
+ * methods test asserts the fields the detail view + edit form read are present, so a new rendered
+ * field that's added there can't silently drop from the fetch.
+ */
+export const CALENDAR_EVENT_PROPERTIES: readonly string[] = [
+  "id",
+  "uid",
+  "calendarIds",
+  "title",
+  "description",
+  "start",
+  "timeZone",
+  "duration",
+  "showWithoutTime",
+  "status",
+  "freeBusyStatus",
+  "privacy",
+  "color",
+  "keywords",
+  "locations",
+  "participants",
+  "recurrenceRule",
+  "recurrenceOverrides",
+  "relatedTo",
+  "recurrenceId",
+  "recurrenceIdTimeZone",
+  "isDraft",
+  "isOrigin",
+  "updated",
+  "utcStart",
+  "utcEnd",
+];
+
 export type CalendarEventGetOptions = IdsSelector & { properties?: readonly string[] };
 
 export function calendarEventGet(
