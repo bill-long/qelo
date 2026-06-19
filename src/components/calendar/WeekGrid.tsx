@@ -211,7 +211,10 @@ export function WeekGrid(props: { columns: number }) {
     const rect = colsRef.getBoundingClientRect();
     const g = pointerToGrid(e.clientX, e.clientY, rect, props.columns);
     // Keep the whole block within the day: clamp the top so it can't run past midnight at the bottom.
-    const maxTop = Math.max(0, MINUTES_PER_DAY - d.durationMin);
+    // Clamp against the RENDERED height — short/zero-duration blocks are floored to MIN_BLOCK_MINUTES by
+    // the ghost's min-height, so clamping by the exact (smaller) duration would let the drawn ghost spill
+    // past the day's bottom edge.
+    const maxTop = Math.max(0, MINUTES_PER_DAY - Math.max(d.durationMin, MIN_BLOCK_MINUTES));
     const topMin = Math.max(
       0,
       Math.min(maxTop, snapMinutes(g.minutes - d.grabOffsetMin, SNAP_MINUTES)),
