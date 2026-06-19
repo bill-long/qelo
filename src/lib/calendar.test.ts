@@ -25,6 +25,7 @@ import {
   groupEventsByDay,
   isAllDay,
   isRecurring,
+  LOCAL_ZONE,
   layoutAllDayLane,
   layoutMonth,
   monthGridWeeks,
@@ -1199,5 +1200,135 @@ describe("viewer-tz display conversion", () => {
       duration: "PT30M",
     });
     expect([floatTen, tzNine].sort(compareEvents).map((e) => e.id)).toEqual(["tz", "float"]);
+  });
+});
+
+describe("viewer-tz selectable display zone (Branch 2)", () => {
+  // Two fixed zones with KNOWN, runner-independent UTC offsets in July 2026: New York = EDT (UTC−4),
+  // Tokyo = JST (UTC+9, no DST). The same UTC instant therefore renders on different days/times in
+  // each, so every assertion below is a concrete, machine-independent value.
+  const NY = "America/New_York";
+  const TOKYO = "Asia/Tokyo";
+
+  // A timed event whose server instant is 2026-07-02T02:00:00Z (1h long): 22:00 Jul 1 in NY, 11:00
+  // Jul 2 in Tokyo — it crosses the date line between the two zones.
+  const tzEvent = event({
+    title: "Cross-zone meeting",
+    start: "2026-07-01T22:00:00",
+    timeZone: NY,
+    duration: "PT1H",
+    utcStart: "2026-07-02T02:00:00Z",
+    utcEnd: "2026-07-02T03:00:00Z",
+  });
+
+  it("projects the same instant into different zones (start/end parts)", () => {
+    expect(displayStartParts(tzEvent, NY)).toEqual(parseDateParts("2026-07-01T22:00:00"));
+    expect(displayEndParts(tzEvent, NY)).toEqual(parseDateParts("2026-07-01T23:00:00"));
+    expect(displayStartParts(tzEvent, TOKYO)).toEqual(parseDateParts("2026-07-02T11:00:00"));
+    expect(displayEndParts(tzEvent, TOKYO)).toEqual(parseDateParts("2026-07-02T12:00:00"));
+  });
+
+  it("buckets, places, and labels a tz event in the selected zone", () => {
+    expect(dayKey(tzEvent, NY)).toBe("2026-07-01");
+    expect(dayKey(tzEvent, TOKYO)).toBe("2026-07-02");
+    expect(formatTimeRange(tzEvent, NY)).toBe("22:00 – 23:00");
+    expect(formatTimeRange(tzEvent, TOKYO)).toBe("11:00 – 12:00");
+    expect(eventDayPlacement(tzEvent, "2026-07-01", NY)).toMatchObject({
+      top: 22 * 60,
+      height: 60,
+    });
+    expect(eventDayPlacement(tzEvent, "2026-07-02", TOKYO)).toMatchObject({
+      top: 11 * 60,
+      height: 60,
+    });
+    // The block doesn't belong to the OTHER zone's day column.
+    expect(eventDayPlacement(tzEvent, "2026-07-02", NY)).toBeNull();
+    expect(eventAccessibleName(tzEvent, "2026-07-02", TOKYO)).toContain("11:00 – 12:00");
+  });
+
+  it("floating + all-day events stay face value in any zone (gate unchanged)", () => {
+    const floating = event({ start: "2026-07-01T09:00:00", timeZone: null, duration: "PT1H" });
+    expect(displayStartParts(floating, NY)).toEqual(parseDateParts("2026-07-01T09:00:00"));
+    expect(displayStartParts(floating, TOKYO)).toEqual(parseDateParts("2026-07-01T09:00:00"));
+    expect(formatTimeRange(floating, TOKYO)).toBe("09:00 – 10:00");
+    const allDay = event({ start: "2026-07-01T00:00:00", showWithoutTime: true, duration: "P1D" });
+    expect(eventCoversDays(allDay, NY)).toEqual(["2026-07-01"]);
+    expect(eventCoversDays(allDay, TOKYO)).toEqual(["2026-07-01"]);
+  });
+
+  it("groups events by their zone-local day", () => {
+    const groupsNy = groupEventsByDay([tzEvent], new Date("2026-07-02T02:00:00Z"), NY);
+    const groupsTokyo = groupEventsByDay([tzEvent], new Date("2026-07-02T02:00:00Z"), TOKYO);
+    expect(groupsNy.map((g) => g.key)).toEqual(["2026-07-01"]);
+    expect(groupsTokyo.map((g) => g.key)).toEqual(["2026-07-02"]);
+  });
+
+  it("computes the {after,before} window from DISPLAY-ZONE day boundaries", () => {
+    const anchor = new Date(2026, 6, 1); // carrier civil day July 1
+    expect(visibleRange("day", anchor, NY)).toEqual({
+      after: "2026-07-01T04:00:00.000Z", // NY-midnight Jul 1 = EDT (−4)
+      before: "2026-07-02T04:00:00.000Z",
+    });
+    expect(visibleRange("day", anchor, TOKYO)).toEqual({
+      after: "2026-06-30T15:00:00.000Z", // Tokyo-midnight Jul 1 = JST (+9)
+      before: "2026-07-01T15:00:00.000Z",
+    });
+    expect(visibleRange("day", anchor, "UTC")).toEqual({
+      after: "2026-07-01T00:00:00.000Z",
+      before: "2026-07-02T00:00:00.000Z",
+    });
+  });
+
+  it("re-anchors the window across a DST transition (spring-forward day)", () => {
+    // 2026-03-08 NY: clocks jump 02:00→03:00. NY-midnight Mar 8 is still EST (−5); Mar 9 is EDT (−4).
+    // The two-pass civil→instant must produce both correctly (a one-pass guess would be off by 1h).
+    expect(visibleRange("day", new Date(2026, 2, 8), NY)).toEqual({
+      after: "2026-03-08T05:00:00.000Z",
+      before: "2026-03-09T04:00:00.000Z",
+    });
+  });
+
+  it("computes now-line, today, and the anchor in the display zone", () => {
+    const now = new Date("2026-07-02T02:00:00Z"); // 22:00 Jul 1 NY · 11:00 Jul 2 Tokyo
+    expect(nowIndicatorOffset(now, "2026-07-01", NY)).toBe(22 * 60);
+    expect(nowIndicatorOffset(now, "2026-07-02", NY)).toBeNull();
+    expect(nowIndicatorOffset(now, "2026-07-02", TOKYO)).toBe(11 * 60);
+
+    const anchorNy = todayAnchor(now, NY);
+    expect([anchorNy.getFullYear(), anchorNy.getMonth(), anchorNy.getDate()]).toEqual([2026, 6, 1]);
+    const anchorTokyo = todayAnchor(now, TOKYO);
+    expect([anchorTokyo.getFullYear(), anchorTokyo.getMonth(), anchorTokyo.getDate()]).toEqual([
+      2026, 6, 2,
+    ]);
+
+    const weeksNy = monthGridWeeks(new Date(2026, 6, 1), now, NY);
+    const weeksTokyo = monthGridWeeks(new Date(2026, 6, 1), now, TOKYO);
+    const todayOf = (weeks: ReturnType<typeof monthGridWeeks>) =>
+      weeks.flat().find((c) => c.isToday)?.key;
+    expect(todayOf(weeksNy)).toBe("2026-07-01");
+    expect(todayOf(weeksTokyo)).toBe("2026-07-02");
+  });
+
+  it("seeds a new event's default slot in the display zone's wall-clock", () => {
+    const now = new Date("2026-07-02T02:00:00Z");
+    // Day mode anchored on the zone's "today" → today is in window → seed carries the zone time-of-day.
+    const seedTokyo = createSeedDate("day", todayAnchor(now, TOKYO), now, TOKYO);
+    expect([seedTokyo.getMonth(), seedTokyo.getDate(), seedTokyo.getHours()]).toEqual([6, 2, 11]);
+    const seedNy = createSeedDate("day", todayAnchor(now, NY), now, NY);
+    expect([seedNy.getMonth(), seedNy.getDate(), seedNy.getHours()]).toEqual([6, 1, 22]);
+  });
+
+  it("the default zone reproduces the un-zoned (Branch 1) result exactly", () => {
+    const anchor = new Date(2026, 6, 1);
+    const now = new Date("2026-07-02T02:00:00Z");
+    expect(displayStartParts(tzEvent, LOCAL_ZONE)).toEqual(displayStartParts(tzEvent));
+    expect(displayEndParts(tzEvent, LOCAL_ZONE)).toEqual(displayEndParts(tzEvent));
+    expect(dayKey(tzEvent, LOCAL_ZONE)).toBe(dayKey(tzEvent));
+    expect(visibleRange("month", anchor, LOCAL_ZONE)).toEqual(visibleRange("month", anchor));
+    expect(nowIndicatorOffset(now, dayKey(tzEvent), LOCAL_ZONE)).toBe(
+      nowIndicatorOffset(now, dayKey(tzEvent)),
+    );
+    expect(todayAnchor(now, LOCAL_ZONE).getTime()).toBe(todayAnchor(now).getTime());
+    expect(formatTimeRange(tzEvent, LOCAL_ZONE)).toBe(formatTimeRange(tzEvent));
   });
 });

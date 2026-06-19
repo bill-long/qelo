@@ -1,5 +1,5 @@
 import { createSignal } from "solid-js";
-import { type CalendarViewMode, todayAnchor } from "@/lib/calendar";
+import { type CalendarViewMode, LOCAL_ZONE, todayAnchor } from "@/lib/calendar";
 
 /** Which top-level surface the shell shows. Mail, Contacts, and Calendar are all live; the tab for
  * each is capability-gated in ViewSwitch. */
@@ -28,6 +28,15 @@ export const [selectedCalendarId, setSelectedCalendarId] = createSignal<string |
 // lands on the same view + date — standard calendar behavior. resetStores() resets them for tests.
 export const [calendarViewMode, setCalendarViewMode] = createSignal<CalendarViewMode>("month");
 export const [calendarAnchor, setCalendarAnchor] = createSignal<Date>(todayAnchor());
+
+// The IANA zone the calendar RENDERS events/columns/now-line in (viewer-tz milestone, Branch 2):
+// timed tz-bearing events convert to this zone, the day grid + agenda buckets + now-line are computed
+// in it, and the queried {after,before} window is its days. Floating + all-day events stay face value
+// regardless. Defaults to the browser's resolved zone (LOCAL_ZONE) so the calendar opens unchanged from
+// Branch 1; the CalendarNav picker (Branch 2b) lets the user switch it. Like calendarViewMode/Anchor it
+// PERSISTS across a calendar↔mail switch (a viewing preference, no onCleanup reset); resetStores resets
+// it for tests. Changing it re-derives the window → refetchWindow (the store reads this signal).
+export const [calendarDisplayZone, setCalendarDisplayZone] = createSignal<string>(LOCAL_ZONE);
 
 // Whether the create-contact form owns the detail pane (column 3). Set by the "+ New contact"
 // affordance; cleared on save/cancel or when the selected contact changes (ContactView), so the

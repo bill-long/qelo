@@ -16,7 +16,7 @@ import { basicAuth } from "@/jmap/auth";
 import { JmapClient } from "@/jmap/client";
 import { CAP_CORE, CAP_MAIL, methodResult } from "@/jmap/methods";
 import type { Id, MethodCall } from "@/jmap/types";
-import { todayAnchor } from "@/lib/calendar";
+import { LOCAL_ZONE, todayAnchor } from "@/lib/calendar";
 import { adoptClient, setSession } from "@/stores/account";
 import { resetCalendar } from "@/stores/calendar";
 import { resetContacts } from "@/stores/contacts";
@@ -26,6 +26,7 @@ import { resetRecipients } from "@/stores/recipients";
 import {
   setActiveView,
   setCalendarAnchor,
+  setCalendarDisplayZone,
   setCalendarViewMode,
   setCreatingContact,
   setCreatingEvent,
@@ -140,6 +141,9 @@ export function resetStores(): void {
   // one case doesn't leak its window into the next (the shared-worker leak class).
   setCalendarViewMode("agenda");
   setCalendarAnchor(todayAnchor());
+  // Display zone back to the browser-local default (the viewer-tz picker is a persisted preference, so
+  // a case that switched zones would otherwise leak it into the next via the shared worker).
+  setCalendarDisplayZone(LOCAL_ZONE);
   // The transient create-mode UI signals are global (unlike the per-card/per-event component-local
   // edit mode), so a half-open create form would otherwise leak across cases in the shared worker.
   setCreatingContact(false);

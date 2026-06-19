@@ -159,17 +159,127 @@ export function eventEndParts(event: CalendarEvent): DateParts | null {
 }
 
 // ---------------------------------------------------------------------------
-// Viewer-timezone conversion (viewer-tz milestone, Branch 1). A timed event carries a LOCAL `start`
-// interpreted in its own `timeZone`; the server also computes the absolute `utcStart`/`utcEnd`
-// instants (RFC 8984, opt-in — see CALENDAR_EVENT_PROPERTIES). For PLACEMENT/GROUPING/LABELS we want
-// the event shown in the VIEWER's frame, so we convert that instant to the viewer's zone (Branch 1:
-// browser-local; Branch 2 will make the zone selectable). This is DISPLAY-ONLY — the editable model
-// (`eventToEditable`) still reads the literal `start`/`timeZone`, the event's source-of-truth.
+// Viewer-timezone conversion (viewer-tz milestone). A timed event carries a LOCAL `start` interpreted
+// in its own `timeZone`; the server also computes the absolute `utcStart`/`utcEnd` instants (RFC 8984,
+// opt-in — see CALENDAR_EVENT_PROPERTIES). For PLACEMENT/GROUPING/LABELS we want the event shown in
+// the VIEWER's display zone, so we convert that instant to that zone (Branch 2: a user-selectable
+// `zone`, defaulting to the browser-local zone — Branch 1 was hardcoded browser-local). This is
+// DISPLAY-ONLY — the editable model (`eventToEditable`) still reads the literal `start`/`timeZone`,
+// the event's source-of-truth.
 //
 // Floating events (`timeZone` null/absent) and all-day events do NOT convert — a floating 09:00
 // "floats" to 09:00 in any zone (decided), and all-day is date-based. So the conversion gate is
 // exactly "a timed event with a real IANA `timeZone`"; everything else uses its literal components.
+//
+// The whole read/placement layer is parameterized by an IANA `zone` string that defaults to
+// {@link LOCAL_ZONE} (the browser's resolved zone), so every helper called WITHOUT a zone reproduces
+// Branch 1 exactly; only passing a non-local zone (the picker, Branch 2b) shifts the frame. The
+// projection (UTC instant → wall-clock parts in a zone) goes through `Intl.DateTimeFormat`, so it's
+// uniform for the local zone and any other — no separate browser-local-getter path.
 // ---------------------------------------------------------------------------
+
+/** The browser's resolved IANA time zone — the default display zone, so an un-zoned helper call
+ * reproduces the pre-Branch-2 (browser-local) behavior exactly. Captured once at load. */
+export const LOCAL_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+// One Intl.DateTimeFormat per zone (constructing one is relatively costly and the placement helpers
+// run over every event on each render). `hourCycle: "h23"` so hours read 00–23 (the agenda/grid math
+// is minutes-from-midnight); en-US for stable ASCII part values we parse with Number().
+const zoneFormatters = new Map<string, Intl.DateTimeFormat>();
+function zoneFormatter(zone: string): Intl.DateTimeFormat {
+  let f = zoneFormatters.get(zone);
+  if (!f) {
+    const opts: Intl.DateTimeFormatOptions = {
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    };
+    // An unknown/removed IANA zone makes the Intl constructor throw RangeError; fall back to the
+    // browser-local zone (no `timeZone` option) rather than let a stale persisted picker value crash a
+    // render. The display zone comes from a curated picker + the resolved local zone, so this only
+    // guards a genuinely invalid value.
+    try {
+      f = new Intl.DateTimeFormat("en-US", { ...opts, timeZone: zone });
+    } catch {
+      f = new Intl.DateTimeFormat("en-US", opts);
+    }
+    zoneFormatters.set(zone, f);
+  }
+  return f;
+}
+
+/** A UTC instant (ms since epoch) projected to its wall-clock {@link DateParts} in `zone`. The single
+ * UTC→zone projection (Branch 2's generalization of Branch 1's browser-local getters); pure given a
+ * fixed zone. `hour` is taken mod 24 to defend against engines that emit "24" for midnight under
+ * `hourCycle: "h23"`. */
+function partsInZone(ms: number, zone: string): DateParts {
+  const o: Record<string, string> = {};
+  for (const p of zoneFormatter(zone).formatToParts(ms)) {
+    if (p.type !== "literal") o[p.type] = p.value;
+  }
+  return {
+    year: Number(o.year),
+    month: Number(o.month),
+    day: Number(o.day),
+    hour: Number(o.hour) % 24,
+    minute: Number(o.minute),
+    second: Number(o.second),
+  };
+}
+
+/** A UTC instant string parsed to epoch ms, or null when absent/unparseable. Split out of the old
+ * `localPartsFromUtc` so the zone projection ({@link partsInZone}) is a separate, zone-parameterized
+ * step (the Branch-1 altitude note). NOTE: this is a plain parse — the RFC-3339 designator gate (reject
+ * a designator-less, locally-interpreted instant) lives in {@link isParseableInstant}, which
+ * {@link convertsToViewerZone} runs FIRST; callers that parse a server instant for conversion must go
+ * through that gate (as {@link viewerInstantParts} does), not call this directly on ungated input. */
+function instantMs(utc: string | undefined): number | null {
+  if (!utc) return null;
+  const ms = Date.parse(utc);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+// "YYYY-MM-DD" for the civil day a UTC instant (ms) falls on in `zone` — the zone-aware analog of
+// "YYYY-MM-DD" for already-projected {@link DateParts} — the one spelling of a day-key from parts,
+// shared by zoneDateKey / dayKey / nowIndicatorOffset so the format can't drift between the now-line,
+// the agenda bucket key, and the grid columns. (Distinct from `dateInput`, which is a form-input value.)
+function partsDateKey(p: DateParts): string {
+  return `${p.year}-${pad2(p.month)}-${pad2(p.day)}`;
+}
+
+// localDateKey, used for "today"/now determination.
+function zoneDateKey(ms: number, zone: string): string {
+  return partsDateKey(partsInZone(ms, zone));
+}
+
+// The offset (ms) of `zone` at instant `ms`: (the zone wall-clock read as if it were UTC) − the
+// instant. Used to invert a civil day back to the UTC instant of that zone's midnight.
+function tzOffsetMs(ms: number, zone: string): number {
+  const p = partsInZone(ms, zone);
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - ms;
+}
+
+// The UTC instant (ms) of `zone`-local midnight for the civil day (`year`,`month`,`day`). Two-pass to
+// handle DST: estimate from the offset at the as-if-UTC midnight, then re-read the offset at that
+// estimate and correct (probed: round-trips through NY/Tokyo/UTC incl. spring-forward + fall-back).
+function zonedMidnightMs(year: number, month: number, day: number, zone: string): number {
+  const target = Date.UTC(year, month - 1, day);
+  const approx = target - tzOffsetMs(target, zone);
+  return target - tzOffsetMs(approx, zone);
+}
+
+// The ISO UTC instant of `zone`-local midnight for a carrier Date's civil day — the JMAP query
+// `{after,before}` boundary. The carrier (an anchor/grid Date) holds a civil day in browser-local-
+// midnight form; we read its civil Y/M/D and re-anchor that day's midnight in the DISPLAY zone.
+function carrierDayInstant(carrier: Date, zone: string): string {
+  return new Date(
+    zonedMidnightMs(carrier.getFullYear(), carrier.getMonth() + 1, carrier.getDate(), zone),
+  ).toISOString();
+}
 
 /**
  * Whether the event's instants should be converted to the viewer's zone for display: a TIMED event
@@ -205,47 +315,39 @@ function isParseableInstant(utc: string | undefined): boolean {
   return typeof utc === "string" && UTC_DESIGNATOR.test(utc) && !Number.isNaN(Date.parse(utc));
 }
 
-/** The browser-local {@link DateParts} of a UTC instant string ("…Z"), or null when unparseable.
- * `new Date(iso)` is the absolute instant; the local getters read it in the browser's zone (Branch 1's
- * frame — Branch 2 generalizes this to an Intl-selected zone). */
-function localPartsFromUtc(utc: string | undefined): DateParts | null {
-  if (!utc) return null;
-  const ms = Date.parse(utc);
-  if (Number.isNaN(ms)) return null;
-  const d = new Date(ms);
-  return {
-    year: d.getFullYear(),
-    month: d.getMonth() + 1,
-    day: d.getDate(),
-    hour: d.getHours(),
-    minute: d.getMinutes(),
-    second: d.getSeconds(),
-  };
-}
-
-// The viewer-zone parts of one of the event's instants, or null to signal "use face value". Shared by
+// The display-zone parts of one of the event's instants, or null to signal "use face value". Shared by
 // the start/end display helpers so the convert-or-literal decision is made identically for both — when
 // the event doesn't convert (floating/all-day/missing-instant) BOTH fall back to their literal parts,
-// never one converted and one literal.
-function viewerInstantParts(event: CalendarEvent, instant: string | undefined): DateParts | null {
-  return convertsToViewerZone(event) ? localPartsFromUtc(instant) : null;
+// never one converted and one literal. `instantMs` parses, `partsInZone` projects into the display zone.
+function viewerInstantParts(
+  event: CalendarEvent,
+  instant: string | undefined,
+  zone: string,
+): DateParts | null {
+  if (!convertsToViewerZone(event)) return null;
+  const ms = instantMs(instant);
+  return ms === null ? null : partsInZone(ms, zone);
 }
 
 /**
- * The event's start parts AS DISPLAYED in the viewer's zone: for a timed event with a real `timeZone`
- * and both server-computed instants, the browser-local parts of `utcStart`; otherwise (floating,
- * all-day, or an instant absent on an older server) the literal {@link eventStartParts}, face value.
- * The single helper every placement/grouping/label path uses so they share one frame. Pure.
+ * The event's start parts AS DISPLAYED in `zone` (default {@link LOCAL_ZONE}): for a timed event with a
+ * real `timeZone` and both server-computed instants, the `zone` wall-clock parts of `utcStart`;
+ * otherwise (floating, all-day, or an instant absent on an older server) the literal
+ * {@link eventStartParts}, face value. The single helper every placement/grouping/label path uses so
+ * they share one frame. Pure.
  */
-export function displayStartParts(event: CalendarEvent): DateParts | null {
-  return viewerInstantParts(event, event.utcStart) ?? eventStartParts(event);
+export function displayStartParts(
+  event: CalendarEvent,
+  zone: string = LOCAL_ZONE,
+): DateParts | null {
+  return viewerInstantParts(event, event.utcStart, zone) ?? eventStartParts(event);
 }
 
-/** The event's end parts as displayed in the viewer's zone — the {@link displayStartParts} rule on
- * `utcEnd` (the server's `start`+`duration` instant), else literal {@link eventEndParts}. Converts in
- * lockstep with the start (same {@link convertsToViewerZone} gate), never in a different frame. */
-export function displayEndParts(event: CalendarEvent): DateParts | null {
-  return viewerInstantParts(event, event.utcEnd) ?? eventEndParts(event);
+/** The event's end parts as displayed in `zone` — the {@link displayStartParts} rule on `utcEnd` (the
+ * server's `start`+`duration` instant), else literal {@link eventEndParts}. Converts in lockstep with
+ * the start (same {@link convertsToViewerZone} gate + zone), never in a different frame. */
+export function displayEndParts(event: CalendarEvent, zone: string = LOCAL_ZONE): DateParts | null {
+  return viewerInstantParts(event, event.utcEnd, zone) ?? eventEndParts(event);
 }
 
 function pad2(n: number): string {
@@ -288,10 +390,10 @@ function monthDay(p: DateParts): string {
  * days — "Sep 7 09:00 – Sep 9 10:00". An all-day event spanning multiple days reads "Sep 7 – Sep 9".
  * Returns "" when the start is unparseable.
  */
-export function formatTimeRange(event: CalendarEvent): string {
-  const start = displayStartParts(event);
+export function formatTimeRange(event: CalendarEvent, zone: string = LOCAL_ZONE): string {
+  const start = displayStartParts(event, zone);
   if (!start) return "";
-  const end = displayEndParts(event) ?? start;
+  const end = displayEndParts(event, zone) ?? start;
   if (isAllDay(event)) {
     // All-day durations are exclusive of the end date (P1D = a single day), so step back one day.
     const last = stepDays(end, -1);
@@ -315,15 +417,21 @@ function stepDays(p: DateParts, days: number): DateParts {
   };
 }
 
-/** A "YYYY-MM-DD" key for the event's start date AS DISPLAYED in the viewer's zone — the agenda's
- * day-bucket key. "" if unparseable. */
-export function dayKey(event: CalendarEvent): string {
-  const p = displayStartParts(event);
-  return p ? `${p.year}-${pad2(p.month)}-${pad2(p.day)}` : "";
+/** A "YYYY-MM-DD" key for the event's start date AS DISPLAYED in `zone` (default {@link LOCAL_ZONE}) —
+ * the agenda's day-bucket key. "" if unparseable. */
+export function dayKey(event: CalendarEvent, zone: string = LOCAL_ZONE): string {
+  const p = displayStartParts(event, zone);
+  return p ? partsDateKey(p) : "";
 }
 
-/** A human day heading for a "YYYY-MM-DD" key, e.g. "Mon, Sep 7" (with year when not `now`'s year). */
-export function formatDayHeading(key: string, now: Date = new Date()): string {
+/** A human day heading for a "YYYY-MM-DD" key, e.g. "Mon, Sep 7" (with year when not the current
+ * year). The "current year" is `now`'s year in `zone` (default {@link LOCAL_ZONE}) so the trailing-year
+ * suffix tracks the display zone near a New-Year boundary. */
+export function formatDayHeading(
+  key: string,
+  now: Date = new Date(),
+  zone: string = LOCAL_ZONE,
+): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key);
   if (!m) return key;
   const year = Number(m[1]);
@@ -332,7 +440,7 @@ export function formatDayHeading(key: string, now: Date = new Date()): string {
   const d = new Date(Date.UTC(year, month - 1, day));
   const weekday = WEEKDAYS[d.getUTCDay()] ?? "";
   const base = `${weekday}, ${MONTHS[month - 1] ?? ""} ${day}`;
-  return year === now.getFullYear() ? base : `${base}, ${year}`;
+  return year === partsInZone(now.getTime(), zone).year ? base : `${base}, ${year}`;
 }
 
 /** The event's title, or a stable placeholder so a row/heading always has something to show. */
@@ -340,18 +448,24 @@ export function eventDisplayTitle(event: CalendarEvent): string {
   return event.title?.trim() || "(no title)";
 }
 
-// Sort key: start instant as DISPLAYED in the viewer's zone (UTC-built from the display parts,
-// including seconds so same-minute events order correctly) then title, for a deterministic order that
-// matches the rendered order (a tz-converted event sorts by where it's shown, not its source-zone time).
-function startSortKey(event: CalendarEvent): number {
-  const p = displayStartParts(event);
+// Sort key: start instant as DISPLAYED in `zone` (UTC-built from the display parts, including seconds
+// so same-minute events order correctly) then title, for a deterministic order that matches the
+// rendered order (a tz-converted event sorts by where it's shown, not its source-zone time).
+function startSortKey(event: CalendarEvent, zone: string): number {
+  const p = displayStartParts(event, zone);
   if (!p) return Number.POSITIVE_INFINITY; // undated events sort last
   return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
 }
 
-/** Compare two events by start then title — the deterministic agenda order. */
-export function compareEvents(a: CalendarEvent, b: CalendarEvent): number {
-  const byStart = startSortKey(a) - startSortKey(b);
+/** Compare two events by start then title — the deterministic agenda order. `zone` (default
+ * {@link LOCAL_ZONE}) decides which day/time a tz-bearing event sorts by; pass it explicitly when
+ * sorting in a non-local display zone (a bare `.sort(compareEvents)` uses the local zone). */
+export function compareEvents(
+  a: CalendarEvent,
+  b: CalendarEvent,
+  zone: string = LOCAL_ZONE,
+): number {
+  const byStart = startSortKey(a, zone) - startSortKey(b, zone);
   if (byStart !== 0) return byStart;
   const byTitle = eventDisplayTitle(a).localeCompare(eventDisplayTitle(b), undefined, {
     sensitivity: "base",
@@ -383,10 +497,14 @@ export interface DayGroup {
  * Group events into agenda day buckets keyed by start date, each sorted by start, the groups in
  * chronological order. Events with no parseable start are dropped (nothing to place them under).
  */
-export function groupEventsByDay(events: CalendarEvent[], now: Date = new Date()): DayGroup[] {
+export function groupEventsByDay(
+  events: CalendarEvent[],
+  now: Date = new Date(),
+  zone: string = LOCAL_ZONE,
+): DayGroup[] {
   const buckets = new Map<string, CalendarEvent[]>();
   for (const event of events) {
-    const key = dayKey(event);
+    const key = dayKey(event, zone);
     if (!key) continue;
     const bucket = buckets.get(key);
     if (bucket) bucket.push(event);
@@ -394,8 +512,8 @@ export function groupEventsByDay(events: CalendarEvent[], now: Date = new Date()
   }
   return [...buckets.keys()].sort().map((key) => ({
     key,
-    heading: formatDayHeading(key, now),
-    events: (buckets.get(key) ?? []).sort(compareEvents),
+    heading: formatDayHeading(key, now, zone),
+    events: (buckets.get(key) ?? []).sort((a, b) => compareEvents(a, b, zone)),
   }));
 }
 
@@ -439,9 +557,13 @@ function monthGridBounds(anchor: Date): { start: Date; end: Date } {
   return { start, end };
 }
 
-/** Today at local midnight — the default anchor and the "Today" reset target. */
-export function todayAnchor(now: Date = new Date()): Date {
-  return localMidnight(now);
+/** Today's civil day in `zone` (default {@link LOCAL_ZONE}), as a browser-local-midnight carrier Date —
+ * the default anchor and the "Today" reset target. With the local zone this is `localMidnight(now)`
+ * (Branch-1 behavior); with another zone it's that zone's current civil day (so "Today" lands on, e.g.,
+ * Tokyo's date even when the browser is a day behind). */
+export function todayAnchor(now: Date = new Date(), zone: string = LOCAL_ZONE): Date {
+  const p = partsInZone(now.getTime(), zone);
+  return new Date(p.year, p.month - 1, p.day);
 }
 
 /**
@@ -459,16 +581,17 @@ export function todayAnchor(now: Date = new Date()): Date {
 export function visibleRange(
   mode: CalendarViewMode,
   anchor: Date,
+  zone: string = LOCAL_ZONE,
 ): { after: string; before: string } {
   if (mode === "month") {
     const { start, end } = monthGridBounds(anchor);
-    return { after: start.toISOString(), before: end.toISOString() };
+    return { after: carrierDayInstant(start, zone), before: carrierDayInstant(end, zone) };
   }
   const from = mode === "week" ? startOfWeek(anchor) : localMidnight(anchor);
   const days = mode === "week" ? 7 : mode === "day" ? 1 : AGENDA_WINDOW_DAYS;
   const before = new Date(from);
   before.setDate(before.getDate() + days);
-  return { after: from.toISOString(), before: before.toISOString() };
+  return { after: carrierDayInstant(from, zone), before: carrierDayInstant(before, zone) };
 }
 
 /**
@@ -492,7 +615,7 @@ export function stepAnchor(mode: CalendarViewMode, anchor: Date, dir: 1 | -1): D
 // A span label for the nav header: same-month "Jun 14 – 20", cross-month "Jun 29 – Jul 5", cross-year
 // "Dec 29, 2026 – Jan 4, 2027" (both years, since one trailing year would be ambiguous for the left
 // endpoint). The year is appended once (trailing) for a same-year span that isn't the current year.
-function formatSpanLabel(start: Date, end: Date, now: Date): string {
+function formatSpanLabel(start: Date, end: Date, nowYear: number): string {
   const sM = MONTHS[start.getMonth()] ?? "";
   const eM = MONTHS[end.getMonth()] ?? "";
   if (start.getFullYear() !== end.getFullYear()) {
@@ -500,13 +623,20 @@ function formatSpanLabel(start: Date, end: Date, now: Date): string {
   }
   const left = `${sM} ${start.getDate()}`;
   const right = start.getMonth() === end.getMonth() ? `${end.getDate()}` : `${eM} ${end.getDate()}`;
-  const yearSuffix = start.getFullYear() === now.getFullYear() ? "" : `, ${start.getFullYear()}`;
+  const yearSuffix = start.getFullYear() === nowYear ? "" : `, ${start.getFullYear()}`;
   return `${left} – ${right}${yearSuffix}`;
 }
 
 /** A human label for the current view window, for the nav header: month → "June 2026", week →
- * "Jun 14 – 20", day → "Wed, Jun 17", agenda → "Jun 17 – Aug 11". `now` parameterized for tests. */
-export function rangeLabel(mode: CalendarViewMode, anchor: Date, now: Date = new Date()): string {
+ * "Jun 14 – 20", day → "Wed, Jun 17", agenda → "Jun 17 – Aug 11". The label reads the anchor's civil
+ * days (zone-independent — the anchor already encodes the display-zone day); `zone` only decides which
+ * year counts as "current" for the trailing-year suffix. `now`/`zone` parameterized for tests. */
+export function rangeLabel(
+  mode: CalendarViewMode,
+  anchor: Date,
+  now: Date = new Date(),
+  zone: string = LOCAL_ZONE,
+): string {
   const a = localMidnight(anchor);
   if (mode === "month") return `${MONTH_NAMES[a.getMonth()] ?? ""} ${a.getFullYear()}`;
   // Day mode is exactly a one-day heading — reuse formatDayHeading (same "Wed, Jun 17[, year]" rule)
@@ -515,12 +645,13 @@ export function rangeLabel(mode: CalendarViewMode, anchor: Date, now: Date = new
     return formatDayHeading(
       `${a.getFullYear()}-${pad2(a.getMonth() + 1)}-${pad2(a.getDate())}`,
       now,
+      zone,
     );
   }
   const start = mode === "week" ? startOfWeek(a) : a;
   const end = new Date(start);
   end.setDate(end.getDate() + (mode === "week" ? 6 : AGENDA_WINDOW_DAYS - 1));
-  return formatSpanLabel(start, end, now);
+  return formatSpanLabel(start, end, partsInZone(now.getTime(), zone).year);
 }
 
 /**
@@ -530,17 +661,26 @@ export function rangeLabel(mode: CalendarViewMode, anchor: Date, now: Date = new
  * the user is looking at) instead of on today — off-window, where the reconcile re-query would drop it
  * from view. Feeds {@link emptyEditableEvent}; pure, `now` parameterized for tests.
  */
-export function createSeedDate(mode: CalendarViewMode, anchor: Date, now: Date = new Date()): Date {
-  const { after, before } = visibleRange(mode, anchor);
-  const todayMs = localMidnight(now).getTime();
-  if (todayMs >= Date.parse(after) && todayMs < Date.parse(before)) return now;
-  return new Date(
-    anchor.getFullYear(),
-    anchor.getMonth(),
-    anchor.getDate(),
-    now.getHours(),
-    now.getMinutes(),
-  );
+export function createSeedDate(
+  mode: CalendarViewMode,
+  anchor: Date,
+  now: Date = new Date(),
+  zone: string = LOCAL_ZONE,
+): Date {
+  const { after, before } = visibleRange(mode, anchor, zone);
+  // The seed is consumed by emptyEditableEvent via browser-local getters to build a floating
+  // datetime-local default, so carry the DISPLAY-ZONE wall-clock of `now` as a browser-local carrier —
+  // then the default slot reads in the zone the user is viewing. With the local zone these parts equal
+  // now's own components (Branch-1 behavior).
+  const p = partsInZone(now.getTime(), zone);
+  const nowMs = now.getTime();
+  // `now` falls in the (full-day, zone-midnight-bounded) window iff today's display-zone civil day is
+  // visible — then seed today; otherwise seed the anchor's day at the same display-zone time-of-day so
+  // the create lands inside the navigated window.
+  if (nowMs >= Date.parse(after) && nowMs < Date.parse(before)) {
+    return new Date(p.year, p.month - 1, p.day, p.hour, p.minute);
+  }
+  return new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate(), p.hour, p.minute);
 }
 
 // ---------------------------------------------------------------------------
@@ -579,11 +719,15 @@ function keyToUtcMs(key: string): number {
  * weeks (4–6 rows depending on the month's length + start weekday) — exactly the range
  * {@link visibleRange}("month") queries. `now` parameterized for deterministic today-flagging in tests.
  */
-export function monthGridWeeks(anchor: Date, now: Date = new Date()): DayCell[][] {
+export function monthGridWeeks(
+  anchor: Date,
+  now: Date = new Date(),
+  zone: string = LOCAL_ZONE,
+): DayCell[][] {
   const year = anchor.getFullYear();
   const month = anchor.getMonth();
   const { start: gridStart, end: gridEnd } = monthGridBounds(anchor);
-  const todayKey = localDateKey(now);
+  const todayKey = zoneDateKey(now.getTime(), zone);
   const weeks: DayCell[][] = [];
   const d = new Date(gridStart);
   while (d < gridEnd) {
@@ -608,10 +752,13 @@ export function monthGridWeeks(anchor: Date, now: Date = new Date()): DayCell[][
 // whose computed end is exclusive — occupies no time on that final day, so the last covered day steps
 // back, covering both the all-day exclusive-end AND a timed event ending at 00:00 in one rule. Clamped
 // so lastMs ≥ firstMs (a malformed end-before-start collapses to the start day).
-function eventDayRange(event: CalendarEvent): { firstMs: number; lastMs: number } | null {
-  const start = displayStartParts(event);
+function eventDayRange(
+  event: CalendarEvent,
+  zone: string,
+): { firstMs: number; lastMs: number } | null {
+  const start = displayStartParts(event, zone);
   if (!start) return null;
-  const end = displayEndParts(event) ?? start;
+  const end = displayEndParts(event, zone) ?? start;
   const firstMs = Date.UTC(start.year, start.month - 1, start.day);
   const endDayMs = Date.UTC(end.year, end.month - 1, end.day);
   const endAtMidnight = end.hour === 0 && end.minute === 0 && end.second === 0;
@@ -622,8 +769,8 @@ function eventDayRange(event: CalendarEvent): { firstMs: number; lastMs: number 
 
 /** The inclusive set of "YYYY-MM-DD" day-keys an event covers (one for a single-day event, the
  * contiguous range for a multi-day/all-day span). Empty when the start is unparseable. */
-export function eventCoversDays(event: CalendarEvent): string[] {
-  const range = eventDayRange(event);
+export function eventCoversDays(event: CalendarEvent, zone: string = LOCAL_ZONE): string[] {
+  const range = eventDayRange(event, zone);
   if (!range) return [];
   const out: string[] = [];
   for (let ms = range.firstMs; ms <= range.lastMs; ms += DAY_MS) {
@@ -670,11 +817,12 @@ export function layoutMonth(
   events: CalendarEvent[],
   weeks: DayCell[][],
   visibleLanes: number = MONTH_VISIBLE_LANES,
+  zone: string = LOCAL_ZONE,
 ): MonthWeekLayout[] {
   // Precompute each event's day range + bar/chip class once (skip the unparseable).
   const items = events
     .map((event) => {
-      const range = eventDayRange(event);
+      const range = eventDayRange(event, zone);
       return range
         ? { event, ...range, isSpan: isAllDay(event) || range.lastMs > range.firstMs }
         : null;
@@ -703,7 +851,7 @@ export function layoutMonth(
           a.startCol - b.startCol ||
           b.endCol - b.startCol - (a.endCol - a.startCol) || // longer span first
           (a.isSpan === b.isSpan ? 0 : a.isSpan ? -1 : 1) || // bars before chips
-          compareEvents(a.event, b.event),
+          compareEvents(a.event, b.event, zone),
       );
 
     // Greedy lane packing: place each segment in the lowest lane whose occupied column ranges don't
@@ -784,11 +932,15 @@ export interface DayPlacement {
  * zone, a floating event at face value), so the block lands where the viewer sees its time, sharing one
  * frame with the now-indicator (also viewer-zone). Pure.
  */
-export function eventDayPlacement(event: CalendarEvent, dayKey: string): DayPlacement | null {
+export function eventDayPlacement(
+  event: CalendarEvent,
+  dayKey: string,
+  zone: string = LOCAL_ZONE,
+): DayPlacement | null {
   if (isAllDay(event)) return null;
-  const start = displayStartParts(event);
+  const start = displayStartParts(event, zone);
   if (!start) return null;
-  const end = displayEndParts(event) ?? start;
+  const end = displayEndParts(event, zone) ?? start;
   const dayMs = keyToUtcMs(dayKey);
   if (Number.isNaN(dayMs)) return null;
   const startMin = (partsUtcMs(start) - dayMs) / 60_000;
@@ -831,9 +983,10 @@ export interface PackedPlacement extends DayPlacement {
 export function packDayColumns(
   placements: DayPlacement[],
   minHeight: number = 0,
+  zone: string = LOCAL_ZONE,
 ): PackedPlacement[] {
   const sorted = [...placements].sort(
-    (a, b) => a.top - b.top || b.height - a.height || compareEvents(a.event, b.event),
+    (a, b) => a.top - b.top || b.height - a.height || compareEvents(a.event, b.event, zone),
   );
   const result: PackedPlacement[] = [];
   let cluster: PackedPlacement[] = [];
@@ -891,7 +1044,11 @@ export interface AllDaySegment {
  * with the same deterministic order as {@link layoutMonth} (earlier start, longer span, then
  * {@link compareEvents}). Pure; `days` is the {@link weekDays} key list (length 1 or 7).
  */
-export function layoutAllDayLane(events: CalendarEvent[], days: string[]): AllDaySegment[] {
+export function layoutAllDayLane(
+  events: CalendarEvent[],
+  days: string[],
+  zone: string = LOCAL_ZONE,
+): AllDaySegment[] {
   const first = days[0];
   const last = days[days.length - 1];
   if (!first || !last) return [];
@@ -901,7 +1058,7 @@ export function layoutAllDayLane(events: CalendarEvent[], days: string[]): AllDa
   const items = events
     .map((event) => {
       if (!isAllDay(event)) return null;
-      const range = eventDayRange(event);
+      const range = eventDayRange(event, zone);
       if (!range || range.lastMs < firstMs || range.firstMs > lastMs) return null;
       return {
         event,
@@ -916,7 +1073,7 @@ export function layoutAllDayLane(events: CalendarEvent[], days: string[]): AllDa
       (a, b) =>
         a.startCol - b.startCol ||
         b.endCol - b.startCol - (a.endCol - a.startCol) ||
-        compareEvents(a.event, b.event),
+        compareEvents(a.event, b.event, zone),
     );
   const laneRanges: [number, number][][] = [];
   const segments: AllDaySegment[] = [];
@@ -937,9 +1094,14 @@ export function layoutAllDayLane(events: CalendarEvent[], days: string[]): AllDa
 /** Minutes-from-midnight for the current-time line on the `dayKey` column, or null when `now`'s LOCAL
  * day isn't that column (only today shows the indicator). Decorative — the renderer marks it
  * aria-hidden. Pure; `now` is a parameter for deterministic tests. */
-export function nowIndicatorOffset(now: Date, dayKey: string): number | null {
-  if (localDateKey(now) !== dayKey) return null;
-  return now.getHours() * 60 + now.getMinutes();
+export function nowIndicatorOffset(
+  now: Date,
+  dayKey: string,
+  zone: string = LOCAL_ZONE,
+): number | null {
+  const p = partsInZone(now.getTime(), zone);
+  if (partsDateKey(p) !== dayKey) return null;
+  return p.hour * 60 + p.minute;
 }
 
 /**
@@ -949,9 +1111,13 @@ export function nowIndicatorOffset(now: Date, dayKey: string): number | null {
  * began. The time grid is a pointer-centric visual layout (the agenda is the linear accessible
  * equivalent), so each block must name its own day rather than rely on a column-header association.
  */
-export function eventAccessibleName(event: CalendarEvent, dayKey: string): string {
-  const parts = [eventDisplayTitle(event), formatDayHeading(dayKey)];
-  const range = formatTimeRange(event);
+export function eventAccessibleName(
+  event: CalendarEvent,
+  dayKey: string,
+  zone: string = LOCAL_ZONE,
+): string {
+  const parts = [eventDisplayTitle(event), formatDayHeading(dayKey, new Date(), zone)];
+  const range = formatTimeRange(event, zone);
   if (range) parts.push(range);
   return parts.join(", ");
 }
