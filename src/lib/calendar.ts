@@ -216,6 +216,26 @@ function zoneFormatter(zone: string): Intl.DateTimeFormat {
   return f;
 }
 
+const zoneValidity = new Map<string, boolean>();
+/** Whether `zone` is a valid IANA time zone the Intl engine accepts (cached). {@link zoneFormatter}
+ * FALLS BACK to browser-local on an invalid zone (so a render can't crash) — fine for DISPLAY, but the
+ * drag WRITE-back ({@link dropToSourceStart}) must fail closed instead of silently projecting an
+ * event's source start in the wrong (local) zone, so it checks this first. */
+function isValidTimeZone(zone: string): boolean {
+  let v = zoneValidity.get(zone);
+  if (v === undefined) {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: zone });
+      v = true;
+    } catch (err) {
+      if (!(err instanceof RangeError)) throw err;
+      v = false;
+    }
+    zoneValidity.set(zone, v);
+  }
+  return v;
+}
+
 /** A UTC instant (ms since epoch) projected to its wall-clock {@link DateParts} in `zone`. The single
  * UTC→zone projection (Branch 2's generalization of Branch 1's browser-local getters); pure given a
  * fixed zone.
@@ -1200,8 +1220,14 @@ export function dropToSourceStart(
       second: 0,
     };
   }
+  // FAIL CLOSED on an invalid source zone: partsInZone would silently project in the browser-local zone
+  // (zoneFormatter's fallback), computing a WRONG source wall-clock that a drag would then persist. The
+  // edit form can keep a non-curated zone, so an event may carry one Intl doesn't accept — refuse rather
+  // than write a misinterpreted start (the caller treats null as "no reschedule").
+  const tz = event.timeZone as string;
+  if (!isValidTimeZone(tz)) return null;
   const instant = zonedMidnightMs(year, month, day, displayZone) + minutes * 60_000;
-  return { ...partsInZone(instant, event.timeZone as string), second: 0 };
+  return { ...partsInZone(instant, tz), second: 0 };
 }
 
 /** A {@link DateParts} shifted by `ms`, via UTC arithmetic so it never drifts on a DST boundary. */

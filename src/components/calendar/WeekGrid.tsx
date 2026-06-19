@@ -168,7 +168,9 @@ export function WeekGrid(props: { columns: number }) {
     blockHeightMin: number,
   ): void {
     // Only a primary-button press on a writable event starts a drag; everything else stays a click.
-    if (e.button !== 0 || !colsRef || !eventMayWrite(event, calendars)) return;
+    // Also refuse while a previous drop is still committing — its ghost is pinned at the dropped slot
+    // (and a recurring scope chooser may be open); a new drag would yank that ghost away mid-write.
+    if (e.button !== 0 || !colsRef || committing() || !eventMayWrite(event, calendars)) return;
     // Reset the click-suppression flag at the START of every gesture, so a prior drag that ended
     // without a trailing click (released off any block) can't leave it set and swallow this gesture's
     // click. (pointerdown precedes the click, so clearing here is safe.)

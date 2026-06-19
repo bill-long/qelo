@@ -65,8 +65,6 @@ function seed(events: Record<string, CalendarEvent>, ids: string[]) {
 // midnight and clientX maps directly to a day column — making a pointer drop a concrete grid position.
 // jsdom returns a zero rect otherwise. setPointerCapture is unimplemented in jsdom → stub it.
 let rectSpy: ReturnType<typeof vi.spyOn> | undefined;
-let prevSetCapture: HTMLElement["setPointerCapture"] | undefined;
-let prevReleaseCapture: HTMLElement["releasePointerCapture"] | undefined;
 beforeEach(() => {
   // Fake only Date so the now-indicator's day is deterministic; SolidJS timers stay real (the
   // WeekGrid's once-a-minute setInterval never needs to fire in these tests).
@@ -84,10 +82,9 @@ beforeEach(() => {
     y: 0,
     toJSON: () => ({}),
   } as DOMRect);
-  // jsdom doesn't implement pointer capture — stub it so the drag handlers don't throw. Saved +
-  // restored in afterEach so the global prototype mutation can't leak into other test files.
-  prevSetCapture = HTMLElement.prototype.setPointerCapture;
-  prevReleaseCapture = HTMLElement.prototype.releasePointerCapture;
+  // jsdom doesn't implement pointer capture — stub it so the drag handlers don't throw. Deleted in
+  // afterEach (jsdom defines neither on the prototype, so delete restores the pristine absence) to keep
+  // the global prototype mutation from leaking into other test files.
   HTMLElement.prototype.setPointerCapture = () => {};
   HTMLElement.prototype.releasePointerCapture = () => {};
   resetCalendar();
@@ -99,8 +96,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   rectSpy?.mockRestore();
-  if (prevSetCapture) HTMLElement.prototype.setPointerCapture = prevSetCapture;
-  if (prevReleaseCapture) HTMLElement.prototype.releasePointerCapture = prevReleaseCapture;
+  delete (HTMLElement.prototype as Partial<HTMLElement>).setPointerCapture;
+  delete (HTMLElement.prototype as Partial<HTMLElement>).releasePointerCapture;
   resetCalendar();
   setSelectedCalendarId(null);
   setSelectedEventId(null);

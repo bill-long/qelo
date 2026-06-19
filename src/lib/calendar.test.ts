@@ -1431,6 +1431,19 @@ describe("dropToSourceStart (drag reschedule inverse of placement)", () => {
   it("returns null for a malformed day key", () => {
     expect(dropToSourceStart(tzEvent, "not-a-day", 540, WEST)).toBeNull();
   });
+
+  it("fails closed (null) when the event's source zone is an invalid IANA zone", () => {
+    // A tz-bearing event (converts) but carrying a bad source zone: projecting into it would silently
+    // fall back to browser-local and compute a WRONG source start, so the write must refuse instead.
+    const badZone = event({
+      start: "2026-07-02T11:00:00",
+      timeZone: "Mars/Phobos",
+      duration: "PT1H",
+      utcStart: "2026-07-02T02:00:00Z",
+      utcEnd: "2026-07-02T03:00:00Z",
+    });
+    expect(dropToSourceStart(badZone, "2026-07-01", 22 * 60, WEST)).toBeNull();
+  });
 });
 
 describe("partsAddMs / partsUtcMs / dateTimeInput", () => {
