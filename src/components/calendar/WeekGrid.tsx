@@ -288,40 +288,45 @@ export function WeekGrid(props: { columns: number }) {
 
     const currentStart = eventStartParts(d.event);
     if (!currentStart) return; // unparseable start → can't reason about the gesture (click selects)
+    const currentEnd = eventEndParts(d.event) ?? currentStart;
+    const zone = calendarDisplayZone();
 
-    // The new SOURCE-zone start + duration per gesture (action only words the recurring scope chooser):
-    //  - move: a new start (display→source inverse), the duration unchanged (rescheduleEvent shifts both
-    //    ends).
-    //  - resize-top: the TOP edge moved → a new start (same inverse); duration = the new height (the
-    //    bottom edge stayed fixed).
-    //  - resize-bottom: the BOTTOM edge moved → the start is UNCHANGED, written verbatim so
-    //    rescheduleEvent's delta is exactly zero (no zone round-trip, no seconds drift); only the
-    //    duration changes.
+    // Resolve BOTH edges as SOURCE-zone parts: the MOVED edge from its snapped display position
+    // (dropToSourceStart inverts display→source, failing closed on a malformed day / invalid zone), and
+    // the FIXED edge from the event's EXACT current value — so rounding can never drift the edge the user
+    // didn't touch. The duration is then the source-instant span between them (no minute rounding). action
+    // only words the recurring scope chooser.
+    //  - move: the whole block moves → a new start, the end rides along (duration kept; rescheduleEvent
+    //    shifts both ends), so newEnd isn't written/compared.
+    //  - resize-top: the TOP edge moved → a new start from its snapped position; the bottom stays at the
+    //    event's exact end.
+    //  - resize-bottom: the BOTTOM edge moved → a new end from its snapped position; the start stays at the
+    //    event's exact start (so rescheduleEvent's delta is exactly zero — no spurious series shift).
     let newStart: DateParts | null;
-    let newDurationMs: number | null;
+    let newEnd: DateParts | null;
     let action: "move" | "resize";
     if (d.kind === "move") {
       action = "move";
-      newDurationMs = null;
-      newStart = dropToSourceStart(d.event, d.ghostDayKey, d.ghostTopMin, calendarDisplayZone());
+      newStart = dropToSourceStart(d.event, d.ghostDayKey, d.ghostTopMin, zone);
+      newEnd = null;
+    } else if (d.kind === "resize-top") {
+      action = "resize";
+      newStart = dropToSourceStart(d.event, d.ghostDayKey, d.ghostTopMin, zone);
+      newEnd = currentEnd;
     } else {
       action = "resize";
-      newDurationMs = Math.round(d.ghostDurationMin) * 60_000;
-      newStart =
-        d.kind === "resize-top"
-          ? dropToSourceStart(d.event, d.ghostDayKey, d.ghostTopMin, calendarDisplayZone())
-          : currentStart;
+      newStart = currentStart;
+      newEnd = dropToSourceStart(d.event, d.ghostDayKey, d.ghostTopMin + d.ghostDurationMin, zone);
     }
-    // Fail closed: a malformed day or an invalid source zone yields no start → no write (click selects).
-    if (!newStart) return;
-    // No-op detection, MINUTE-granular so it matches the move path's seconds-tolerant sameWhen (a snap of
-    // a sub-minute start/duration back to its own grid position must not count as a change): the start
-    // didn't move AND the duration didn't change → nothing to write, let the trailing click select.
-    const currentEnd = eventEndParts(d.event) ?? currentStart;
-    const currentDurMin = Math.round((partsUtcMs(currentEnd) - partsUtcMs(currentStart)) / 60_000);
+    // Fail closed: a malformed day or an invalid source zone yields no edge → no write (click selects).
+    if (!newStart || (action === "resize" && !newEnd)) return;
+    const newDurationMs = newEnd ? partsUtcMs(newEnd) - partsUtcMs(newStart) : null;
+    // No-op detection, MINUTE-granular so it matches the move path's seconds-tolerant sameWhen (snapping a
+    // sub-minute edge to the same DISPLAYED minute must not count as a change): both edges unchanged →
+    // nothing to write, let the trailing click select. (move keeps its duration, so only its start counts.)
     const startUnchanged = sameWhen(newStart, currentStart);
-    const durationUnchanged = newDurationMs === null || newDurationMs / 60_000 === currentDurMin;
-    if (startUnchanged && durationUnchanged) return;
+    const endUnchanged = newEnd === null || sameWhen(newEnd, currentEnd);
+    if (startUnchanged && endUnchanged) return;
     suppressClick = true;
     // Auto-clear on the next macrotask: the synchronous trailing `click` (which fires right after this
     // pointerup) still sees it set and is swallowed, but if NO trailing click fires (pointer released off

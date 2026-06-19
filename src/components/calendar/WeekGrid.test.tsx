@@ -372,6 +372,26 @@ describe("WeekGrid", () => {
     expect(selectedEventId()).toBe("s");
   });
 
+  it("keeps the fixed (untouched) edge EXACT on a resize-top of a sub-minute event (no rounding drift)", () => {
+    // End carries seconds (10:00:30 → fractional bottom). Dragging the TOP to 08:00 must leave the bottom
+    // exactly at 10:00:30 — the duration is the source-instant span (08:00:00 → 10:00:30 = 2h30s), NOT a
+    // minute-rounded ghost height that would shift the fixed bottom by ~30s.
+    seed(
+      { s: ev({ id: "s", title: "Standup", start: "2026-06-17T09:00:00", duration: "PT1H30S" }) },
+      ["s"],
+    );
+    const { container } = render(() => <WeekGrid columns={7} />);
+    const top = container.querySelector(".week-event-handle-top") as HTMLElement;
+    fireEvent.pointerDown(top, { clientX: WED_X, clientY: 540, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(top, { clientX: WED_X, clientY: 480, pointerId: 1 }); // → 08:00
+    fireEvent.pointerUp(top, { clientX: WED_X, clientY: 480, pointerId: 1 });
+
+    expect(rescheduleMock).toHaveBeenCalledTimes(1);
+    const [, newStart, durMs] = rescheduleMock.mock.calls[0] ?? [];
+    expect(newStart).toMatchObject({ year: 2026, month: 6, day: 17, hour: 8, minute: 0 });
+    expect(durMs).toBe(2 * 60 * 60_000 + 30 * 1_000); // 08:00:00 → 10:00:30, the 30s preserved exactly
+  });
+
   it("treats a sub-minute event resized back to its own grid minute as a no-op (minute-granular, like move)", () => {
     // An event with seconds places at a fractional minute (top 540.5, height 60). Resizing the bottom and
     // releasing it so the duration snaps back to 60 min must NOT write (matching the move path's
