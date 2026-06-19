@@ -1266,9 +1266,12 @@ export function snapMinutes(min: number, step: number): number {
  *    shrinks below `minMinutes` (can't invert/zero) and clamped to the day's end ({@link MINUTES_PER_DAY}).
  *  - `"top"` — the bottom stays fixed; the top follows the pointer, capped so the block keeps at least
  *    `minMinutes` and clamped to the day's start (0).
- * The day column is unchanged (a resize moves only the edge, never the day). Pure — the inverse of the
- * placement: feed `topMin` to {@link dropToSourceStart} for the new source start and `durationMin` for
- * the new duration. Like the placement/move math this is CIVIL (display wall-clock minutes); a
+ * The MOVED edge always lands on the `step` grid: the min-size floor/cap is itself rounded to the grid
+ * (ceil for the bottom, floor for the top) so a fractional / off-grid FIXED edge (an event starting at
+ * 09:07, or with seconds) can't push the dragged edge off the snap grid. The fixed edge stays where it
+ * is (its exact value is preserved by the caller's write). The day column is unchanged (a resize moves
+ * only the edge, never the day). Pure — the inverse of the placement: feed the moved edge to
+ * {@link dropToSourceStart}. Like the placement/move math this is CIVIL (display wall-clock minutes); a
  * within-day DST transition between the two edges is the same approximation the grid renders with.
  */
 export function resizeGeometry(
@@ -1281,11 +1284,15 @@ export function resizeGeometry(
 ): { topMin: number; durationMin: number } {
   const snapped = snapMinutes(pointerMin, step);
   if (edge === "bottom") {
-    const bottom = Math.min(MINUTES_PER_DAY, Math.max(snapped, anchorTopMin + minMinutes));
+    // Smallest grid line that still keeps minMinutes from the (possibly off-grid) fixed top.
+    const minBottom = Math.ceil((anchorTopMin + minMinutes) / step) * step;
+    const bottom = Math.min(MINUTES_PER_DAY, Math.max(snapped, minBottom));
     return { topMin: anchorTopMin, durationMin: bottom - anchorTopMin };
   }
   const bottom = anchorTopMin + anchorHeightMin;
-  const top = Math.max(0, Math.min(snapped, bottom - minMinutes));
+  // Largest grid line that still keeps minMinutes from the (possibly off-grid) fixed bottom.
+  const maxTop = Math.floor((bottom - minMinutes) / step) * step;
+  const top = Math.max(0, Math.min(snapped, maxTop));
   return { topMin: top, durationMin: bottom - top };
 }
 

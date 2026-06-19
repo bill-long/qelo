@@ -1540,6 +1540,24 @@ describe("resizeGeometry (drag-edge resize geometry)", () => {
     // bottom = 60; dragging the top above midnight → clamped to 0.
     expect(resizeGeometry("top", 30, 30, -50, 15, 15)).toEqual({ topMin: 0, durationMin: 60 });
   });
+
+  it("keeps the MOVED edge on the snap grid when the fixed edge is off-grid (09:07 start)", () => {
+    // anchorTopMin=547 (09:07). Dragging the bottom toward the minimum must land it on a grid line, not
+    // at the off-grid floor 547+15=562. minBottom = ceil(562/15)*15 = 570.
+    const r = resizeGeometry("bottom", 547, 60, 560, 15, 15);
+    expect((r.topMin + r.durationMin) % 15).toBe(0); // the moved (bottom) edge is grid-aligned
+    expect(r.topMin + r.durationMin).toBe(570);
+    expect(r.topMin).toBe(547); // the fixed top is left exactly where it is
+  });
+
+  it("keeps the MOVED top edge on the snap grid when the fixed bottom is fractional (seconds)", () => {
+    // anchorTopMin=540.5 (09:00:30), height 60 → fixed bottom 600.5. Dragging the top toward the minimum
+    // must land it on a grid line: maxTop = floor((600.5−15)/15)*15 = floor(585.5/15)*15 = 585.
+    const r = resizeGeometry("top", 540.5, 60, 700, 15, 15);
+    expect(r.topMin % 15).toBe(0); // the moved (top) edge is grid-aligned
+    expect(r.topMin).toBe(585);
+    expect(r.topMin + r.durationMin).toBe(600.5); // the fixed bottom is left exactly where it is
+  });
 });
 
 describe("eventEndDayKey", () => {
