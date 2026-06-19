@@ -20,6 +20,7 @@ import {
   eventCoversDays,
   eventDayPlacement,
   eventDisplayTitle,
+  eventEndDayKey,
   eventEndParts,
   formatDayHeading,
   formatTimeRange,
@@ -40,6 +41,7 @@ import {
   pointerToGrid,
   rangeLabel,
   recurrenceSummary,
+  resizeGeometry,
   snapMinutes,
   stepAnchor,
   todayAnchor,
@@ -1496,5 +1498,69 @@ describe("snapMinutes / pointerToGrid (drag engine geometry)", () => {
   it("accounts for the rect offset (scrolled/positioned container)", () => {
     const rect = { left: 100, top: 200, width: 700, height: 1440 };
     expect(pointerToGrid(450, 740, rect, 7)).toEqual({ colIndex: 3, minutes: 540 });
+  });
+});
+
+describe("resizeGeometry (drag-edge resize geometry)", () => {
+  // A block at 09:00 (top 540) for 60 minutes (height 60); resize edges snap to 15 min, min 15 min.
+  it("bottom edge: keeps the top fixed, snaps the bottom to a new duration", () => {
+    expect(resizeGeometry("bottom", 540, 60, 632, 15, 15)).toEqual({
+      topMin: 540,
+      durationMin: 90,
+    });
+    // 632 → snap 630 → bottom 630 → duration 90.
+  });
+
+  it("top edge: keeps the bottom fixed, snaps the top to a new start + duration", () => {
+    // bottom = 540 + 60 = 600; drag the top up to ~08:00 (480).
+    expect(resizeGeometry("top", 540, 60, 482, 15, 15)).toEqual({ topMin: 480, durationMin: 120 });
+  });
+
+  it("floors the bottom so the block can't shrink below the minimum (no invert/zero)", () => {
+    // Dragging the bottom up above the top + min → clamped to top + min, never inverted.
+    expect(resizeGeometry("bottom", 540, 60, 500, 15, 15)).toEqual({
+      topMin: 540,
+      durationMin: 15,
+    });
+  });
+
+  it("caps the top so the block can't shrink below the minimum from above", () => {
+    // bottom = 600; dragging the top down past bottom − min → clamped to bottom − min.
+    expect(resizeGeometry("top", 540, 60, 700, 15, 15)).toEqual({ topMin: 585, durationMin: 15 });
+  });
+
+  it("clamps the bottom to the end of the day", () => {
+    expect(resizeGeometry("bottom", 1380, 30, 2000, 15, 15)).toEqual({
+      topMin: 1380,
+      durationMin: 60, // bottom clamped to 1440 (midnight) → 60 min
+    });
+  });
+
+  it("clamps the top to the start of the day", () => {
+    // bottom = 60; dragging the top above midnight → clamped to 0.
+    expect(resizeGeometry("top", 30, 30, -50, 15, 15)).toEqual({ topMin: 0, durationMin: 60 });
+  });
+});
+
+describe("eventEndDayKey", () => {
+  it("returns the display-end day key (same day for a within-day timed event)", () => {
+    const e = event({ start: "2026-07-01T09:00:00", duration: "PT1H" });
+    expect(eventEndDayKey(e)).toBe("2026-07-01");
+    expect(dayKey(e)).toBe("2026-07-01");
+  });
+
+  it("returns the NEXT day for a midnight-crossing event (so its block isn't single-day)", () => {
+    const e = event({ start: "2026-07-01T23:00:00", duration: "PT2H" }); // → 01:00 Jul 2
+    expect(dayKey(e)).toBe("2026-07-01");
+    expect(eventEndDayKey(e)).toBe("2026-07-02");
+  });
+
+  it("falls back to the start when there's no end", () => {
+    const e = event({ start: "2026-07-01T09:00:00" });
+    expect(eventEndDayKey(e)).toBe("2026-07-01");
+  });
+
+  it("returns '' for an unparseable start", () => {
+    expect(eventEndDayKey(event({ start: "nope" }))).toBe("");
   });
 });
