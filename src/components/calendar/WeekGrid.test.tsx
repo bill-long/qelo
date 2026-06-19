@@ -222,6 +222,27 @@ describe("WeekGrid", () => {
     expect(rescheduleMock).not.toHaveBeenCalled();
   });
 
+  it("won't start a drag from a midnight-crossing event's LATER block (start block only)", () => {
+    // 23:00 Tue Jun 16 → 01:00 Wed Jun 17: renders a clipped block in the Jun 16 column AND the Jun 17
+    // column. Grabbing the LATER (Jun 17, index 3 → x=350) block must NOT drag — its position maps to a
+    // different instant than the event's start, so it stays a click. (Grabbing the start block does drag.)
+    seed(
+      { x: ev({ id: "x", title: "Overnight", start: "2026-06-16T23:00:00", duration: "PT2H" }) },
+      ["x"],
+    );
+    render(() => <WeekGrid columns={7} />);
+    const blocks = screen.getAllByRole("button", { name: /Overnight/ });
+    expect(blocks.length).toBe(2); // one piece per covered day
+    const laterBlock = blocks[1] as HTMLElement; // the Jun 17 (00:00–01:00) piece
+    fireEvent.pointerDown(laterBlock, { clientX: 350, clientY: 30, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(laterBlock, { clientX: 350, clientY: 200, pointerId: 1 });
+    fireEvent.pointerUp(laterBlock, { clientX: 350, clientY: 200, pointerId: 1 });
+    expect(rescheduleMock).not.toHaveBeenCalled();
+    // It still selects on the trailing click.
+    fireEvent.click(laterBlock);
+    expect(selectedEventId()).toBe("x");
+  });
+
   it("prompts for scope on a recurring drag and reschedules with the chosen mode", () => {
     seed(
       {

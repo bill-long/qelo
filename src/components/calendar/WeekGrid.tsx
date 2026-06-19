@@ -174,9 +174,19 @@ export function WeekGrid(props: { columns: number }) {
     // Reset the click-suppression flag at the START of every gesture, so a prior drag that ended
     // without a trailing click (released off any block) can't leave it set and swallow this gesture's
     // click. (pointerdown precedes the click, so clearing here is safe.)
-    suppressClick = false;
     const rect = colsRef.getBoundingClientRect();
     const { colIndex, minutes } = pointerToGrid(e.clientX, e.clientY, rect, props.columns);
+    const grabbedDay = days()[colIndex] ?? dayKey(event, calendarDisplayZone());
+    // Only the event's START block initiates a drag. A midnight-crossing event renders a clipped block
+    // in each covered column; the dropped position is treated as the event's NEW start, which is only
+    // meaningful for the start block (a later piece's position maps to a different instant, so dragging
+    // it would mis-set the start AND break the dropped-back no-op check). A non-start piece stays a click
+    // (selects). B1 limitation: move a multi-day event from its first block; full delta-drag is deferred.
+    if (grabbedDay !== dayKey(event, calendarDisplayZone())) return;
+    // Reset the click-suppression flag at the START of every gesture, so a prior drag that ended without
+    // a trailing click (released off any block) can't leave it set and swallow this gesture's click.
+    // (pointerdown precedes the click, so clearing here is safe.)
+    suppressClick = false;
     setDrag({
       occId,
       event,
@@ -185,10 +195,7 @@ export function WeekGrid(props: { columns: number }) {
       startY: e.clientY,
       grabOffsetMin: minutes - blockTopMin,
       durationMin: blockHeightMin,
-      // Seed the ghost on the COLUMN the user grabbed (the pointer's day), not the event's start day —
-      // a midnight-crossing event renders a block in a later column, and a vertical-only drag there must
-      // stay on that column's day, not jump back to the start day.
-      ghostDayKey: days()[colIndex] ?? dayKey(event, calendarDisplayZone()),
+      ghostDayKey: grabbedDay,
       ghostTopMin: blockTopMin,
       moved: false,
     });
