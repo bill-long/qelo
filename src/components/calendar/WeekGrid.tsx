@@ -174,7 +174,7 @@ export function WeekGrid(props: { columns: number }) {
     // click. (pointerdown precedes the click, so clearing here is safe.)
     suppressClick = false;
     const rect = colsRef.getBoundingClientRect();
-    const { minutes } = pointerToGrid(e.clientX, e.clientY, rect, props.columns);
+    const { colIndex, minutes } = pointerToGrid(e.clientX, e.clientY, rect, props.columns);
     setDrag({
       occId,
       event,
@@ -183,7 +183,10 @@ export function WeekGrid(props: { columns: number }) {
       startY: e.clientY,
       grabOffsetMin: minutes - blockTopMin,
       durationMin: blockHeightMin,
-      ghostDayKey: dayKey(event, calendarDisplayZone()),
+      // Seed the ghost on the COLUMN the user grabbed (the pointer's day), not the event's start day —
+      // a midnight-crossing event renders a block in a later column, and a vertical-only drag there must
+      // stay on that column's day, not jump back to the start day.
+      ghostDayKey: days()[colIndex] ?? dayKey(event, calendarDisplayZone()),
       ghostTopMin: blockTopMin,
       moved: false,
     });
@@ -249,6 +252,14 @@ export function WeekGrid(props: { columns: number }) {
 
   async function dispatch(c: Committing, mode: RecurrenceEditMode): Promise<void> {
     setDragError(null);
+    // Boundary guard mirroring the dialog's disabled state: a per-occurrence mode needs a recurrenceId,
+    // else saveEvent would degrade it to a whole-series "all" — so refuse rather than silently move the
+    // whole series. (The dialog already aria-disables these, so this is defense-in-depth.)
+    if (mode !== "all" && c.recurrenceId === null) {
+      setCommitting(null);
+      setDragError("Couldn't identify this occurrence. Try reopening the calendar.");
+      return;
+    }
     const res = await rescheduleEvent(c.occId, c.newStart, null, mode, c.recurrenceId);
     // Clear the held ghost regardless — on success the reconcile re-rendered the block at its new slot;
     // on failure the store reverted to server truth, so dropping the ghost shows the unchanged block.
@@ -399,6 +410,7 @@ export function WeekGrid(props: { columns: number }) {
           {(c) => (
             <RescheduleScopeDialog
               title={eventDisplayTitle(c().event)}
+              recurrenceId={c().recurrenceId}
               onPick={(mode) => void dispatch(c(), mode)}
               onCancel={() => setCommitting(null)}
             />
@@ -414,6 +426,7 @@ export function WeekGrid(props: { columns: number }) {
 // background, and Escape→cancel for free (the established Qelo modal pattern).
 function RescheduleScopeDialog(props: {
   title: string;
+  recurrenceId: string | null;
   onPick: (mode: RecurrenceEditMode) => void;
   onCancel: () => void;
 }) {
@@ -436,13 +449,32 @@ function RescheduleScopeDialog(props: {
         Move “{props.title}”
       </h2>
       <div class="drag-scope-actions">
+        {/* "this"/"following" need the occurrence's recurrenceId; without one they're aria-disabled
+            (focusable + a hint, the qelo-review-checklist disabled-state rule) and only "All events"
+            fires — so a per-occurrence pick can't silently degrade to a whole-series move. */}
         <For each={RECURRENCE_SCOPE_MODES}>
-          {(m) => (
-            <button type="button" class="drag-scope-mode" onClick={() => props.onPick(m.value)}>
-              {m.label}
-            </button>
-          )}
+          {(m) => {
+            const disabled = () => m.value !== "all" && props.recurrenceId === null;
+            return (
+              <button
+                type="button"
+                class="drag-scope-mode"
+                aria-disabled={disabled() ? "true" : undefined}
+                onClick={() => {
+                  if (disabled()) return;
+                  props.onPick(m.value);
+                }}
+              >
+                {m.label}
+              </button>
+            );
+          }}
         </For>
+        <Show when={props.recurrenceId === null}>
+          <p class="drag-scope-hint">
+            This occurrence couldn’t be identified, so only “All events” is available.
+          </p>
+        </Show>
         <button type="button" class="drag-scope-cancel" onClick={() => props.onCancel()}>
           Cancel
         </button>

@@ -65,6 +65,8 @@ function seed(events: Record<string, CalendarEvent>, ids: string[]) {
 // midnight and clientX maps directly to a day column — making a pointer drop a concrete grid position.
 // jsdom returns a zero rect otherwise. setPointerCapture is unimplemented in jsdom → stub it.
 let rectSpy: ReturnType<typeof vi.spyOn> | undefined;
+let prevSetCapture: HTMLElement["setPointerCapture"] | undefined;
+let prevReleaseCapture: HTMLElement["releasePointerCapture"] | undefined;
 beforeEach(() => {
   // Fake only Date so the now-indicator's day is deterministic; SolidJS timers stay real (the
   // WeekGrid's once-a-minute setInterval never needs to fire in these tests).
@@ -82,7 +84,10 @@ beforeEach(() => {
     y: 0,
     toJSON: () => ({}),
   } as DOMRect);
-  // jsdom doesn't implement pointer capture — stub it so the drag handlers don't throw.
+  // jsdom doesn't implement pointer capture — stub it so the drag handlers don't throw. Saved +
+  // restored in afterEach so the global prototype mutation can't leak into other test files.
+  prevSetCapture = HTMLElement.prototype.setPointerCapture;
+  prevReleaseCapture = HTMLElement.prototype.releasePointerCapture;
   HTMLElement.prototype.setPointerCapture = () => {};
   HTMLElement.prototype.releasePointerCapture = () => {};
   resetCalendar();
@@ -94,6 +99,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   rectSpy?.mockRestore();
+  if (prevSetCapture) HTMLElement.prototype.setPointerCapture = prevSetCapture;
+  if (prevReleaseCapture) HTMLElement.prototype.releasePointerCapture = prevReleaseCapture;
   resetCalendar();
   setSelectedCalendarId(null);
   setSelectedEventId(null);
@@ -273,6 +280,13 @@ describe("WeekGrid", () => {
 
     expect(rescheduleMock).not.toHaveBeenCalled(); // waits for the choice, not auto-"all"
     expect(screen.getByRole("dialog")).toBeTruthy();
+    // Per-occurrence modes are aria-disabled without a recurrenceId and clicking them is a no-op (they
+    // must NOT silently degrade to a whole-series move).
+    const thisBtn = screen.getByRole("button", { name: "This event" });
+    expect(thisBtn.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(thisBtn);
+    expect(rescheduleMock).not.toHaveBeenCalled();
+    // Only "All events" fires.
     fireEvent.click(screen.getByRole("button", { name: "All events" }));
     expect(rescheduleMock).toHaveBeenCalledTimes(1);
     const [, , , mode, recurrenceId] = rescheduleMock.mock.calls[0] ?? [];

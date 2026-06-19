@@ -3111,6 +3111,21 @@ textarea.event-edit-input {
   background: color-mix(in srgb, var(--accent) 16%, var(--panel));
 }
 
+.drag-scope-mode[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.drag-scope-mode[aria-disabled="true"]:hover {
+  background: var(--panel);
+}
+
+.drag-scope-hint {
+  margin: 0.1rem 0 0;
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+}
+
 .drag-scope-cancel {
   margin-top: 0.3rem;
   text-align: center;
