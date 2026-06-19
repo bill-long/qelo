@@ -5,7 +5,7 @@ import { EventList } from "@/components/calendar/EventList";
 import { MonthGrid } from "@/components/calendar/MonthGrid";
 import { WeekGrid } from "@/components/calendar/WeekGrid";
 import { loadCalendar, refetchWindow } from "@/stores/calendar";
-import { calendarAnchor, calendarViewMode } from "@/stores/ui";
+import { calendarAnchor, calendarDisplayZone, calendarViewMode } from "@/stores/ui";
 
 /**
  * The calendar surface's main column (where ThreadList sits in mail view): the view-mode switch + the
@@ -22,9 +22,15 @@ export function CalendarMain() {
   // Lazy first load. loadCalendar is idempotent + never rejects, so firing it on mount is safe and a
   // mail⇄calendar toggle is cheap (the load-once guard short-circuits).
   onMount(() => void loadCalendar());
-  // Re-query on a view-mode / anchor change. `defer: true` so the onMount load owns the FIRST fetch;
-  // refetchWindow awaits that load internally, so a nav done before the load completes still wins.
-  createEffect(on([calendarViewMode, calendarAnchor], () => void refetchWindow(), { defer: true }));
+  // Re-query on a view-mode / anchor / display-zone change. `defer: true` so the onMount load owns the
+  // FIRST fetch; refetchWindow awaits that load internally, so a nav done before the load completes
+  // still wins. A display-zone change is treated like a nav step: a different zone can shift which
+  // civil days (and thus which events) fall in the queried {after,before} window, so re-query.
+  createEffect(
+    on([calendarViewMode, calendarAnchor, calendarDisplayZone], () => void refetchWindow(), {
+      defer: true,
+    }),
+  );
 
   return (
     <div class="calendar-main">

@@ -1928,6 +1928,29 @@ textarea.contact-edit-input {
   color: var(--ink);
 }
 
+/* The display-zone picker sits at the trailing end of the nav row. */
+.calendar-nav-zone {
+  margin-left: auto;
+  max-inline-size: 13rem;
+  padding: 0.22rem 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--raised);
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.calendar-nav-zone:hover {
+  background: var(--hover);
+}
+
+.calendar-nav-zone:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
 .agenda {
   height: 100%;
   overflow-y: auto;
