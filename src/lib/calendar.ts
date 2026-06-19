@@ -191,10 +191,18 @@ function convertsToViewerZone(event: CalendarEvent): boolean {
   );
 }
 
-/** Whether a UTC instant string parses — the gate's cheap parseability test (no `Date` allocation /
- * getter reads, unlike {@link localPartsFromUtc} which builds the full parts). */
+// An absolute instant must carry an explicit UTC designator: a trailing `Z` or a ±HH:MM / ±HHMM
+// offset (RFC 3339). A designator-LESS string ("2026-07-02T02:00:00") is parsed by `Date.parse` in
+// the VIEWER's local zone, so accepting it would let a malformed server value "convert" from a
+// misinterpreted instant instead of falling back to face value. The server's `utcStart`/`utcEnd`
+// always end in `Z`; this just fails closed on anything that doesn't.
+const UTC_DESIGNATOR = /(?:Z|[+-]\d{2}:?\d{2})$/;
+
+/** Whether a UTC instant string is an absolute instant that parses — the gate's cheap test (no `Date`
+ * allocation / getter reads, unlike {@link localPartsFromUtc} which builds the full parts). Requires an
+ * explicit `Z`/offset so a designator-less (locally-interpreted) value fails closed. */
 function isParseableInstant(utc: string | undefined): boolean {
-  return typeof utc === "string" && !Number.isNaN(Date.parse(utc));
+  return typeof utc === "string" && UTC_DESIGNATOR.test(utc) && !Number.isNaN(Date.parse(utc));
 }
 
 /** The browser-local {@link DateParts} of a UTC instant string ("…Z"), or null when unparseable.

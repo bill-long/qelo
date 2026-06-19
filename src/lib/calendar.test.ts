@@ -1168,6 +1168,21 @@ describe("viewer-tz display conversion", () => {
     expect(formatTimeRange(badEnd)).toBe("22:00 – 23:00");
   });
 
+  it("does NOT convert a designator-less instant (no Z/offset → locally misinterpreted)", () => {
+    // "2026-07-02T02:00:00" without a Z would be parsed by Date.parse in the viewer's local zone, so
+    // the gate must reject it and fall back to the literal source-zone start, not "convert" a
+    // misinterpreted instant.
+    const noZ = event({
+      start: "2026-07-01T22:00:00",
+      timeZone: "America/New_York",
+      duration: "PT1H",
+      utcStart: "2026-07-02T02:00:00",
+      utcEnd: "2026-07-02T03:00:00",
+    });
+    expect(displayStartParts(noZ)).toEqual(parseDateParts("2026-07-01T22:00:00"));
+    expect(displayEndParts(noZ)).toEqual(parseDateParts("2026-07-01T23:00:00"));
+  });
+
   it("orders events by their DISPLAYED instant (a converted earlier time sorts first)", () => {
     // Floating 10:00 vs a tz event converting to a viewer-local time before it. Build the tz event so
     // its utcStart is one hour before the floating event's local 10:00 in the runner's own zone.

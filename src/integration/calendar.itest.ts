@@ -219,16 +219,18 @@ describe("calendar (live Stalwart)", () => {
     await seedEvents(calId, [{ title, start: literal }]);
     await loadUntil(() => countByTitle(title) >= 1);
 
-    const ev = Object.values(calendarEvents).find((e) => e?.title === title);
-    expect(ev?.timeZone).toBe("America/New_York");
+    const found = Object.values(calendarEvents).find((e) => e?.title === title);
+    expect(found).toBeTruthy();
+    const ev = found as NonNullable<typeof found>;
+    expect(ev.timeZone).toBe("America/New_York");
     // The explicit property list must deliver BOTH server-computed instants (a full get omits them);
     // conversion is gated on both, so assert both are present, not just utcStart.
-    expect(ev?.utcStart).toMatch(/Z$/);
-    expect(ev?.utcEnd).toMatch(/Z$/);
+    expect(ev.utcStart).toMatch(/Z$/);
+    expect(ev.utcEnd).toMatch(/Z$/);
     // The display parts equal the browser-local rendering of that instant — i.e. the conversion uses
     // utcStart, derived from the SAME Date API so this holds regardless of the runner's zone.
-    const d = new Date(ev?.utcStart as string);
-    expect(displayStartParts(ev as NonNullable<typeof ev>)).toEqual({
+    const d = new Date(ev.utcStart as string);
+    expect(displayStartParts(ev)).toEqual({
       year: d.getFullYear(),
       month: d.getMonth() + 1,
       day: d.getDate(),
