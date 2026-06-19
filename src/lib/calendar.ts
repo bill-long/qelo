@@ -174,8 +174,9 @@ export function eventEndParts(event: CalendarEvent): DateParts | null {
 // The whole read/placement layer is parameterized by an IANA `zone` string that defaults to
 // {@link LOCAL_ZONE} (the browser's resolved zone), so every helper called WITHOUT a zone reproduces
 // Branch 1 exactly; only passing a non-local zone (the picker, Branch 2b) shifts the frame. The
-// projection (UTC instant → wall-clock parts in a zone) goes through `Intl.DateTimeFormat`, so it's
-// uniform for the local zone and any other — no separate browser-local-getter path.
+// projection (UTC instant → wall-clock parts) uses the cheap `Date` local getters for the default
+// browser-local zone — the Branch-1 hot path, unchanged — and `Intl.DateTimeFormat` only for a
+// non-local picked zone (cached per zone). So the common case pays no Intl cost.
 // ---------------------------------------------------------------------------
 
 /** The browser's resolved IANA time zone — the default display zone, so an un-zoned helper call
@@ -204,7 +205,10 @@ function zoneFormatter(zone: string): Intl.DateTimeFormat {
     // guards a genuinely invalid value.
     try {
       f = new Intl.DateTimeFormat("en-US", { ...opts, timeZone: zone });
-    } catch {
+    } catch (err) {
+      // Only an invalid/removed IANA zone (RangeError) is expected here; rethrow anything else so a
+      // real Intl/ICU bug isn't silently masked by the local-zone fallback.
+      if (!(err instanceof RangeError)) throw err;
       f = new Intl.DateTimeFormat("en-US", opts);
     }
     zoneFormatters.set(zone, f);
@@ -214,9 +218,25 @@ function zoneFormatter(zone: string): Intl.DateTimeFormat {
 
 /** A UTC instant (ms since epoch) projected to its wall-clock {@link DateParts} in `zone`. The single
  * UTC→zone projection (Branch 2's generalization of Branch 1's browser-local getters); pure given a
- * fixed zone. `hourCycle: "h23"` is spec-guaranteed (ECMA-402) to report hours 00–23 with midnight as
- * "00" (only `h24` ever emits "24"), so no hour normalization is needed and `day` stays consistent. */
+ * fixed zone.
+ *
+ * The default browser-local zone takes the cheap `Date`-getter fast path (identical to Branch 1's
+ * `localPartsFromUtc`), so the common case — which dominates renders — pays no `Intl` cost; only a
+ * non-local picked zone goes through `Intl.DateTimeFormat`. `hourCycle: "h23"` is spec-guaranteed
+ * (ECMA-402) to report hours 00–23 with midnight as "00" (only `h24` ever emits "24"), so no hour
+ * normalization is needed and `day` stays consistent. */
 function partsInZone(ms: number, zone: string): DateParts {
+  if (zone === LOCAL_ZONE) {
+    const d = new Date(ms);
+    return {
+      year: d.getFullYear(),
+      month: d.getMonth() + 1,
+      day: d.getDate(),
+      hour: d.getHours(),
+      minute: d.getMinutes(),
+      second: d.getSeconds(),
+    };
+  }
   const o: Record<string, string> = {};
   for (const p of zoneFormatter(zone).formatToParts(ms)) {
     if (p.type !== "literal") o[p.type] = p.value;
