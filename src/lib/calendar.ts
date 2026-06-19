@@ -174,9 +174,10 @@ export function eventEndParts(event: CalendarEvent): DateParts | null {
 /**
  * Whether the event's instants should be converted to the viewer's zone for display: a TIMED event
  * (not all-day) carrying a non-empty IANA `timeZone` AND BOTH server-computed instants (`utcStart` +
- * `utcEnd`). Floating/all-day events, and any event missing an instant (older/partial server), render
- * at face value. Requiring BOTH instants is what keeps the start and end in ONE frame — converting the
- * start from `utcStart` while the end fell back to the literal source-zone time would mix frames and
+ * `utcEnd`) that PARSE. Floating/all-day events, and any event missing OR with an unparseable instant
+ * (older/partial/malformed server), render at face value. Requiring both instants to parse is what
+ * keeps the start and end in ONE frame — converting the start from `utcStart` while the end fell back
+ * to the literal source-zone time (because `utcEnd` was absent or unparseable) would mix frames and
  * produce a backwards/oversized range. The gate is zone-INDEPENDENT (Branch 2's selectable zone
  * doesn't change WHETHER an event converts, only the target zone), so it carries forward unchanged.
  */
@@ -185,8 +186,8 @@ function convertsToViewerZone(event: CalendarEvent): boolean {
     !isAllDay(event) &&
     typeof event.timeZone === "string" &&
     event.timeZone.length > 0 &&
-    typeof event.utcStart === "string" &&
-    typeof event.utcEnd === "string"
+    localPartsFromUtc(event.utcStart) !== null &&
+    localPartsFromUtc(event.utcEnd) !== null
   );
 }
 

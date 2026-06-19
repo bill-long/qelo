@@ -1151,6 +1151,21 @@ describe("viewer-tz display conversion", () => {
     expect(formatTimeRange(partial)).toBe("22:00 – 23:00"); // one frame, forward range
   });
 
+  it("treats an UNPARSEABLE instant the same as an absent one (both endpoints stay literal)", () => {
+    // The all-or-nothing gate is on PARSEABILITY, not just presence — a present-but-garbage utcEnd
+    // must NOT let the start convert while the end falls back (the same mixed-frame hazard).
+    const badEnd = event({
+      start: "2026-07-01T22:00:00",
+      timeZone: "America/New_York",
+      duration: "PT1H",
+      utcStart: "2026-07-02T02:00:00Z",
+      utcEnd: "not-a-date",
+    });
+    expect(displayStartParts(badEnd)).toEqual(parseDateParts("2026-07-01T22:00:00"));
+    expect(displayEndParts(badEnd)).toEqual(parseDateParts("2026-07-01T23:00:00"));
+    expect(formatTimeRange(badEnd)).toBe("22:00 – 23:00");
+  });
+
   it("orders events by their DISPLAYED instant (a converted earlier time sorts first)", () => {
     // Floating 10:00 vs a tz event converting to a viewer-local time before it. Build the tz event so
     // its utcStart is one hour before the floating event's local 10:00 in the runner's own zone.
