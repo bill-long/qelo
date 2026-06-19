@@ -740,6 +740,10 @@ export async function rescheduleEvent(
       status: occEditable.status,
       freeBusyStatus: occEditable.freeBusyStatus,
       privacy: occEditable.privacy,
+      // The occurrence's OWN timeZone: `newStart` was computed in it (dropToSourceStart projects into the
+      // occurrence's zone), so the override must carry it — both to preserve a per-occurrence timeZone
+      // override AND so the written `start` isn't reinterpreted in the base zone.
+      timeZone: occEditable.timeZone,
       start: dateTimeInput(newStart),
       end: dateTimeInput(partsAddMs(newStart, durationMs)),
     };
