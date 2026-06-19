@@ -813,6 +813,45 @@ describe("calendar (live Stalwart)", () => {
     expect(occ.every((e) => parseDateParts(e.start)?.hour === 11)).toBe(true);
   });
 
+  it("reschedules ONE occurrence with 'this' (it moves; the rest of the series is untouched)", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    await seedEvents(calId, [{ title: `One ${tag}`, start: localDateTime(3, 9), weekly: true }]);
+    await loadUntil(() => countByTitle(`One ${tag}`) >= 3);
+    const total = countByTitle(`One ${tag}`);
+
+    // Drag occurrence #1 (a fresh, un-overridden occurrence) +2h with "this": a recurrenceOverrides
+    // write that moves just this occurrence to 11:00 and carries its title (the rebuild seeds the
+    // non-temporal props from the occurrence, so the series title isn't lost / nothing is retitled).
+    // NOTE: Stalwart only honors a start move on a FRESH override — re-moving an already-overridden
+    // occurrence's start is a no-op (a documented limitation), so this exercises the fresh path.
+    const occ = occurrenceAt(`One ${tag}`, 1);
+    const occStart = parseDateParts(calendarEvents[occ.id]?.start);
+    if (!occStart) throw new Error("unreachable");
+    const res = await rescheduleEvent(
+      occ.id,
+      { ...occStart, hour: 11 },
+      null,
+      "this",
+      occ.recurrenceId,
+    );
+    expect(res.ok).toBe(true);
+
+    // Exactly one occurrence now starts at 11:00; the rest stay at 09:00; the count is preserved (the
+    // override keeps the occurrence visible), and every occurrence keeps the series title.
+    await loadUntil(() => {
+      const occs = Object.values(calendarEvents).filter((e) => e?.title === `One ${tag}`);
+      return (
+        occs.length === total &&
+        occs.filter((e) => parseDateParts(e.start)?.hour === 11).length === 1
+      );
+    });
+    const occs = Object.values(calendarEvents).filter((e) => e?.title === `One ${tag}`);
+    expect(occs.length).toBe(total);
+    expect(occs.filter((e) => parseDateParts(e.start)?.hour === 11).length).toBe(1);
+    expect(occs.filter((e) => parseDateParts(e.start)?.hour === 9).length).toBe(total - 1);
+  });
+
   it("changes EVERY occurrence with the 'all' mode", async () => {
     const calId = await defaultCalendarId();
     const tag = Math.random().toString(36).slice(2, 8);

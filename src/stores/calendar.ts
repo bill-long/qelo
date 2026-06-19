@@ -712,20 +712,34 @@ export async function rescheduleEvent(
   const occurrence = calendarEvents[occurrenceId];
   if (!occurrence) return { ok: false, reason: "unresolved" };
   const occStart = eventStartParts(occurrence);
-  const occEnd = eventEndParts(occurrence) ?? occStart;
   const baseStart = eventStartParts(base);
   const baseEnd = eventEndParts(base) ?? baseStart;
-  if (!occStart || !occEnd || !baseStart || !baseEnd) return { ok: false, reason: "invalid" };
+  if (!occStart || !baseStart || !baseEnd) return { ok: false, reason: "invalid" };
 
-  const durationMs = newDurationMs ?? partsUtcMs(occEnd) - partsUtcMs(occStart);
+  // The move delta is measured from the occurrence's CURRENT start; the preserved length comes from the
+  // BASE (series) duration, NOT the occurrence's — an expanded/overridden occurrence can report a quirky
+  // duration (Stalwart returns P1D for an occurrence whose override omits `duration`), and a drag move
+  // shouldn't change the length, so the series duration is the correct value to keep.
+  const durationMs = newDurationMs ?? partsUtcMs(baseEnd) - partsUtcMs(baseStart);
   const deltaMs = partsUtcMs(newStart) - partsUtcMs(occStart);
-  const baseEditable = eventToEditable(base);
 
   let edits: EditableEvent;
   if (mode === "this") {
-    // Absolute new occurrence when; overridePatch diffs it against the base baseline.
+    // "this" writes ONE occurrence's override (overridePatch diffs `edits` vs the BASE). Overlay the
+    // occurrence's OWN display props onto the base editable so the move PRESERVES a per-occurrence
+    // title/description/location/status override (seeding from the base would reset them to the series
+    // values, since overridePatch always carries a title). Keep the base's RECURRENCE (and allDay/
+    // timeZone) so `recurrenceChanged` stays false — else saveEvent would treat it as a rule change and
+    // degrade "this" to the whole-series "all". Only the when is replaced with the drop.
+    const occEditable = eventToEditable(occurrence);
     edits = {
-      ...baseEditable,
+      ...eventToEditable(base),
+      title: occEditable.title,
+      description: occEditable.description,
+      location: occEditable.location,
+      status: occEditable.status,
+      freeBusyStatus: occEditable.freeBusyStatus,
+      privacy: occEditable.privacy,
       start: dateTimeInput(newStart),
       end: dateTimeInput(partsAddMs(newStart, durationMs)),
     };
@@ -738,7 +752,7 @@ export async function rescheduleEvent(
         ? partsAddMs(newBaseStart, newDurationMs)
         : partsAddMs(baseEnd, deltaMs);
     edits = {
-      ...baseEditable,
+      ...eventToEditable(base),
       start: dateTimeInput(newBaseStart),
       end: dateTimeInput(newBaseEnd),
     };

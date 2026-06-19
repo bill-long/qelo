@@ -167,13 +167,14 @@ export function WeekGrid(props: { columns: number }) {
     blockTopMin: number,
     blockHeightMin: number,
   ): void {
+    // Reset the click-suppression flag at the START of every pointerdown — BEFORE any early return — so a
+    // prior drag that ended without a trailing click (released off any block) can't leave it set and
+    // swallow the next click. (pointerdown always precedes the click, so clearing here is safe.)
+    suppressClick = false;
     // Only a primary-button press on a writable event starts a drag; everything else stays a click.
     // Also refuse while a previous drop is still committing — its ghost is pinned at the dropped slot
     // (and a recurring scope chooser may be open); a new drag would yank that ghost away mid-write.
     if (e.button !== 0 || !colsRef || committing() || !eventMayWrite(event, calendars)) return;
-    // Reset the click-suppression flag at the START of every gesture, so a prior drag that ended
-    // without a trailing click (released off any block) can't leave it set and swallow this gesture's
-    // click. (pointerdown precedes the click, so clearing here is safe.)
     const rect = colsRef.getBoundingClientRect();
     const { colIndex, minutes } = pointerToGrid(e.clientX, e.clientY, rect, props.columns);
     const grabbedDay = days()[colIndex] ?? dayKey(event, calendarDisplayZone());
@@ -183,10 +184,6 @@ export function WeekGrid(props: { columns: number }) {
     // it would mis-set the start AND break the dropped-back no-op check). A non-start piece stays a click
     // (selects). B1 limitation: move a multi-day event from its first block; full delta-drag is deferred.
     if (grabbedDay !== dayKey(event, calendarDisplayZone())) return;
-    // Reset the click-suppression flag at the START of every gesture, so a prior drag that ended without
-    // a trailing click (released off any block) can't leave it set and swallow this gesture's click.
-    // (pointerdown precedes the click, so clearing here is safe.)
-    suppressClick = false;
     setDrag({
       occId,
       event,
