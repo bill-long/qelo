@@ -251,7 +251,8 @@ function partsDateKey(p: DateParts): string {
   return `${p.year}-${pad2(p.month)}-${pad2(p.day)}`;
 }
 
-// localDateKey, used for "today"/now determination.
+// The "YYYY-MM-DD" civil day a UTC instant (ms) falls on in `zone` — the zone-aware counterpart of the
+// browser-local `localDateKey` (defined later), for "today"/now determination.
 function zoneDateKey(ms: number, zone: string): string {
   return partsDateKey(partsInZone(ms, zone));
 }
