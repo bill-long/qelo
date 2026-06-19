@@ -163,6 +163,11 @@ export function WeekGrid(props: { columns: number }) {
   // The occurrence id currently being dragged/committed — its real block dims so the ghost reads as the
   // live preview.
   const draggingId = createMemo(() => drag()?.occId ?? committing()?.occId ?? null);
+  // Stable booleans so the window-listener effects below re-run ONLY on an inactive↔active transition,
+  // not on every pointermove (each move replaces the `drag` object; a createMemo only notifies when its
+  // boolean VALUE changes, so the effects don't thrash add/removeEventListener during a drag).
+  const isDragging = createMemo(() => drag() !== null);
+  const gestureActive = createMemo(() => drag() !== null || committing() !== null);
 
   function startDrag(
     event: CalendarEvent,
@@ -302,7 +307,7 @@ export function WeekGrid(props: { columns: number }) {
   // for Pointer Events. The effect's onCleanup also covers an unmount mid-drag, and `pointercancel`
   // (an OS/gesture interruption) is handled alongside up so the drag can't stick open.
   createEffect(() => {
-    if (!drag()) return;
+    if (!isDragging()) return;
     const move = (e: PointerEvent) => moveDrag(e);
     const up = (e: PointerEvent) => endDrag(e);
     const cancel = (e: PointerEvent) => cancelDrag(e);
@@ -319,7 +324,7 @@ export function WeekGrid(props: { columns: number }) {
   // Escape cancels an in-progress drag OR a pending scope choice (no write). A window listener only
   // while a gesture/commit is live, cleaned up on unmount.
   createEffect(() => {
-    if (!drag() && !committing()) return;
+    if (!gestureActive()) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       cancelDrag();
