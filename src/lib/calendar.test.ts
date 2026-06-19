@@ -25,6 +25,7 @@ import {
   groupEventsByDay,
   isAllDay,
   isRecurring,
+  LOCAL_ZONE,
   layoutAllDayLane,
   layoutMonth,
   monthGridWeeks,
@@ -1199,5 +1200,141 @@ describe("viewer-tz display conversion", () => {
       duration: "PT30M",
     });
     expect([floatTen, tzNine].sort(compareEvents).map((e) => e.id)).toEqual(["tz", "float"]);
+  });
+});
+
+describe("viewer-tz selectable display zone (Branch 2)", () => {
+  // FIXED-OFFSET zones (POSIX `Etc/GMT`, sign INVERTED: Etc/GMT+4 = UTC−4, Etc/GMT-9 = UTC+9). Using
+  // fixed offsets — not America/New_York / Asia/Tokyo — keeps these assertions independent of tzdb/DST
+  // legislation (offsets that can change retroactively), so a tzdata update can't break unrelated CI.
+  // WEST = UTC−4, EAST = UTC+9: the same UTC instant renders on different days/times in each, so every
+  // assertion is a concrete, machine-independent value. The DST-transition test below DELIBERATELY uses
+  // a real DST zone (America/New_York) — that's the one place a fixed offset can't exercise.
+  const WEST = "Etc/GMT+4"; // UTC−4
+  const EAST = "Etc/GMT-9"; // UTC+9
+
+  // A timed event whose server instant is 2026-07-02T02:00:00Z (1h long): 22:00 Jul 1 in WEST (UTC−4),
+  // 11:00 Jul 2 in EAST (UTC+9) — it crosses the date line between the two zones.
+  const tzEvent = event({
+    title: "Cross-zone meeting",
+    start: "2026-07-01T22:00:00",
+    timeZone: WEST,
+    duration: "PT1H",
+    utcStart: "2026-07-02T02:00:00Z",
+    utcEnd: "2026-07-02T03:00:00Z",
+  });
+
+  it("projects the same instant into different zones (start/end parts)", () => {
+    expect(displayStartParts(tzEvent, WEST)).toEqual(parseDateParts("2026-07-01T22:00:00"));
+    expect(displayEndParts(tzEvent, WEST)).toEqual(parseDateParts("2026-07-01T23:00:00"));
+    expect(displayStartParts(tzEvent, EAST)).toEqual(parseDateParts("2026-07-02T11:00:00"));
+    expect(displayEndParts(tzEvent, EAST)).toEqual(parseDateParts("2026-07-02T12:00:00"));
+  });
+
+  it("buckets, places, and labels a tz event in the selected zone", () => {
+    expect(dayKey(tzEvent, WEST)).toBe("2026-07-01");
+    expect(dayKey(tzEvent, EAST)).toBe("2026-07-02");
+    expect(formatTimeRange(tzEvent, WEST)).toBe("22:00 – 23:00");
+    expect(formatTimeRange(tzEvent, EAST)).toBe("11:00 – 12:00");
+    expect(eventDayPlacement(tzEvent, "2026-07-01", WEST)).toMatchObject({
+      top: 22 * 60,
+      height: 60,
+    });
+    expect(eventDayPlacement(tzEvent, "2026-07-02", EAST)).toMatchObject({
+      top: 11 * 60,
+      height: 60,
+    });
+    // The block doesn't belong to the OTHER zone's day column.
+    expect(eventDayPlacement(tzEvent, "2026-07-02", WEST)).toBeNull();
+    expect(eventAccessibleName(tzEvent, "2026-07-02", EAST)).toContain("11:00 – 12:00");
+  });
+
+  it("floating + all-day events stay face value in any zone (gate unchanged)", () => {
+    const floating = event({ start: "2026-07-01T09:00:00", timeZone: null, duration: "PT1H" });
+    expect(displayStartParts(floating, WEST)).toEqual(parseDateParts("2026-07-01T09:00:00"));
+    expect(displayStartParts(floating, EAST)).toEqual(parseDateParts("2026-07-01T09:00:00"));
+    expect(formatTimeRange(floating, EAST)).toBe("09:00 – 10:00");
+    const allDay = event({ start: "2026-07-01T00:00:00", showWithoutTime: true, duration: "P1D" });
+    expect(eventCoversDays(allDay, WEST)).toEqual(["2026-07-01"]);
+    expect(eventCoversDays(allDay, EAST)).toEqual(["2026-07-01"]);
+  });
+
+  it("groups events by their zone-local day", () => {
+    const groupsWest = groupEventsByDay([tzEvent], new Date("2026-07-02T02:00:00Z"), WEST);
+    const groupsEast = groupEventsByDay([tzEvent], new Date("2026-07-02T02:00:00Z"), EAST);
+    expect(groupsWest.map((g) => g.key)).toEqual(["2026-07-01"]);
+    expect(groupsEast.map((g) => g.key)).toEqual(["2026-07-02"]);
+  });
+
+  it("computes the {after,before} window from DISPLAY-ZONE day boundaries", () => {
+    const anchor = new Date(2026, 6, 1); // carrier civil day July 1
+    expect(visibleRange("day", anchor, WEST)).toEqual({
+      after: "2026-07-01T04:00:00.000Z", // WEST-midnight Jul 1 = UTC−4
+      before: "2026-07-02T04:00:00.000Z",
+    });
+    expect(visibleRange("day", anchor, EAST)).toEqual({
+      after: "2026-06-30T15:00:00.000Z", // EAST-midnight Jul 1 = UTC+9
+      before: "2026-07-01T15:00:00.000Z",
+    });
+    expect(visibleRange("day", anchor, "UTC")).toEqual({
+      after: "2026-07-01T00:00:00.000Z",
+      before: "2026-07-02T00:00:00.000Z",
+    });
+  });
+
+  it("re-anchors the window across a DST transition (spring-forward day)", () => {
+    // The one test that needs a REAL DST zone: 2026-03-08 America/New_York clocks jump 02:00→03:00, so
+    // NY-midnight Mar 8 is still EST (−5) but Mar 9 is EDT (−4). The two-pass civil→instant must produce
+    // both correctly (a one-pass guess would be off by 1h). Pinned to a long-settled US-DST date.
+    expect(visibleRange("day", new Date(2026, 2, 8), "America/New_York")).toEqual({
+      after: "2026-03-08T05:00:00.000Z",
+      before: "2026-03-09T04:00:00.000Z",
+    });
+  });
+
+  it("computes now-line, today, and the anchor in the display zone", () => {
+    const now = new Date("2026-07-02T02:00:00Z"); // 22:00 Jul 1 WEST · 11:00 Jul 2 EAST
+    expect(nowIndicatorOffset(now, "2026-07-01", WEST)).toBe(22 * 60);
+    expect(nowIndicatorOffset(now, "2026-07-02", WEST)).toBeNull();
+    expect(nowIndicatorOffset(now, "2026-07-02", EAST)).toBe(11 * 60);
+
+    const anchorWest = todayAnchor(now, WEST);
+    expect([anchorWest.getFullYear(), anchorWest.getMonth(), anchorWest.getDate()]).toEqual([
+      2026, 6, 1,
+    ]);
+    const anchorEast = todayAnchor(now, EAST);
+    expect([anchorEast.getFullYear(), anchorEast.getMonth(), anchorEast.getDate()]).toEqual([
+      2026, 6, 2,
+    ]);
+
+    const weeksWest = monthGridWeeks(new Date(2026, 6, 1), now, WEST);
+    const weeksEast = monthGridWeeks(new Date(2026, 6, 1), now, EAST);
+    const todayOf = (weeks: ReturnType<typeof monthGridWeeks>) =>
+      weeks.flat().find((c) => c.isToday)?.key;
+    expect(todayOf(weeksWest)).toBe("2026-07-01");
+    expect(todayOf(weeksEast)).toBe("2026-07-02");
+  });
+
+  it("seeds a new event's default slot in the display zone's wall-clock", () => {
+    const now = new Date("2026-07-02T02:00:00Z");
+    // Day mode anchored on the zone's "today" → today is in window → seed carries the zone time-of-day.
+    const seedEast = createSeedDate("day", todayAnchor(now, EAST), now, EAST);
+    expect([seedEast.getMonth(), seedEast.getDate(), seedEast.getHours()]).toEqual([6, 2, 11]);
+    const seedWest = createSeedDate("day", todayAnchor(now, WEST), now, WEST);
+    expect([seedWest.getMonth(), seedWest.getDate(), seedWest.getHours()]).toEqual([6, 1, 22]);
+  });
+
+  it("the default zone reproduces the un-zoned (Branch 1) result exactly", () => {
+    const anchor = new Date(2026, 6, 1);
+    const now = new Date("2026-07-02T02:00:00Z");
+    expect(displayStartParts(tzEvent, LOCAL_ZONE)).toEqual(displayStartParts(tzEvent));
+    expect(displayEndParts(tzEvent, LOCAL_ZONE)).toEqual(displayEndParts(tzEvent));
+    expect(dayKey(tzEvent, LOCAL_ZONE)).toBe(dayKey(tzEvent));
+    expect(visibleRange("month", anchor, LOCAL_ZONE)).toEqual(visibleRange("month", anchor));
+    expect(nowIndicatorOffset(now, dayKey(tzEvent), LOCAL_ZONE)).toBe(
+      nowIndicatorOffset(now, dayKey(tzEvent)),
+    );
+    expect(todayAnchor(now, LOCAL_ZONE).getTime()).toBe(todayAnchor(now).getTime());
+    expect(formatTimeRange(tzEvent, LOCAL_ZONE)).toBe(formatTimeRange(tzEvent));
   });
 });
