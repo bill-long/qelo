@@ -309,9 +309,9 @@ function convertsToViewerZone(event: CalendarEvent): boolean {
 // always end in `Z`; this just fails closed on anything that doesn't.
 const UTC_DESIGNATOR = /(?:Z|[+-]\d{2}:?\d{2})$/;
 
-/** Whether a UTC instant string is an absolute instant that parses — the gate's cheap test (no `Date`
- * allocation / getter reads, unlike {@link localPartsFromUtc} which builds the full parts). Requires an
- * explicit `Z`/offset so a designator-less (locally-interpreted) value fails closed. */
+/** Whether a UTC instant string is an absolute instant that parses — the gate's cheap test (just
+ * `Date.parse`, no zone projection, unlike {@link partsInZone}). Requires an explicit `Z`/offset so a
+ * designator-less (locally-interpreted) value fails closed. */
 function isParseableInstant(utc: string | undefined): boolean {
   return typeof utc === "string" && UTC_DESIGNATOR.test(utc) && !Number.isNaN(Date.parse(utc));
 }
@@ -521,9 +521,13 @@ export function groupEventsByDay(
 // ---------------------------------------------------------------------------
 // View navigation — the view-mode + a navigable date window (Calendar Views milestone). Pure date
 // math: the store turns `visibleRange` into the CalendarEvent/query window; the nav header uses
-// `stepAnchor`/`todayAnchor`/`rangeLabel`. LOCAL-midnight based (matching the agenda's original
-// window) so the displayed calendar dates are the user's local days. The anchor is always a local-
-// midnight Date; every helper re-normalizes its input so a caller can pass any instant.
+// `stepAnchor`/`todayAnchor`/`rangeLabel`. The anchor is a CARRIER Date — a civil day held in
+// browser-local-midnight form; every helper re-normalizes its input so a caller can pass any instant.
+// The carrier's civil-day arithmetic (localMidnight/startOfWeek/monthGridBounds/weekDays/stepAnchor) is
+// zone-INDEPENDENT; the display zone enters only where a real instant is needed — todayAnchor/
+// monthGridWeeks "today" (which civil day is today, in the zone) and visibleRange's {after,before}
+// (the carrier civil days re-anchored to that zone's midnight). Default zone = browser-local = the
+// pre-Branch-2 behavior.
 // ---------------------------------------------------------------------------
 
 /** Which calendar view the surface renders. agenda = the scrollable upcoming list (the CRUD v1);
@@ -1092,9 +1096,11 @@ export function layoutAllDayLane(
   return segments;
 }
 
-/** Minutes-from-midnight for the current-time line on the `dayKey` column, or null when `now`'s LOCAL
- * day isn't that column (only today shows the indicator). Decorative — the renderer marks it
- * aria-hidden. Pure; `now` is a parameter for deterministic tests. */
+/** Minutes-from-midnight for the current-time line on the `dayKey` column, or null when `now`'s civil
+ * day IN `zone` (default {@link LOCAL_ZONE}) isn't that column (only today, in the display zone, shows
+ * the indicator) — and the offset itself is `now`'s zone wall-clock, so the line and the blocks share
+ * one frame. Decorative — the renderer marks it aria-hidden. Pure; `now`/`zone` for deterministic
+ * tests. */
 export function nowIndicatorOffset(
   now: Date,
   dayKey: string,
