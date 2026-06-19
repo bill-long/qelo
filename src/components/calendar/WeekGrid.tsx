@@ -130,8 +130,12 @@ export function WeekGrid(props: { columns: number }) {
   const [dragError, setDragError] = createSignal<string | null>(null);
   let colsRef: HTMLDivElement | undefined;
   // Set true the instant a drag commits, so the trailing native `click` on the dragged block is
-  // swallowed (a move must not also select). Read+reset by the block's onClick.
+  // swallowed (a move must not also select). Read+reset by the block's onClick; also auto-cleared on the
+  // next macrotask after a commit (see endDrag) so a missing trailing click can't leak it into a later
+  // keyboard activation.
   let suppressClick = false;
+  let suppressClickTimer = 0;
+  onCleanup(() => clearTimeout(suppressClickTimer));
 
   // The ghost (a translucent preview block) follows the pointer during a drag and stays pinned at the
   // drop while the write is in flight. One source for both phases so the rendering can't diverge.
@@ -235,6 +239,14 @@ export function WeekGrid(props: { columns: number }) {
     // Only SUPPRESS the trailing click once we actually commit a move, so a no-op drag still selects.
     if (!newStart || sameWhen(newStart, eventStartParts(d.event))) return;
     suppressClick = true;
+    // Auto-clear on the next macrotask: the synchronous trailing `click` (which fires right after this
+    // pointerup) still sees it set and is swallowed, but if NO trailing click fires (pointer released off
+    // the block), the flag can't linger and swallow a later KEYBOARD activation (Enter/Space → click,
+    // which never goes through pointerdown to reset it). clearTimeout on unmount avoids a late write.
+    clearTimeout(suppressClickTimer);
+    suppressClickTimer = window.setTimeout(() => {
+      suppressClick = false;
+    }, 0);
     const c: Committing = {
       occId: d.occId,
       event: d.event,
