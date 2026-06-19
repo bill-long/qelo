@@ -17,6 +17,7 @@ import {
 import { calendarReady, selectedCalendarEvents } from "@/stores/calendar";
 import {
   calendarAnchor,
+  calendarDisplayZone,
   selectedEventId,
   setCalendarAnchor,
   setCalendarViewMode,
@@ -36,11 +37,12 @@ function keyToAnchor(key: string): Date {
 // layout (no ARIA grid navigation — the agenda is the linear accessible equivalent, same posture as
 // the time-grid), so each event must name its own day: a single-day event prepends the day heading
 // (formatTimeRange gives only times / "All day"); a multi-day span's formatTimeRange already carries
-// its dates.
-function eventAccessibleName(e: CalendarEvent): string {
+// its dates. `zone` is the display zone — the day/time it names must match where the segment is drawn.
+function eventAccessibleName(e: CalendarEvent, zone: string): string {
   const parts = [eventDisplayTitle(e)];
-  if (eventCoversDays(e).length === 1) parts.push(formatDayHeading(dayKey(e)));
-  const range = formatTimeRange(e);
+  if (eventCoversDays(e, zone).length === 1)
+    parts.push(formatDayHeading(dayKey(e, zone), new Date(), zone));
+  const range = formatTimeRange(e, zone);
   if (range) parts.push(range);
   return parts.join(", ");
 }
@@ -55,8 +57,9 @@ function eventAccessibleName(e: CalendarEvent): string {
 export function MonthGrid() {
   // Zip weeks with their layout so a row carries both (same length — layoutMonth maps over weeks).
   const rows = createMemo(() => {
-    const weeks = monthGridWeeks(calendarAnchor());
-    const layouts = layoutMonth(selectedCalendarEvents(), weeks);
+    const zone = calendarDisplayZone();
+    const weeks = monthGridWeeks(calendarAnchor(), new Date(), zone);
+    const layouts = layoutMonth(selectedCalendarEvents(), weeks, MONTH_VISIBLE_LANES, zone);
     return weeks.map((week, i) => ({ week, layout: layouts[i] ?? EMPTY_LAYOUT }));
   });
 
@@ -117,7 +120,7 @@ function MonthWeek(props: { week: DayCell[]; layout: MonthWeekLayout }) {
                     "grid-column": `${col() + 1}`,
                     "grid-row": `${MONTH_VISIBLE_LANES + 1}`,
                   }}
-                  aria-label={`${more()} more event${more() === 1 ? "" : "s"}, ${formatDayHeading(cell.key)}`}
+                  aria-label={`${more()} more event${more() === 1 ? "" : "s"}, ${formatDayHeading(cell.key, new Date(), calendarDisplayZone())}`}
                   onClick={() => openDay(cell.key)}
                 >
                   +{more()} more
@@ -134,7 +137,7 @@ function MonthWeek(props: { week: DayCell[]; layout: MonthWeekLayout }) {
 function MonthSegmentView(props: { seg: MonthSegment }) {
   const event = () => props.seg.event;
   const isSelected = () => selectedEventId() === event().id;
-  const name = createMemo(() => eventAccessibleName(event()));
+  const name = createMemo(() => eventAccessibleName(event(), calendarDisplayZone()));
   return (
     <button
       type="button"
@@ -156,7 +159,7 @@ function MonthSegmentView(props: { seg: MonthSegment }) {
       onClick={() => setSelectedEventId(event().id)}
     >
       <Show when={!props.seg.isSpan}>
-        <span class="month-event-time">{formatTimeRange(event())}</span>
+        <span class="month-event-time">{formatTimeRange(event(), calendarDisplayZone())}</span>
       </Show>
       <span class="month-event-title">
         {eventDisplayTitle(event())}

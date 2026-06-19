@@ -45,6 +45,7 @@ import { handleAuthFailure, jmap, session } from "./account";
 import { syncCollection } from "./sync-collection";
 import {
   calendarAnchor,
+  calendarDisplayZone,
   calendarViewMode,
   selectedCalendarId,
   selectedEventId,
@@ -95,11 +96,13 @@ export function calendarAvailable(): boolean {
 }
 
 // The currently-visible date window as UTC instants (the filter compares against the event's resolved
-// instant). Derived from the live view-mode + anchor signals (lib/calendar `visibleRange`): the agenda
-// rolls forward from the anchor, the grids span the visible month/week/day. Read at request time (not
-// reactively) so each load/sync/nav re-query captures the window the user is currently looking at.
+// instant). Derived from the live view-mode + anchor + display-zone signals (lib/calendar
+// `visibleRange`): the agenda rolls forward from the anchor, the grids span the visible month/week/day,
+// and the {after,before} day boundaries are the DISPLAY ZONE's midnights (so picking another zone
+// shifts the queried days, matching what the grid renders). Read at request time (not reactively) so
+// each load/sync/nav re-query captures the window the user is currently looking at.
 function currentWindow(): { after: string; before: string } {
-  return visibleRange(calendarViewMode(), calendarAnchor());
+  return visibleRange(calendarViewMode(), calendarAnchor(), calendarDisplayZone());
 }
 
 // A stable key for the visible window (its query range) — captured before a window query and

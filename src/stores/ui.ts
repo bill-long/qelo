@@ -29,16 +29,15 @@ export const [selectedCalendarId, setSelectedCalendarId] = createSignal<string |
 export const [calendarViewMode, setCalendarViewMode] = createSignal<CalendarViewMode>("month");
 export const [calendarAnchor, setCalendarAnchor] = createSignal<Date>(todayAnchor());
 
-// The IANA zone the calendar is MEANT to render events/columns/now-line in (viewer-tz milestone,
-// Branch 2). NOTE: this branch (2a) only adds the signal + the zone-parameterized lib helpers it will
-// feed; nothing reads it yet, so it has no runtime effect until Branch 2b threads it from the calendar
-// components/store (which is also when changing it will re-derive the window via refetchWindow). Once
-// wired, timed tz-bearing events convert to this zone, the day grid + agenda buckets + now-line are
-// computed in it, and the queried {after,before} window is its days; floating + all-day events stay
-// face value regardless. Defaults to the browser's resolved zone (LOCAL_ZONE) so the calendar opens
-// unchanged from Branch 1; the CalendarNav picker (Branch 2b) will let the user switch it. Like
-// calendarViewMode/Anchor it PERSISTS across a calendar↔mail switch (a viewing preference, no onCleanup
-// reset); resetStores resets it for tests.
+// The IANA zone the calendar renders events/columns/now-line in (viewer-tz milestone, Branch 2). Wired
+// (Branch 2b): the CalendarNav `<select>` picker sets it; CalendarMain re-queries the window on a change
+// (refetchWindow, since a zone shift can move which days/events are in view); and the calendar
+// components thread it into the lib helpers. With it in effect, timed tz-bearing events convert to this
+// zone, the day grid + agenda buckets + month "today" + now-line are computed in it, and the queried
+// {after,before} window is its days; floating + all-day events stay face value regardless. Defaults to
+// the browser's resolved zone (LOCAL_ZONE) so the calendar opens unchanged from Branch 1 (pixel-
+// identical until the user picks another zone). Like calendarViewMode/Anchor it PERSISTS across a
+// calendar↔mail switch (a viewing preference, no onCleanup reset); resetStores resets it for tests.
 export const [calendarDisplayZone, setCalendarDisplayZone] = createSignal<string>(LOCAL_ZONE);
 
 // Whether the create-contact form owns the detail pane (column 3). Set by the "+ New contact"

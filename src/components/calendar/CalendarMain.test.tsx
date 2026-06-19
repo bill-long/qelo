@@ -1,20 +1,32 @@
-import { cleanup, render, screen } from "@solidjs/testing-library";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CalendarMain } from "@/components/calendar/CalendarMain";
-import { resetCalendar, setCalendarReady } from "@/stores/calendar";
-import { setCalendarViewMode } from "@/stores/ui";
+import { LOCAL_ZONE } from "@/lib/calendar";
+import { refetchWindow, resetCalendar, setCalendarReady } from "@/stores/calendar";
+import { setCalendarDisplayZone, setCalendarViewMode } from "@/stores/ui";
+
+// Spy on refetchWindow (the store's window re-query) so the nav-wiring test can assert the effect
+// fires — without a connected session, so the rest of the store stays real. The real refetchWindow is
+// a no-op here anyway (not loaded / no account); the mock makes the call observable.
+vi.mock("@/stores/calendar", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/stores/calendar")>();
+  return { ...actual, refetchWindow: vi.fn(() => Promise.resolve()) };
+});
 
 // CalendarMain.onMount fires loadCalendar(), which no-ops without a connected session
 // (calendarAccountId() is null → fetchCalendar returns before touching the client), so these tests
-// need no client. They cover the mode → body mapping only.
+// need no client. They cover the mode → body mapping + the display-zone → refetch wiring.
 beforeEach(() => {
   resetCalendar();
   setCalendarViewMode("agenda");
+  setCalendarDisplayZone(LOCAL_ZONE);
+  vi.mocked(refetchWindow).mockClear();
 });
 afterEach(() => {
   cleanup();
   resetCalendar();
   setCalendarViewMode("agenda");
+  setCalendarDisplayZone(LOCAL_ZONE);
 });
 
 describe("CalendarMain", () => {
@@ -56,5 +68,17 @@ describe("CalendarMain", () => {
     expect(screen.getByText("07:00")).toBeTruthy();
     // The agenda's empty-state must NOT leak into day mode either (symmetry with the week test).
     expect(screen.queryByText("No events in this range")).toBeNull();
+  });
+
+  it("re-queries the window when the display zone changes (picker → refetch wiring)", () => {
+    setCalendarReady(true);
+    render(() => <CalendarMain />);
+    // The effect is deferred, so the initial mount doesn't refetch (the lazy load owns the first fetch).
+    expect(vi.mocked(refetchWindow)).not.toHaveBeenCalled();
+    // Picking another zone re-derives the window — the same posture as a nav step.
+    fireEvent.change(screen.getByRole("combobox", { name: "Display time zone" }), {
+      target: { value: "Asia/Tokyo" },
+    });
+    expect(vi.mocked(refetchWindow)).toHaveBeenCalledTimes(1);
   });
 });

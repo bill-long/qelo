@@ -25,7 +25,13 @@ import {
 import { handleAuthFailure } from "@/stores/account";
 import { calendarEvents, calendars, deleteEvent, resolveBaseEvent } from "@/stores/calendar";
 import { notify } from "@/stores/toasts";
-import { creatingEvent, selectedEventId, setCreatingEvent, setSelectedEventId } from "@/stores/ui";
+import {
+  calendarDisplayZone,
+  creatingEvent,
+  selectedEventId,
+  setCreatingEvent,
+  setSelectedEventId,
+} from "@/stores/ui";
 
 /**
  * The event detail, re-homed (Calendar Views milestone) from the fixed column-3 pane into a modal
@@ -338,10 +344,11 @@ function EventDetail(props: {
   );
   const title = createMemo(() => eventDisplayTitle(event()));
   const heading = createMemo(() => {
-    const key = dayKey(event());
-    return key ? formatDayHeading(key) : "";
+    const zone = calendarDisplayZone();
+    const key = dayKey(event(), zone);
+    return key ? formatDayHeading(key, new Date(), zone) : "";
   });
-  const timeRange = createMemo(() => formatTimeRange(event()));
+  const timeRange = createMemo(() => formatTimeRange(event(), calendarDisplayZone()));
   const calendar = createMemo(() => {
     const ids = Object.keys(event().calendarIds ?? {});
     for (const id of ids) {

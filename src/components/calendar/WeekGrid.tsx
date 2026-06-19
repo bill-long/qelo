@@ -18,7 +18,12 @@ import {
   weekDays,
 } from "@/lib/calendar";
 import { calendarReady, selectedCalendarEvents } from "@/stores/calendar";
-import { calendarAnchor, selectedEventId, setSelectedEventId } from "@/stores/ui";
+import {
+  calendarAnchor,
+  calendarDisplayZone,
+  selectedEventId,
+  setSelectedEventId,
+} from "@/stores/ui";
 
 const HOURS = Array.from({ length: 24 }, (_, h) => h);
 // First hour scrolled into view (~working hours) so the grid doesn't open pinned at midnight.
@@ -44,7 +49,9 @@ export function WeekGrid(props: { columns: number }) {
   // The window's events filtered once (shared by the all-day lane + every day column) rather than each
   // column re-filtering selectedCalendarEvents over all eventIds.
   const events = createMemo(() => selectedCalendarEvents());
-  const allDaySegments = createMemo(() => layoutAllDayLane(events(), days()));
+  const allDaySegments = createMemo(() =>
+    layoutAllDayLane(events(), days(), calendarDisplayZone()),
+  );
 
   // A minute-ticking clock drives the now-indicator (and the today-column highlight). A long-lived
   // setInterval cleared in onCleanup — no direct DOM writes, the signal flows through the render.
@@ -81,9 +88,11 @@ export function WeekGrid(props: { columns: number }) {
                   {(key) => (
                     <div
                       class="week-head-day"
-                      classList={{ "is-today": nowIndicatorOffset(now(), key) !== null }}
+                      classList={{
+                        "is-today": nowIndicatorOffset(now(), key, calendarDisplayZone()) !== null,
+                      }}
                     >
-                      {formatDayHeading(key)}
+                      {formatDayHeading(key, now(), calendarDisplayZone())}
                     </div>
                   )}
                 </For>
@@ -124,7 +133,9 @@ function AllDayBar(props: { seg: AllDaySegment }) {
   const event = () => props.seg.event;
   const isSelected = () => selectedEventId() === event().id;
   // A bar can span several columns; name it by its start day (formatTimeRange carries the full span).
-  const name = createMemo(() => eventAccessibleName(event(), dayKey(event())));
+  const name = createMemo(() =>
+    eventAccessibleName(event(), dayKey(event(), calendarDisplayZone()), calendarDisplayZone()),
+  );
   return (
     <button
       type="button"
@@ -151,16 +162,17 @@ function AllDayBar(props: { seg: AllDaySegment }) {
 function WeekDayColumn(props: { dayKey: string; now: () => Date; events: () => CalendarEvent[] }) {
   // Timed events placed in this column, overlap-packed into side-by-side sub-columns.
   const blocks = createMemo<PackedPlacement[]>(() => {
+    const zone = calendarDisplayZone();
     const placements: DayPlacement[] = [];
     for (const e of props.events()) {
-      const p = eventDayPlacement(e, props.dayKey);
+      const p = eventDayPlacement(e, props.dayKey, zone);
       if (p) placements.push(p);
     }
     // Pack against the rendered minimum height so short/zero-duration blocks that float to
     // MIN_BLOCK_MINUTES don't visually overlap while sharing a sub-column.
-    return packDayColumns(placements, MIN_BLOCK_MINUTES);
+    return packDayColumns(placements, MIN_BLOCK_MINUTES, zone);
   });
-  const nowOffset = () => nowIndicatorOffset(props.now(), props.dayKey);
+  const nowOffset = () => nowIndicatorOffset(props.now(), props.dayKey, calendarDisplayZone());
   return (
     <div class="week-col">
       <For each={blocks()}>{(block) => <TimedBlock block={block} dayKey={props.dayKey} />}</For>
@@ -178,7 +190,7 @@ function TimedBlock(props: { block: PackedPlacement; dayKey: string }) {
   const isSelected = () => selectedEventId() === event().id;
   // Name the block by the COLUMN's day (props.dayKey), so a midnight-crossing event's later-day piece
   // announces the day it's drawn on, not the event's start day.
-  const name = createMemo(() => eventAccessibleName(event(), props.dayKey));
+  const name = createMemo(() => eventAccessibleName(event(), props.dayKey, calendarDisplayZone()));
   return (
     <button
       type="button"
@@ -196,7 +208,7 @@ function TimedBlock(props: { block: PackedPlacement; dayKey: string }) {
       title={name()}
       onClick={() => setSelectedEventId(event().id)}
     >
-      <span class="week-event-time">{formatTimeRange(event())}</span>
+      <span class="week-event-time">{formatTimeRange(event(), calendarDisplayZone())}</span>
       <span class="week-event-title">
         {eventDisplayTitle(event())}
         <Show when={isRecurring(event())}>

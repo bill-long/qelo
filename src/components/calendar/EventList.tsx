@@ -7,7 +7,7 @@ import {
   isRecurring,
 } from "@/lib/calendar";
 import { calendarEvents, calendarReady, selectedCalendarEvents } from "@/stores/calendar";
-import { selectedEventId, setSelectedEventId } from "@/stores/ui";
+import { calendarDisplayZone, selectedEventId, setSelectedEventId } from "@/stores/ui";
 
 /**
  * The agenda body (the "agenda" view mode): the loaded date window's events, grouped by day with a
@@ -15,9 +15,12 @@ import { selectedEventId, setSelectedEventId } from "@/stores/ui";
  * this component is purely the agenda render of the current window.
  */
 export function EventList() {
-  // The selected calendar's loaded events (shared with the month grid), grouped by day.
-  // groupEventsByDay sorts within each day, so the agenda order is deterministic.
-  const groups = createMemo(() => groupEventsByDay(selectedCalendarEvents()));
+  // The selected calendar's loaded events (shared with the month grid), grouped by day in the display
+  // zone (so a tz-bearing event buckets/sorts by its viewer-zone day). groupEventsByDay sorts within
+  // each day, so the agenda order is deterministic.
+  const groups = createMemo(() =>
+    groupEventsByDay(selectedCalendarEvents(), new Date(), calendarDisplayZone()),
+  );
 
   return (
     <div class="agenda">
@@ -56,7 +59,7 @@ function EventRow(props: { id: string }) {
             aria-current={isSelected() ? "true" : undefined}
             onClick={() => setSelectedEventId(props.id)}
           >
-            <span class="agenda-row-time">{formatTimeRange(e())}</span>
+            <span class="agenda-row-time">{formatTimeRange(e(), calendarDisplayZone())}</span>
             <span class="agenda-row-title">
               {eventDisplayTitle(e())}
               <Show when={isRecurring(e())}>
