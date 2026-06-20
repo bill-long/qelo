@@ -10,6 +10,7 @@ import {
   dateTimeInput,
   dayKey,
   dayKeyDelta,
+  defaultCreateSeed,
   defaultWritableCalendarId,
   displayEndParts,
   displayStartParts,
@@ -614,6 +615,35 @@ describe("createSeedDate", () => {
     expect(createSeedDate("month", new Date(2027, 2, 1), now)).toEqual(
       new Date(2027, 2, 1, 14, 30),
     );
+  });
+});
+
+describe("defaultCreateSeed", () => {
+  const EAST = "Etc/GMT-9"; // UTC+9 display zone
+  const now = new Date("2026-07-02T02:00:00Z"); // 11:00 Jul 2 in EAST
+
+  it("anchors the default-create slot to the display zone (not floating), so expansion can't shift it", () => {
+    const seed = defaultCreateSeed("day", todayAnchor(now, EAST), now, EAST);
+    // The display zone is STAMPED, not left floating ("") — the whole point of the fix (a floating
+    // create is re-stamped Etc/UTC by Stalwart's expandRecurrences and would render at the wrong time).
+    expect(seed.timeZone).toBe(EAST);
+    // The slot is the next top of the hour in the display-zone wall-clock (11:00 → 12:00), one hour, timed.
+    expect(seed.allDay).toBe(false);
+    expect(seed.start).toBe("2026-07-02T12:00");
+    expect(seed.end).toBe("2026-07-02T13:00");
+    // A blank title — the create gate still needs one (the new-event minimum is title + a valid when).
+    expect(seed.title).toBe("");
+    expect(editableHasContent(seed)).toBe(false);
+  });
+
+  it("reproduces the un-anchored slot wall-clock, differing only by the stamped zone (default zone)", () => {
+    const anchor = todayAnchor(now);
+    const seed = defaultCreateSeed("day", anchor, now); // default zone = LOCAL_ZONE
+    const bare = emptyEditableEvent(createSeedDate("day", anchor, now));
+    // Identical to the old emptyEditableEvent(createSeedDate(...)) slot; the ONLY difference is that
+    // timeZone now carries the display zone (LOCAL_ZONE) instead of "" (floating).
+    expect({ ...seed, timeZone: "" }).toEqual(bare);
+    expect(seed.timeZone).toBe(LOCAL_ZONE);
   });
 });
 

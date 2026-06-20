@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import { afterEach, describe, expect, it } from "vitest";
 import { EventEditForm } from "@/components/calendar/EventEditForm";
 import type { Calendar, CalendarEvent } from "@/jmap/types";
-import { dragCreateSeed } from "@/lib/calendar";
+import { dragCreateSeed, LOCAL_ZONE } from "@/lib/calendar";
 import { resetCalendar } from "@/stores/calendar";
 
 function event(partial: Partial<CalendarEvent>): CalendarEvent {
@@ -323,6 +323,14 @@ describe("EventEditForm create mode", () => {
 
     fireEvent.input(screen.getByLabelText("Title"), { target: { value: "Lunch" } });
     expect(create.disabled).toBe(false);
+  });
+
+  it("anchors the default slot to the display zone, not Floating (so expansion can't shift it)", () => {
+    // A plain "+ New event" stamps the current display zone (LOCAL_ZONE by default) instead of leaving
+    // the event floating — a floating create gets re-stamped Etc/UTC by Stalwart's expandRecurrences and
+    // would render at the wrong time in any non-UTC display zone.
+    render(() => <EventEditForm mode="create" calendars={[calendar({})]} onClose={() => {}} />);
+    expect((screen.getByLabelText("Time zone") as HTMLSelectElement).value).toBe(LOCAL_ZONE);
   });
 
   it("omits the calendar picker for a single calendar but shows it for several", () => {
