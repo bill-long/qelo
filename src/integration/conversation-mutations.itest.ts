@@ -116,6 +116,39 @@ describe("whole-conversation mutations", () => {
       }
     });
 
+    it("flips the representative's indicator immediately, before the Thread/get expand resolves", async () => {
+      const src = await freshMailbox("read-instant");
+      const msgs = await createThread(src, 3); // collapses to one not-yet-open row
+      const ids = msgs.map((m) => m.id);
+
+      const [repId] = await settleConversations(src, 1);
+      const others = ids.filter((id) => id !== repId);
+      expect(others.length, "thread has non-representative members").toBeGreaterThan(0);
+      setSelectedMailboxId(src);
+      await openMailbox(src);
+      expect(threadList.ids).toEqual([repId]);
+      expect(emails[repId as Id]?.keywords.$seen, "rep starts unread").not.toBe(true);
+
+      // Kick off the conversation mark-read but do NOT await it: the representative's own optimistic
+      // store write lands synchronously (#14), so the row indicator — which reads emails[rep] —
+      // updates without waiting on the Thread/get expand round trip.
+      const pending = markConversationSeen(repId as Id, true);
+      expect(emails[repId as Id]?.keywords.$seen, "rep flips before the expand resolves").toBe(
+        true,
+      );
+      // …and ONLY the representative — the other thread members aren't even fetched yet, proving this
+      // is the rep-only pre-patch, not the awaited whole-conversation pass.
+      for (const id of others) {
+        expect(emails[id], `member ${id} not yet expanded`).toBeUndefined();
+      }
+
+      // Once it settles, the whole conversation still converged on the server.
+      await pending;
+      for (const id of ids) {
+        expect((await serverEmail(id, "keywords")).$seen, `server $seen for ${id}`).toBe(true);
+      }
+    });
+
     it("expands via the open reading-pane thread without a second fetch (shortcut)", async () => {
       const src = await freshMailbox("read-shortcut");
       const msgs = await createThread(src, 2);
