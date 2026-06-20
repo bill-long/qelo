@@ -3189,8 +3189,9 @@ textarea.event-edit-input {
   color: var(--ink-soft);
 }
 
-/* A reschedule failure surfaces as a dismissible banner over the grid. */
-.week-drag-error {
+/* A reschedule failure surfaces as a dismissible banner over the grid (shared by the week/day + month
+   drag surfaces — view-agnostic, hence the `calendar-` prefix). */
+.calendar-drag-error {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3203,7 +3204,7 @@ textarea.event-edit-input {
   font-size: 0.8rem;
 }
 
-.week-drag-error-dismiss {
+.calendar-drag-error-dismiss {
   flex: none;
   padding: 0.2rem 0.5rem;
   border: 1px solid var(--line);

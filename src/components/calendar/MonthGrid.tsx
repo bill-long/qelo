@@ -282,11 +282,11 @@ export function MonthGrid() {
     <div class="month-grid">
       <Show when={calendarReady()} fallback={<p class="agenda-note">Loading…</p>}>
         <Show when={dragError()}>
-          <div class="week-drag-error" role="alert">
+          <div class="calendar-drag-error" role="alert">
             {dragError()}
             <button
               type="button"
-              class="week-drag-error-dismiss"
+              class="calendar-drag-error-dismiss"
               onClick={() => setDragError(null)}
             >
               Dismiss

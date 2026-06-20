@@ -26,7 +26,7 @@ export function createClickSuppressor(): {
   consume: () => boolean;
 } {
   let suppress = false;
-  let timer = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   onCleanup(() => clearTimeout(timer));
   return {
     reset() {
@@ -35,7 +35,7 @@ export function createClickSuppressor(): {
     arm() {
       suppress = true;
       clearTimeout(timer);
-      timer = window.setTimeout(() => {
+      timer = setTimeout(() => {
         suppress = false;
       }, 0);
     },
