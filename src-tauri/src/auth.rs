@@ -804,11 +804,12 @@ async fn open_sse(
         return Err(OpenError::Unauthorized);
     }
     // Redirects are disabled (see `async_http_client`), so a 3xx isn't followed — refuse it rather
-    // than treat the redirect response as the stream, since the target (incl. an open redirect on an
-    // allowed host) may be off the pinned origin and `error_for_status` does NOT catch a 3xx.
+    // than treat the redirect response as the stream. The `Location` may point off the pinned origin
+    // (incl. an open redirect on an allowed host), which would carry the bearer token away, and
+    // `error_for_status` does NOT catch a 3xx, so reject every redirect categorically.
     if status.is_redirection() {
         return Err(OpenError::Other(format!(
-            "push stream redirected ({status}); refusing to follow off the allowed origin"
+            "push stream redirected ({status}); refusing to follow (redirects are disabled to keep the bearer token on the pinned origin)"
         )));
     }
     resp.error_for_status()
