@@ -214,7 +214,12 @@ export function MonthGrid() {
     setMonthDrag(null);
   }
 
+  // Guards a single commit from a double-fire: the recurring scope dialog stays open while the async
+  // rescheduleEvent is in flight, so a double-click on a scope button would otherwise launch a second
+  // concurrent reschedule for the same occurrence. Only the first runs until it resolves.
+  let rescheduling = false;
   async function dispatch(c: MonthCommitting, mode: RecurrenceEditMode): Promise<void> {
+    if (rescheduling) return;
     setDragError(null);
     // Boundary guard mirroring the dialog's disabled state: a per-occurrence mode needs a recurrenceId,
     // else saveEvent would degrade it to a whole-series "all" — so refuse rather than silently move the
@@ -224,17 +229,22 @@ export function MonthGrid() {
       setDragError("Couldn't identify this occurrence. Try reopening the calendar.");
       return;
     }
-    // A month move keeps the duration (null) — only the start date shifts.
-    const res = await rescheduleEvent(c.occId, c.newStart, null, mode, c.recurrenceId);
-    // Clear the held highlight/dim regardless — on success the reconcile re-rendered the segment in its
-    // new cell; on failure the store reverted to server truth, so dropping the hold shows it unchanged.
-    setCommitting(null);
-    if (!res.ok && res.reason !== "auth") {
-      setDragError(
-        res.reason === "unresolved"
-          ? "Couldn't identify this event's series. Try reopening the calendar."
-          : "Couldn't reschedule the event. Please try again.",
-      );
+    rescheduling = true;
+    try {
+      // A month move keeps the duration (null) — only the start date shifts.
+      const res = await rescheduleEvent(c.occId, c.newStart, null, mode, c.recurrenceId);
+      // Clear the held highlight/dim regardless — on success the reconcile re-rendered the segment in its
+      // new cell; on failure the store reverted to server truth, so dropping the hold shows it unchanged.
+      setCommitting(null);
+      if (!res.ok && res.reason !== "auth") {
+        setDragError(
+          res.reason === "unresolved"
+            ? "Couldn't identify this event's series. Try reopening the calendar."
+            : "Couldn't reschedule the event. Please try again.",
+        );
+      }
+    } finally {
+      rescheduling = false;
     }
   }
 

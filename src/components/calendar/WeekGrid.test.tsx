@@ -288,6 +288,32 @@ describe("WeekGrid", () => {
     expect(recurrenceId).toBe("2026-06-17T09:00:00");
   });
 
+  it("ignores a double-click on a scope button (one reschedule, not two concurrent)", () => {
+    seed(
+      {
+        r: ev({
+          id: "r",
+          title: "Daily sync",
+          start: "2026-06-17T09:00:00",
+          duration: "PT1H",
+          recurrenceId: "2026-06-17T09:00:00",
+          recurrenceRule: { "@type": "RecurrenceRule", frequency: "daily" },
+        }),
+      },
+      ["r"],
+    );
+    render(() => <WeekGrid columns={7} />);
+    const block = screen.getByRole("button", { name: /Daily sync/ });
+    fireEvent.pointerDown(block, { clientX: WED_X, clientY: 540, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(block, { clientX: WED_X, clientY: 660, pointerId: 1 });
+    fireEvent.pointerUp(block, { clientX: WED_X, clientY: 660, pointerId: 1 });
+    const allBtn = screen.getByRole("button", { name: "All events" });
+    // Two rapid clicks while the (mocked, async) reschedule is in flight → only the first dispatches.
+    fireEvent.click(allBtn);
+    fireEvent.click(allBtn);
+    expect(rescheduleMock).toHaveBeenCalledTimes(1);
+  });
+
   it("shows top + bottom resize handles only on a writable single-day block", () => {
     seed({ s: ev({ id: "s", title: "Standup", start: "2026-06-17T09:00:00", duration: "PT1H" }) }, [
       "s",

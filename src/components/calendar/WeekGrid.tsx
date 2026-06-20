@@ -466,7 +466,12 @@ export function WeekGrid(props: { columns: number }) {
     setCreateDrag(null);
   }
 
+  // Guards a single commit from a double-fire: the recurring scope dialog stays open while the async
+  // rescheduleEvent is in flight, so a double-click on a scope button would otherwise launch a second
+  // concurrent reschedule for the same occurrence. Only the first runs until it resolves.
+  let rescheduling = false;
   async function dispatch(c: Committing, mode: RecurrenceEditMode): Promise<void> {
+    if (rescheduling) return;
     setDragError(null);
     // Boundary guard mirroring the dialog's disabled state: a per-occurrence mode needs a recurrenceId,
     // else saveEvent would degrade it to a whole-series "all" — so refuse rather than silently move the
@@ -476,18 +481,23 @@ export function WeekGrid(props: { columns: number }) {
       setDragError("Couldn't identify this occurrence. Try reopening the calendar.");
       return;
     }
-    const res = await rescheduleEvent(c.occId, c.newStart, c.newDurationMs, mode, c.recurrenceId);
-    // Clear the held ghost regardless — on success the reconcile re-rendered the block at its new slot;
-    // on failure the store reverted to server truth, so dropping the ghost shows the unchanged block.
-    setCommitting(null);
-    if (!res.ok && res.reason !== "auth") {
-      // Distinguish an un-resolvable base (the occurrence's series couldn't be identified) from a
-      // generic failure, mirroring the edit/delete flows' specificity.
-      setDragError(
-        res.reason === "unresolved"
-          ? "Couldn't identify this event's series. Try reopening the calendar."
-          : "Couldn't reschedule the event. Please try again.",
-      );
+    rescheduling = true;
+    try {
+      const res = await rescheduleEvent(c.occId, c.newStart, c.newDurationMs, mode, c.recurrenceId);
+      // Clear the held ghost regardless — on success the reconcile re-rendered the block at its new slot;
+      // on failure the store reverted to server truth, so dropping the ghost shows the unchanged block.
+      setCommitting(null);
+      if (!res.ok && res.reason !== "auth") {
+        // Distinguish an un-resolvable base (the occurrence's series couldn't be identified) from a
+        // generic failure, mirroring the edit/delete flows' specificity.
+        setDragError(
+          res.reason === "unresolved"
+            ? "Couldn't identify this event's series. Try reopening the calendar."
+            : "Couldn't reschedule the event. Please try again.",
+        );
+      }
+    } finally {
+      rescheduling = false;
     }
   }
 

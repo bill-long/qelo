@@ -396,6 +396,32 @@ describe("MonthGrid", () => {
       expect(recurrenceId).toBeNull();
     });
 
+    it("ignores a double-click on a scope button (one reschedule, not two concurrent)", () => {
+      seed(
+        {
+          r: ev({
+            id: "r",
+            title: "Daily sync",
+            start: "2026-06-17T09:00:00",
+            duration: "PT1H",
+            recurrenceId: "2026-06-17T09:00:00",
+            recurrenceRule: { "@type": "RecurrenceRule", frequency: "daily" },
+          }),
+        },
+        ["r"],
+      );
+      render(() => <MonthGrid />);
+      const chip = screen.getByRole("button", { name: /Daily sync/ });
+      fireEvent.pointerDown(chip, { ...JUN17, pointerId: 1, button: 0 });
+      fireEvent.pointerMove(chip, { ...JUN20, pointerId: 1 });
+      fireEvent.pointerUp(chip, { ...JUN20, pointerId: 1 });
+      const allBtn = screen.getByRole("button", { name: "All events" });
+      // Two rapid clicks while the (mocked, async) reschedule is in flight → only the first dispatches.
+      fireEvent.click(allBtn);
+      fireEvent.click(allBtn);
+      expect(rescheduleMock).toHaveBeenCalledTimes(1);
+    });
+
     it("Escape cancels a pending recurring scope choice (no write)", () => {
       seed(
         {
