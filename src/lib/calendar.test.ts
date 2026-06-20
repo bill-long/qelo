@@ -9,6 +9,7 @@ import {
   createSeedDate,
   dateTimeInput,
   dayKey,
+  dayKeyDelta,
   defaultWritableCalendarId,
   displayEndParts,
   displayStartParts,
@@ -32,7 +33,9 @@ import {
   LOCAL_ZONE,
   layoutAllDayLane,
   layoutMonth,
+  monthCellKey,
   monthGridWeeks,
+  monthMoveStart,
   nowIndicatorOffset,
   packDayColumns,
   parseDateParts,
@@ -1629,6 +1632,98 @@ describe("resizeGeometry (drag-edge resize geometry)", () => {
     expect(r.topMin % 15).toBe(0); // the moved (top) edge is grid-aligned
     expect(r.topMin).toBe(585);
     expect(r.topMin + r.durationMin).toBe(600.5); // the fixed bottom is left exactly where it is
+  });
+});
+
+describe("monthCellKey (month-grid pointer → cell day-key)", () => {
+  // A 700×600 grid: 7 columns (100px each), N rows (200px each for 3 weeks). Sun-start weeks.
+  const weeks = monthGridWeeks(new Date(2026, 5, 1), new Date(2026, 5, 1), "UTC"); // June 2026
+  const rect = { left: 0, top: 0, width: 700, height: weeks.length * 200 };
+
+  it("maps a pointer to the cell under it (row from y, column from x)", () => {
+    // The first cell of the grid is its top-left; col 0, row 0.
+    const topLeft = monthCellKey(50, 50, rect, weeks);
+    expect(topLeft).toBe(weeks[0]?.[0]?.key);
+    // Column 3 (x=350), row 1 (y=250) → weeks[1][3].
+    expect(monthCellKey(350, 250, rect, weeks)).toBe(weeks[1]?.[3]?.key);
+  });
+
+  it("clamps a pointer past an edge to the nearest cell (never loses the target)", () => {
+    // Past the right/bottom edges → the last column / last row, not null.
+    expect(monthCellKey(9999, 9999, rect, weeks)).toBe(weeks[weeks.length - 1]?.[6]?.key);
+    // Above/left of the grid → the first cell.
+    expect(monthCellKey(-50, -50, rect, weeks)).toBe(weeks[0]?.[0]?.key);
+  });
+
+  it("returns null for an empty grid", () => {
+    expect(monthCellKey(50, 50, rect, [])).toBeNull();
+  });
+});
+
+describe("dayKeyDelta (whole-day difference between two day-keys)", () => {
+  it("counts the signed whole-day difference", () => {
+    expect(dayKeyDelta("2026-06-17", "2026-06-20")).toBe(3);
+    expect(dayKeyDelta("2026-06-20", "2026-06-17")).toBe(-3);
+    expect(dayKeyDelta("2026-06-17", "2026-06-17")).toBe(0);
+  });
+
+  it("spans month and year boundaries", () => {
+    expect(dayKeyDelta("2026-06-30", "2026-07-01")).toBe(1);
+    expect(dayKeyDelta("2026-12-31", "2027-01-01")).toBe(1);
+  });
+
+  it("returns null for a malformed key", () => {
+    expect(dayKeyDelta("nope", "2026-06-17")).toBeNull();
+    expect(dayKeyDelta("2026-06-17", "")).toBeNull();
+  });
+});
+
+describe("monthMoveStart (month drag-to-move → shifted SOURCE start)", () => {
+  it("shifts a timed event's source date by the day delta, keeping the time-of-day", () => {
+    const e = event({
+      start: "2026-06-17T09:30:00",
+      timeZone: "America/New_York",
+      duration: "PT1H",
+    });
+    expect(monthMoveStart(e, 3)).toEqual({
+      year: 2026,
+      month: 6,
+      day: 20,
+      hour: 9,
+      minute: 30,
+      second: 0,
+    });
+  });
+
+  it("shifts backward and across a month boundary", () => {
+    const e = event({ start: "2026-07-02T14:00:00", duration: "PT1H" });
+    expect(monthMoveStart(e, -3)).toMatchObject({ year: 2026, month: 6, day: 29, hour: 14 });
+  });
+
+  it("keeps an all-day event's T00:00:00", () => {
+    const e = event({ start: "2026-06-10T00:00:00", duration: "P1D", showWithoutTime: true });
+    expect(monthMoveStart(e, 2)).toMatchObject({
+      month: 6,
+      day: 12,
+      hour: 0,
+      minute: 0,
+      second: 0,
+    });
+  });
+
+  it("yields the unchanged start on a zero delta (the caller treats 0 as a no-op before calling)", () => {
+    const e = event({ start: "2026-06-17T09:00:00" });
+    expect(monthMoveStart(e, 0)).toMatchObject({
+      year: 2026,
+      month: 6,
+      day: 17,
+      hour: 9,
+      minute: 0,
+    });
+  });
+
+  it("returns null (couldn't compute) for an unparseable start", () => {
+    expect(monthMoveStart(event({ start: "nope" }), 1)).toBeNull();
   });
 });
 

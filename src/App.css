@@ -2813,6 +2813,23 @@ textarea.event-edit-input {
   outline-offset: 1px;
 }
 
+/* A pointer-drag on a chip/bar (drag-to-move) must not also pan/scroll the surface. */
+.month-event {
+  touch-action: none;
+}
+
+/* The dragged event's segment(s) dim while the drop is previewed / the write is in flight (the target
+   cell highlights instead) — the month analog of .week-event.is-dragging. */
+.month-event.is-dragging {
+  opacity: 0.35;
+}
+
+/* The single shared drop-target highlight under the dragged chip/bar (drag-to-move). */
+.month-cell.is-drop-target {
+  background: var(--selection);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
 /* Week + day time-grid. One scroll container holds a sticky header (day labels + all-day lane) over the
    hour-axis canvas, so the header and the day columns share the same horizontal track widths and
    scrollbar — they can't drift. --week-axis-w is the left hour-axis gutter; --hour-h sizes each hour
