@@ -28,8 +28,10 @@ import { calendarEvents, calendars, deleteEvent, resolveBaseEvent } from "@/stor
 import { notify } from "@/stores/toasts";
 import {
   calendarDisplayZone,
+  createSeed,
   creatingEvent,
   selectedEventId,
+  setCreateSeed,
   setCreatingEvent,
   setSelectedEventId,
 } from "@/stores/ui";
@@ -97,16 +99,21 @@ export function EventView() {
       // still wins (same ordering as ContactView).
       setDeleteError(null);
       setCreatingEvent(false);
+      setCreateSeed(null);
       // Also clear the in-flight flag: a resolve for the PREVIOUS selection may still be awaiting (its
       // own continuation aborts via the selectedEventId guard), but leaving `resolving` true would
       // wrongly disable + "Opening…" the newly selected event's Edit button until that old call returns.
       setResolving(false);
     }),
   );
-  // Clear the create form when the Calendar surface unmounts (the view switch swaps it out when
-  // activeView leaves "calendar"), so a half-filled create can't silently resurface on return —
-  // `creatingEvent` is global UI state, unlike the component-local `editing`. Mirrors ContactView.
-  onCleanup(() => setCreatingEvent(false));
+  // Clear the create form (and any drag-to-create seed) when the Calendar surface unmounts (the view
+  // switch swaps it out when activeView leaves "calendar"), so a half-filled create can't silently
+  // resurface on return — `creatingEvent`/`createSeed` are global UI state, unlike the component-local
+  // `editing`. Mirrors ContactView.
+  onCleanup(() => {
+    setCreatingEvent(false);
+    setCreateSeed(null);
+  });
 
   async function handleEdit() {
     const id = selectedEventId();
@@ -201,6 +208,7 @@ export function EventView() {
     // paths) — close() is the one place that closes, paired with the cancel handler's preventDefault.
     if (dialogRef?.open) dialogRef.close();
     setCreatingEvent(false);
+    setCreateSeed(null);
     setSelectedEventId(null);
   }
   // Promote to the modal top layer when it opens, but only if it isn't ALREADY open: this effect
@@ -278,7 +286,11 @@ export function EventView() {
             <EventEditForm
               mode="create"
               calendars={writableCalendars(calendars)}
-              onClose={() => setCreatingEvent(false)}
+              seed={createSeed()}
+              onClose={() => {
+                setCreatingEvent(false);
+                setCreateSeed(null);
+              }}
             />
           </Show>
         </div>

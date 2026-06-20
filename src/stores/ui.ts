@@ -1,5 +1,5 @@
 import { createSignal } from "solid-js";
-import { type CalendarViewMode, LOCAL_ZONE, todayAnchor } from "@/lib/calendar";
+import { type CalendarViewMode, type EditableEvent, LOCAL_ZONE, todayAnchor } from "@/lib/calendar";
 
 /** Which top-level surface the shell shows. Mail, Contacts, and Calendar are all live; the tab for
  * each is capability-gated in ViewSwitch. */
@@ -50,3 +50,12 @@ export const [creatingContact, setCreatingContact] = createSignal(false);
 // (EventView), so the form can't outlive its context. Distinct from EventView's per-event `editing`
 // mode, which is component-local. Mirrors `creatingContact`.
 export const [creatingEvent, setCreatingEvent] = createSignal(false);
+
+// A working-copy seed for the create form, set by drag-to-create on the week/day time grid (WeekGrid):
+// the swept time range as a floating EditableEvent (lib `dragCreateSeed`). When present, the freshly
+// mounted create form uses it instead of the default next-hour slot; null = the "+ New event" default.
+// Read once when the create form mounts (it remounts on each open), so it must be SET before
+// `creatingEvent` flips true and CLEARED alongside it (NewEventButton clears it for a plain create;
+// EventView clears it on close / selection change / unmount), or a stale swept range would leak into a
+// later plain create. resetStores resets it for tests.
+export const [createSeed, setCreateSeed] = createSignal<EditableEvent | null>(null);

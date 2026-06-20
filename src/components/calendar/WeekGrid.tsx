@@ -5,6 +5,7 @@ import {
   type DateParts,
   type DayPlacement,
   dayKey,
+  dragCreateSeed,
   dropToSourceStart,
   eventAccessibleName,
   eventDayPlacement,
@@ -28,6 +29,7 @@ import {
   resizeGeometry,
   snapMinutes,
   weekDays,
+  writableCalendars,
 } from "@/lib/calendar";
 import {
   calendarReady,
@@ -39,6 +41,8 @@ import {
   calendarAnchor,
   calendarDisplayZone,
   selectedEventId,
+  setCreateSeed,
+  setCreatingEvent,
   setSelectedEventId,
 } from "@/stores/ui";
 
@@ -129,6 +133,21 @@ interface Committing {
   recurrenceId: string | null;
 }
 
+// An in-progress drag-to-CREATE sweep on the EMPTY grid canvas (distinct from DragState, which moves/
+// resizes an existing block): a press on empty space sweeps out a time range, and pointerup opens the
+// create form seeded with it. The day (`dayKey`) is fixed at the press — only the time range sweeps
+// vertically. `moved` flips past the threshold (a press that never moves is a tap → a default slot).
+interface CreateDragState {
+  pointerId: number;
+  dayKey: string;
+  startX: number;
+  startY: number;
+  anchorMin: number; // the snapped minute where the sweep began (a tap collapses both edges to this)
+  ghostTopMin: number;
+  ghostBottomMin: number;
+  moved: boolean;
+}
+
 /**
  * The week/day time-grid view: an hour axis with `columns` day columns (7 for week, 1 for day — Day is
  * just this component with a single column), an all-day lane of clipped bars across the top, timed
@@ -137,7 +156,9 @@ interface Committing {
  * calendar load + window navigation are owned by CalendarMain; this is purely the time-grid render of
  * the current window. Clicking a block selects the event → the slide-over detail; DRAGGING a block
  * reschedules it (pointer engine below) — a move writes the event's SOURCE start, converted back from
- * the display position (dropToSourceStart), with a scope chooser for a recurring series.
+ * the display position (dropToSourceStart), with a scope chooser for a recurring series. DRAGGING on the
+ * empty canvas sweeps out a new timed event and opens the create form seeded with that range (anchored to
+ * the display zone it was swept in, so it round-trips to the same on-screen time — dragCreateSeed).
  */
 export function WeekGrid(props: { columns: number }) {
   const days = createMemo(() => weekDays(calendarAnchor(), props.columns));
@@ -157,15 +178,31 @@ export function WeekGrid(props: { columns: number }) {
   // --- Drag-to-reschedule (pointer engine) ---------------------------------
   const [drag, setDrag] = createSignal<DragState | null>(null);
   const [committing, setCommitting] = createSignal<Committing | null>(null);
+  // A drag-to-create sweep on the empty canvas (parallel to `drag` — a press is either on a block, which
+  // moves/resizes, or on empty space, which creates; never both).
+  const [createDrag, setCreateDrag] = createSignal<CreateDragState | null>(null);
   const [dragError, setDragError] = createSignal<string | null>(null);
   let colsRef: HTMLDivElement | undefined;
-  // Set true the instant a drag commits, so the trailing native `click` on the dragged block is
-  // swallowed (a move must not also select). Read+reset by the block's onClick; also auto-cleared on the
-  // next macrotask after a commit (see endDrag) so a missing trailing click can't leak it into a later
-  // keyboard activation.
+  // Whether the account can create at all (≥1 writable calendar) — the same gate as the "+ New event"
+  // affordance; without it a drag-to-create would pop a form that can't be saved.
+  const canCreate = createMemo(() => writableCalendars(calendars).length > 0);
+  // Set true the instant a gesture commits, so the trailing native `click` on the block is swallowed (a
+  // move/resize/create must not also select). Read+reset by the block's onClick.
   let suppressClick = false;
   let suppressClickTimer = 0;
   onCleanup(() => clearTimeout(suppressClickTimer));
+  // Arm the click-suppression for the trailing click of a committed gesture, AND auto-clear it on the
+  // next macrotask: the synchronous trailing `click` (right after pointerup) still sees it set and is
+  // swallowed, but if NO trailing click fires (the pointer released off any block), the flag can't linger
+  // and swallow a later KEYBOARD activation (Enter/Space → click, which never runs through pointerdown to
+  // reset it). One place owns this subtle lifecycle so every commit path (move/resize/create) shares it.
+  function suppressNextClick(): void {
+    suppressClick = true;
+    clearTimeout(suppressClickTimer);
+    suppressClickTimer = window.setTimeout(() => {
+      suppressClick = false;
+    }, 0);
+  }
 
   // The ghost (a translucent preview block) follows the pointer during a drag and stays pinned at the
   // drop while the write is in flight. One source for both phases so the rendering can't diverge.
@@ -188,16 +225,29 @@ export function WeekGrid(props: { columns: number }) {
         durationMin: c.ghostDurationMin,
       };
     }
+    // A drag-to-create sweep shows a titleless preview of the range it will seed the new event with.
+    const cd = createDrag();
+    if (cd?.moved) {
+      return {
+        title: "New event",
+        dayKey: cd.dayKey,
+        topMin: cd.ghostTopMin,
+        durationMin: cd.ghostBottomMin - cd.ghostTopMin,
+      };
+    }
     return null;
   });
   // The occurrence id currently being dragged/committed — its real block dims so the ghost reads as the
-  // live preview.
+  // live preview. (A create sweep has no source block, so nothing dims.)
   const draggingId = createMemo(() => drag()?.occId ?? committing()?.occId ?? null);
   // Stable booleans so the window-listener effects below re-run ONLY on an inactive↔active transition,
-  // not on every pointermove (each move replaces the `drag` object; a createMemo only notifies when its
-  // boolean VALUE changes, so the effects don't thrash add/removeEventListener during a drag).
-  const isDragging = createMemo(() => drag() !== null);
-  const gestureActive = createMemo(() => drag() !== null || committing() !== null);
+  // not on every pointermove (each move replaces the `drag`/`createDrag` object; a createMemo only
+  // notifies when its boolean VALUE changes, so the effects don't thrash add/removeEventListener during a
+  // gesture). A move/resize OR a create sweep counts as dragging.
+  const isDragging = createMemo(() => drag() !== null || createDrag() !== null);
+  const gestureActive = createMemo(
+    () => drag() !== null || committing() !== null || createDrag() !== null,
+  );
 
   function startDrag(
     event: CalendarEvent,
@@ -213,8 +263,16 @@ export function WeekGrid(props: { columns: number }) {
     suppressClick = false;
     // Only a primary-button press on a writable event starts a gesture; everything else stays a click.
     // Also refuse while a previous drop is still committing — its ghost is pinned at the dropped slot
-    // (and a recurring scope chooser may be open); a new gesture would yank that ghost away mid-write.
-    if (e.button !== 0 || !colsRef || committing() || !eventMayWrite(event, calendars)) return;
+    // (and a recurring scope chooser may be open); a new gesture would yank that ghost away mid-write — or
+    // while a create sweep is live (a multitouch second press must not run both engines at once).
+    if (
+      e.button !== 0 ||
+      !colsRef ||
+      committing() ||
+      createDrag() ||
+      !eventMayWrite(event, calendars)
+    )
+      return;
     const rect = colsRef.getBoundingClientRect();
     const { colIndex, minutes } = pointerToGrid(e.clientX, e.clientY, rect, props.columns);
     const grabbedDay = days()[colIndex] ?? dayKey(event, calendarDisplayZone());
@@ -328,15 +386,7 @@ export function WeekGrid(props: { columns: number }) {
     const startUnchanged = sameWhen(newStart, currentStart);
     const endUnchanged = newEnd === null || sameWhen(newEnd, currentEnd);
     if (startUnchanged && endUnchanged) return;
-    suppressClick = true;
-    // Auto-clear on the next macrotask: the synchronous trailing `click` (which fires right after this
-    // pointerup) still sees it set and is swallowed, but if NO trailing click fires (pointer released off
-    // the block), the flag can't linger and swallow a later KEYBOARD activation (Enter/Space → click,
-    // which never goes through pointerdown to reset it). clearTimeout on unmount avoids a late write.
-    clearTimeout(suppressClickTimer);
-    suppressClickTimer = window.setTimeout(() => {
-      suppressClick = false;
-    }, 0);
+    suppressNextClick();
     const c: Committing = {
       occId: d.occId,
       event: d.event,
@@ -358,6 +408,74 @@ export function WeekGrid(props: { columns: number }) {
     const d = drag();
     if (e && d && e.pointerId !== d.pointerId) return;
     setDrag(null);
+  }
+
+  // --- Drag-to-CREATE (empty-canvas sweep) ---------------------------------
+  // Bound on the columns container; a press on a block/handle stopPropagation()s (see TimedBlock), so it
+  // never reaches here — only a press on EMPTY grid canvas starts a create.
+  function startCreate(e: PointerEvent): void {
+    // Primary button only, no other gesture in flight, and only when something can actually be created
+    // into (≥1 writable calendar — else the form would open unsavable). Everything else is ignored.
+    if (e.button !== 0 || !colsRef || drag() || createDrag() || committing() || !canCreate())
+      return;
+    const rect = colsRef.getBoundingClientRect();
+    const { colIndex, minutes } = pointerToGrid(e.clientX, e.clientY, rect, props.columns);
+    const day = days()[colIndex];
+    if (!day) return;
+    const anchor = snapMinutes(minutes, SNAP_MINUTES);
+    setCreateDrag({
+      pointerId: e.pointerId,
+      dayKey: day,
+      startX: e.clientX,
+      startY: e.clientY,
+      anchorMin: anchor,
+      ghostTopMin: anchor,
+      ghostBottomMin: anchor,
+      moved: false,
+    });
+    colsRef.setPointerCapture(e.pointerId);
+  }
+
+  function moveCreate(e: PointerEvent): void {
+    const cd = createDrag();
+    if (!cd || e.pointerId !== cd.pointerId || !colsRef) return;
+    if (!cd.moved && Math.hypot(e.clientX - cd.startX, e.clientY - cd.startY) < DRAG_THRESHOLD_PX)
+      return;
+    const rect = colsRef.getBoundingClientRect();
+    const { minutes } = pointerToGrid(e.clientX, e.clientY, rect, props.columns);
+    const cur = snapMinutes(minutes, SNAP_MINUTES);
+    // The day column is fixed at the press; only the time range sweeps (up or down from the anchor).
+    const top = Math.max(0, Math.min(cd.anchorMin, cur));
+    const bottom = Math.min(MINUTES_PER_DAY, Math.max(cd.anchorMin, cur));
+    setCreateDrag({ ...cd, moved: true, ghostTopMin: top, ghostBottomMin: bottom });
+  }
+
+  function endCreate(e: PointerEvent): void {
+    const cd = createDrag();
+    if (!cd || e.pointerId !== cd.pointerId) return;
+    setCreateDrag(null);
+    // Open the create form seeded with the swept range, anchored to the current display zone (so the new
+    // event round-trips to the swept on-screen time). A tap, where both edges sit on the anchor, becomes
+    // a sensible default slot inside dragCreateSeed. The day is a rendered column key, so the seed is
+    // non-null; the guard covers only the impossible malformed case.
+    const seed = dragCreateSeed(
+      cd.dayKey,
+      cd.ghostTopMin,
+      cd.ghostBottomMin,
+      calendarDisplayZone(),
+    );
+    if (!seed) return;
+    // Swallow the trailing click the same way a move/resize commit does: if the sweep happened to end over
+    // an existing block, its click must NOT also select that block (the create form is opening).
+    suppressNextClick();
+    setCreateSeed(seed);
+    setCreatingEvent(true);
+  }
+
+  function cancelCreate(e?: PointerEvent): void {
+    const cd = createDrag();
+    if (e && cd && e.pointerId !== cd.pointerId) return;
+    setCreateDrag(null);
   }
 
   async function dispatch(c: Committing, mode: RecurrenceEditMode): Promise<void> {
@@ -392,9 +510,20 @@ export function WeekGrid(props: { columns: number }) {
   // (an OS/gesture interruption) is handled alongside up so the drag can't stick open.
   createEffect(() => {
     if (!isDragging()) return;
-    const move = (e: PointerEvent) => moveDrag(e);
-    const up = (e: PointerEvent) => endDrag(e);
-    const cancel = (e: PointerEvent) => cancelDrag(e);
+    // One gesture is active at a time (block move/resize OR an empty-canvas create sweep); each handler
+    // no-ops when its own signal is null, so dispatching to both is safe and keeps one set of listeners.
+    const move = (e: PointerEvent) => {
+      moveDrag(e);
+      moveCreate(e);
+    };
+    const up = (e: PointerEvent) => {
+      endDrag(e);
+      endCreate(e);
+    };
+    const cancel = (e: PointerEvent) => {
+      cancelDrag(e);
+      cancelCreate(e);
+    };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
     window.addEventListener("pointercancel", cancel);
@@ -412,6 +541,7 @@ export function WeekGrid(props: { columns: number }) {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       cancelDrag();
+      cancelCreate();
       setCommitting(null);
     };
     window.addEventListener("keydown", onKey);
@@ -488,7 +618,12 @@ export function WeekGrid(props: { columns: number }) {
                 )}
               </For>
             </div>
-            <div class="week-cols" ref={colsRef} style={{ "grid-template-columns": cols() }}>
+            <div
+              class="week-cols"
+              ref={colsRef}
+              style={{ "grid-template-columns": cols() }}
+              onPointerDown={startCreate}
+            >
               <For each={days()}>
                 {(key) => (
                   <WeekDayColumn
@@ -736,9 +871,12 @@ function TimedBlock(props: {
       aria-current={isSelected() ? "true" : undefined}
       aria-label={name()}
       title={name()}
-      onPointerDown={(e) =>
-        props.onPointerDown(event(), event().id, e, "move", props.block.top, props.block.height)
-      }
+      onPointerDown={(e) => {
+        // Stop a block press from bubbling to the canvas's create handler — a press on a block moves it,
+        // a press on empty canvas creates (the handles already stopPropagation for the same reason).
+        e.stopPropagation();
+        props.onPointerDown(event(), event().id, e, "move", props.block.top, props.block.height);
+      }}
       onClick={() => {
         // Swallow the click that trails a committed gesture (a move/resize must not also select); a plain
         // click (no drag) selects as before.

@@ -10,6 +10,7 @@ import type { Id } from "@/jmap/types";
 import {
   dayKey,
   displayStartParts,
+  dragCreateSeed,
   type EditableEvent,
   emptyEditableEvent,
   emptyRecurrence,
@@ -389,6 +390,35 @@ describe("calendar (live Stalwart)", () => {
     // Recurrence/participants weren't sent (not exposed on create) → absent.
     expect(created?.recurrenceRule).toBeUndefined();
     expect(created?.participants).toBeUndefined();
+  });
+
+  it("creates a zone-anchored event from a drag-to-create swept range (dragCreateSeed)", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    const title = `Swept ${tag}`;
+    // The swept display-zone day + range a WeekGrid drag-to-create produces: 5 days out (in the agenda
+    // window), 09:00–10:00, anchored to the display zone it was swept in. (NOT floating: Stalwart's
+    // expandRecurrences stamps a floating event with Etc/UTC and would shift the swept time in a non-UTC
+    // zone — see dragCreateSeed; this test pins the corrected, zone-anchored behavior.)
+    const day = localDateTime(5).slice(0, 10); // "YYYY-MM-DD"
+    const seed = dragCreateSeed(day, 9 * 60, 10 * 60, "America/New_York");
+    expect(seed).not.toBeNull();
+    if (!seed) throw new Error("seed build failed");
+    expect(seed.timeZone).toBe("America/New_York");
+    expect(seed.start).toBe(`${day}T09:00`);
+
+    const result = await createEvent({ ...seed, title }, { [calId]: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("create failed");
+    createdIds.push(result.id);
+
+    await loadUntil(() => countByTitle(title) >= 1);
+    expect(countByTitle(title)).toBe(1);
+    const created = Object.values(calendarEvents).find((e) => e?.title === title);
+    // The event round-trips with the swept wall-clock + its zone — so it shows where it was drawn.
+    expect(created?.timeZone).toBe("America/New_York");
+    expect(created?.start?.slice(0, 16)).toBe(`${day}T09:00`);
+    expect(created?.duration).toBe("PT1H");
   });
 
   it("creates a recurring event from the recurrence editor's working copy", async () => {

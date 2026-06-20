@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import { afterEach, describe, expect, it } from "vitest";
 import { EventEditForm } from "@/components/calendar/EventEditForm";
 import type { Calendar, CalendarEvent } from "@/jmap/types";
+import { dragCreateSeed } from "@/lib/calendar";
 import { resetCalendar } from "@/stores/calendar";
 
 function event(partial: Partial<CalendarEvent>): CalendarEvent {
@@ -67,6 +68,26 @@ describe("EventEditForm", () => {
     );
     expect((screen.getByLabelText("Status") as HTMLSelectElement).value).toBe("confirmed");
     expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+  });
+
+  it("pre-fills the create form with a drag-to-create swept range (zone-anchored, no title)", () => {
+    // The swept range a WeekGrid drag-to-create produces (09:00–11:00 on Jul 6, anchored to the display
+    // zone it was swept in).
+    const seed = dragCreateSeed("2026-07-06", 9 * 60, 11 * 60, "America/New_York");
+    render(() => (
+      <EventEditForm mode="create" calendars={[calendar({})]} seed={seed} onClose={() => {}} />
+    ));
+    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("Start") as HTMLInputElement).value).toBe("2026-07-06T09:00");
+    expect((screen.getByLabelText("End") as HTMLInputElement).value).toBe("2026-07-06T11:00");
+    expect((screen.getByLabelText("Time zone") as HTMLSelectElement).value).toBe(
+      "America/New_York",
+    );
+    // It's a create form (Create button) and Create is disabled until a title is entered.
+    const create = screen.getByRole("button", { name: "Create" }) as HTMLButtonElement;
+    expect(create.disabled).toBe(true);
+    fireEvent.input(screen.getByLabelText("Title"), { target: { value: "Lunch" } });
+    expect(create.disabled).toBe(false);
   });
 
   it("hides the time-zone picker and uses date inputs when all-day is toggled on", () => {

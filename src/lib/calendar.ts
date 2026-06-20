@@ -1196,6 +1196,30 @@ export function eventAccessibleName(
 const DAY_KEY = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 /**
+ * The civil wall-clock {@link DateParts} at `minutesFromMidnight` on the "YYYY-MM-DD" day `dayKey`, or
+ * null when `dayKey` is malformed. UTC arithmetic so minutes at/past 24:00 roll the date forward (a
+ * sweep ending at the day's bottom). Seconds are zero (the grid snaps to whole minutes). The shared
+ * grid-position→parts step for BOTH the face-value drop ({@link dropToSourceStart}) and the drag-create
+ * seed ({@link dragCreateSeed}) — one spelling of "this grid slot's wall-clock".
+ */
+function gridParts(dayKey: string, minutesFromMidnight: number): DateParts | null {
+  const m = DAY_KEY.exec(dayKey);
+  if (!m) return null;
+  const d = new Date(
+    Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) +
+      Math.round(minutesFromMidnight) * 60_000,
+  );
+  return {
+    year: d.getUTCFullYear(),
+    month: d.getUTCMonth() + 1,
+    day: d.getUTCDate(),
+    hour: d.getUTCHours(),
+    minute: d.getUTCMinutes(),
+    second: 0,
+  };
+}
+
+/**
  * The SOURCE-zone wall-clock {@link DateParts} for placing a timed event's start at
  * `minutesFromMidnight` on the display-zone civil day `dayKey`, or null when `dayKey` is malformed.
  *  - Converting event (tz-bearing; the read projected `utcStart` into `displayZone`): invert it —
@@ -1218,17 +1242,9 @@ export function dropToSourceStart(
   const day = Number(m[3]);
   const minutes = Math.round(minutesFromMidnight);
   if (!convertsToViewerZone(event)) {
-    // Face value: the dropped wall-clock IS the source start. UTC arithmetic so a drop past midnight
-    // rolls the date correctly; the components are read back as the literal wall-clock.
-    const d = new Date(Date.UTC(year, month - 1, day) + minutes * 60_000);
-    return {
-      year: d.getUTCFullYear(),
-      month: d.getUTCMonth() + 1,
-      day: d.getUTCDate(),
-      hour: d.getUTCHours(),
-      minute: d.getUTCMinutes(),
-      second: 0,
-    };
+    // Face value: the dropped wall-clock IS the source start (no zone round-trip). gridParts rolls the
+    // date if the drop runs past midnight; the components are the literal wall-clock to write.
+    return gridParts(dayKey, minutes);
   }
   // FAIL CLOSED on an invalid source zone: partsInZone would silently project in the browser-local zone
   // (zoneFormatter's fallback), computing a WRONG source wall-clock that a drag would then persist. The
@@ -1315,6 +1331,51 @@ export function pointerToGrid(
   const colW = rect.width / columns;
   const colIndex = Math.max(0, Math.min(columns - 1, Math.floor((clientX - rect.left) / colW)));
   return { colIndex, minutes };
+}
+
+/**
+ * Build the create form's working copy ({@link EditableEvent}) for a time range swept out on the empty
+ * week/day grid (drag-to-create). `startMin`/`endMin` are minutes-from-midnight on the display-zone civil
+ * day `dayKey` (the swept column) — already snapped to the grid by the caller; this orders them, clamps to
+ * the day, and on a zero-length sweep / tap (the two edges collapse to one grid minute) seeds a
+ * `defaultMin` slot at that point instead (kept wholly within the day).
+ *
+ * The new event is ANCHORED TO `displayZone` (the zone it was swept in): `start`/`end` are the swept
+ * DISPLAY-zone wall-clock and `timeZone` is `displayZone`, so the two are self-consistent and the event
+ * round-trips to the SAME on-screen time the user swept. A brand-new event has no prior source zone, so
+ * the only frame that makes sense is the one it was drawn in — there's no display→source inversion to do
+ * (unlike a MOVE/RESIZE — {@link dropToSourceStart}); the swept wall-clock is already the source value in
+ * `displayZone`. It is deliberately NOT left floating: Stalwart's `expandRecurrences` query (which the
+ * agenda + week/day grid use) stamps a floating event with `Etc/UTC` and computes `utcStart` from the
+ * wall-clock-as-UTC (probed live), so a floating create would then {@link convertsToViewerZone} and SHIFT
+ * the swept time in any non-UTC display zone. The user can change the zone in the form (the wall-clock
+ * stays). Returns null when `dayKey` is malformed. Pure.
+ */
+export function dragCreateSeed(
+  dayKey: string,
+  startMin: number,
+  endMin: number,
+  displayZone: string = LOCAL_ZONE,
+  defaultMin: number = 60,
+): EditableEvent | null {
+  let lo = Math.max(0, Math.min(MINUTES_PER_DAY, Math.min(startMin, endMin)));
+  let hi = Math.max(0, Math.min(MINUTES_PER_DAY, Math.max(startMin, endMin)));
+  if (hi - lo < 1) {
+    // A tap (or a sweep that snapped back to a single grid line): default to a sensible-length slot at
+    // the tapped point, shifted up if needed so the whole slot stays inside the day.
+    lo = Math.max(0, Math.min(lo, MINUTES_PER_DAY - defaultMin));
+    hi = lo + defaultMin;
+  }
+  const s = gridParts(dayKey, lo);
+  const e = gridParts(dayKey, hi);
+  if (!s || !e) return null;
+  return {
+    ...emptyEditableEvent(),
+    allDay: false,
+    timeZone: displayZone,
+    start: dateTimeInput(s),
+    end: dateTimeInput(e),
+  };
 }
 
 const FREQ_LABEL: Record<string, string> = {

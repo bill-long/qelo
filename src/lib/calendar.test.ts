@@ -12,6 +12,7 @@ import {
   defaultWritableCalendarId,
   displayEndParts,
   displayStartParts,
+  dragCreateSeed,
   dropToSourceStart,
   type EditableEvent,
   editableHasContent,
@@ -1445,6 +1446,66 @@ describe("dropToSourceStart (drag reschedule inverse of placement)", () => {
       utcEnd: "2026-07-02T03:00:00Z",
     });
     expect(dropToSourceStart(badZone, "2026-07-01", 22 * 60, WEST)).toBeNull();
+  });
+});
+
+describe("dragCreateSeed (drag-to-create on the empty grid → create-form seed)", () => {
+  const NY = "America/New_York";
+
+  it("anchors the new event to the display zone at the swept wall-clock (not floating)", () => {
+    // Sweep 09:00 (540) → 10:30 (630) on Jul 1, viewed in NY. The new event carries timeZone=NY and the
+    // swept display wall-clock as its start/end — NOT floating (a floating create would expand to Etc/UTC
+    // server-side and shift in a non-UTC zone — see the helper doc).
+    const seed = dragCreateSeed("2026-07-01", 540, 630, NY);
+    expect(seed).not.toBeNull();
+    expect(seed?.timeZone).toBe(NY);
+    expect(seed?.allDay).toBe(false);
+    expect(seed?.title).toBe("");
+    expect(seed?.start).toBe("2026-07-01T09:00");
+    expect(seed?.end).toBe("2026-07-01T10:30");
+  });
+
+  it("orders the edges so an upward sweep (end above start) still yields start < end", () => {
+    // Swept from 10:00 (600) UP to 08:00 (480): the seed normalizes to 08:00–10:00.
+    const seed = dragCreateSeed("2026-07-01", 600, 480, NY);
+    expect(seed?.start).toBe("2026-07-01T08:00");
+    expect(seed?.end).toBe("2026-07-01T10:00");
+  });
+
+  it("defaults a zero-length tap to a sensible-length slot at the tapped time", () => {
+    // Both edges collapse to 09:00 (a tap / a sweep snapped back to one grid line) → a default 60-min slot.
+    const seed = dragCreateSeed("2026-07-01", 540, 540, NY);
+    expect(seed?.start).toBe("2026-07-01T09:00");
+    expect(seed?.end).toBe("2026-07-01T10:00");
+  });
+
+  it("honors a custom default slot length for a tap", () => {
+    const seed = dragCreateSeed("2026-07-01", 540, 540, NY, 30);
+    expect(seed?.start).toBe("2026-07-01T09:00");
+    expect(seed?.end).toBe("2026-07-01T09:30");
+  });
+
+  it("keeps a tap's default slot inside the day (shifts it up near midnight)", () => {
+    // Tap at 23:30 (1410): a 60-min default would spill past midnight, so the slot shifts to 23:00–24:00.
+    const seed = dragCreateSeed("2026-07-01", 1410, 1410, NY);
+    expect(seed?.start).toBe("2026-07-01T23:00");
+    // 1440 minutes = the next day's 00:00 (gridParts rolls the date).
+    expect(seed?.end).toBe("2026-07-02T00:00");
+  });
+
+  it("clamps a sweep to the day's bounds", () => {
+    // A sweep beyond the day's extents (negative / past 24:00) clamps to [00:00, 24:00].
+    const seed = dragCreateSeed("2026-07-01", -120, 2000, NY);
+    expect(seed?.start).toBe("2026-07-01T00:00");
+    expect(seed?.end).toBe("2026-07-02T00:00");
+  });
+
+  it("defaults the zone to the browser-local zone when none is passed", () => {
+    expect(dragCreateSeed("2026-07-01", 540, 600)?.timeZone).toBe(LOCAL_ZONE);
+  });
+
+  it("returns null for a malformed day key", () => {
+    expect(dragCreateSeed("not-a-day", 540, 600, NY)).toBeNull();
   });
 });
 

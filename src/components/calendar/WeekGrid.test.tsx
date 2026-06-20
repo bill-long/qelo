@@ -3,6 +3,7 @@ import { reconcile } from "solid-js/store";
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import { WeekGrid } from "@/components/calendar/WeekGrid";
 import type { Calendar, CalendarEvent } from "@/jmap/types";
+import { LOCAL_ZONE } from "@/lib/calendar";
 import {
   rescheduleEvent,
   resetCalendar,
@@ -12,9 +13,14 @@ import {
   setEventIds,
 } from "@/stores/calendar";
 import {
+  createSeed,
+  creatingEvent,
   selectedEventId,
   setCalendarAnchor,
+  setCalendarDisplayZone,
   setCalendarViewMode,
+  setCreateSeed,
+  setCreatingEvent,
   setSelectedCalendarId,
   setSelectedEventId,
 } from "@/stores/ui";
@@ -90,6 +96,9 @@ beforeEach(() => {
   resetCalendar();
   setSelectedCalendarId(null);
   setSelectedEventId(null);
+  setCreatingEvent(false);
+  setCreateSeed(null);
+  setCalendarDisplayZone(LOCAL_ZONE);
   setCalendarViewMode("week");
   setCalendarAnchor(new Date(2026, 5, 17)); // week Sun Jun 14 … Sat Jun 20
 });
@@ -101,6 +110,9 @@ afterEach(() => {
   resetCalendar();
   setSelectedCalendarId(null);
   setSelectedEventId(null);
+  setCreatingEvent(false);
+  setCreateSeed(null);
+  setCalendarDisplayZone(LOCAL_ZONE);
   vi.useRealTimers();
 });
 
@@ -476,5 +488,168 @@ describe("WeekGrid", () => {
     const [, , , mode, recurrenceId] = rescheduleMock.mock.calls[0] ?? [];
     expect(mode).toBe("all");
     expect(recurrenceId).toBeNull();
+  });
+
+  it("sweeps the empty canvas to create a timed event, seeding the create form with the range", () => {
+    seed({}, []);
+    const { container } = render(() => <WeekGrid columns={7} />);
+    const canvas = container.querySelector(".week-cols") as HTMLElement;
+    // Sweep 09:00 (y 540) → 11:00 (y 660) on Wed Jun 17 (x 350 = column 3).
+    fireEvent.pointerDown(canvas, { clientX: WED_X, clientY: 540, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(canvas, { clientX: WED_X, clientY: 660, pointerId: 1 });
+    fireEvent.pointerUp(canvas, { clientX: WED_X, clientY: 660, pointerId: 1 });
+
+    expect(creatingEvent()).toBe(true);
+    // The new event is anchored to the display zone (default browser-local here); the swept display
+    // wall-clock is its start/end verbatim (no title yet).
+    expect(createSeed()).toMatchObject({
+      allDay: false,
+      timeZone: LOCAL_ZONE,
+      title: "",
+      start: "2026-06-17T09:00",
+      end: "2026-06-17T11:00",
+    });
+  });
+
+  it("shows a 'New event' ghost preview while sweeping (before release)", () => {
+    seed({}, []);
+    const { container } = render(() => <WeekGrid columns={7} />);
+    const canvas = container.querySelector(".week-cols") as HTMLElement;
+    fireEvent.pointerDown(canvas, { clientX: WED_X, clientY: 540, pointerId: 1, button: 0 });
+    // Before release, a live ghost previews the swept range.
+    expect(container.querySelector(".week-event-ghost")).toBeNull(); // not until it moves
+    fireEvent.pointerMove(canvas, { clientX: WED_X, clientY: 660, pointerId: 1 });
+    const ghost = container.querySelector(".week-event-ghost");
+    expect(ghost).toBeTruthy();
+    expect(ghost?.textContent).toContain("New event");
+    fireEvent.pointerUp(canvas, { clientX: WED_X, clientY: 660, pointerId: 1 });
+    // The ghost is gone once the gesture ends.
+    expect(container.querySelector(".week-event-ghost")).toBeNull();
+    // Creating must not also select an event, and no reschedule happens.
+    expect(selectedEventId()).toBeNull();
+    expect(rescheduleMock).not.toHaveBeenCalled();
+  });
+
+  it("anchors the swept event to the active display zone (not floating, swept wall-clock kept)", () => {
+    // Viewing in a non-local display zone, a sweep seeds timeZone = that zone with the swept wall-clock
+    // verbatim — proving the seed reads the display-zone signal (wired through endCreate), and that the
+    // grid position is NOT converted away from where it was drawn.
+    setCalendarDisplayZone("America/New_York");
+    seed({}, []);
+    const { container } = render(() => <WeekGrid columns={7} />);
+    const canvas = container.querySelector(".week-cols") as HTMLElement;
+    fireEvent.pointerDown(canvas, { clientX: WED_X, clientY: 540, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(canvas, { clientX: WED_X, clientY: 660, pointerId: 1 });
+    fireEvent.pointerUp(canvas, { clientX: WED_X, clientY: 660, pointerId: 1 });
+    expect(createSeed()).toMatchObject({
+      timeZone: "America/New_York",
+      start: "2026-06-17T09:00",
+      end: "2026-06-17T11:00",
+    });
+  });
+
+  it("sweeps UPWARD (release above the press) and still seeds start < end", () => {
+    seed({}, []);
+    const { container } = render(() => <WeekGrid columns={7} />);
+    const canvas = container.querySelector(".week-cols") as HTMLElement;
+    // Press at 11:00 (y 660), drag UP to 09:00 (y 540): the seed normalizes to 09:00–11:00.
+    fireEvent.pointerDown(canvas, { clientX: WED_X, clientY: 660, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(canvas, { clientX: WED_X, clientY: 540, pointerId: 1 });
+    fireEvent.pointerUp(canvas, { clientX: WED_X, clientY: 540, pointerId: 1 });
+    expect(createSeed()).toMatchObject({ start: "2026-06-17T09:00", end: "2026-06-17T11:00" });
+  });
+
+  it("treats a tap on the empty canvas as a default-length new-event slot", () => {
+    seed({}, []);
+    const { container } = render(() => <WeekGrid columns={7} />);
+    const canvas = container.querySelector(".week-cols") as HTMLElement;
+    // A press with no movement (a tap) at 09:00 → a default 60-min slot at that time.
+    fireEvent.pointerDown(canvas, { clientX: WED_X, clientY: 540, pointerId: 1, button: 0 });
+    fireEvent.pointerUp(canvas, { clientX: WED_X, clientY: 540, pointerId: 1 });
+    expect(creatingEvent()).toBe(true);
+    expect(createSeed()).toMatchObject({ start: "2026-06-17T09:00", end: "2026-06-17T10:00" });
+  });
+
+  it("does NOT start a create when a block is pressed (the seam: a block press moves, not creates)", () => {
+    seed({ s: ev({ id: "s", title: "Standup", start: "2026-06-17T09:00:00", duration: "PT1H" }) }, [
+      "s",
+    ]);
+    render(() => <WeekGrid columns={7} />);
+    const block = screen.getByRole("button", { name: /Standup/ });
+    // A drag that STARTS on the block must move the block (stopPropagation keeps it off the canvas's
+    // create handler) — no create form, no seed.
+    fireEvent.pointerDown(block, { clientX: WED_X, clientY: 540, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(block, { clientX: WED_X, clientY: 660, pointerId: 1 });
+    fireEvent.pointerUp(block, { clientX: WED_X, clientY: 660, pointerId: 1 });
+    expect(rescheduleMock).toHaveBeenCalledTimes(1);
+    expect(creatingEvent()).toBe(false);
+    expect(createSeed()).toBeNull();
+  });
+
+  it("a press on a READ-ONLY event's block doesn't create, even with a writable calendar present (stopPropagation seam)", () => {
+    // The account HAS a writable calendar (canCreate is true), but the pressed block belongs to a
+    // read-only calendar — so startDrag bails WITHOUT setting `drag`. Only the block's stopPropagation
+    // keeps the press off the canvas's create handler; without it, startCreate would sweep a create under
+    // the read-only block. (The drag()-guard can't catch this case, so this genuinely exercises the seam.)
+    const readonly: Calendar = {
+      ...writableCal(),
+      id: "ro",
+      isDefault: false,
+      myRights: { ...writableCal().myRights, mayWriteAll: false, mayWriteOwn: false },
+    };
+    setCalendarReady(true);
+    setCalendars(reconcile({ c1: writableCal(), ro: readonly }));
+    setCalendarEvents(
+      reconcile({
+        s: ev({
+          id: "s",
+          calendarIds: { ro: true },
+          title: "Locked",
+          start: "2026-06-17T09:00:00",
+          duration: "PT1H",
+        }),
+      }),
+    );
+    setEventIds(["s"]);
+    render(() => <WeekGrid columns={7} />);
+    const block = screen.getByRole("button", { name: /Locked/ });
+    fireEvent.pointerDown(block, { clientX: WED_X, clientY: 540, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(block, { clientX: WED_X, clientY: 660, pointerId: 1 });
+    fireEvent.pointerUp(block, { clientX: WED_X, clientY: 660, pointerId: 1 });
+    expect(creatingEvent()).toBe(false);
+    expect(createSeed()).toBeNull();
+    expect(rescheduleMock).not.toHaveBeenCalled();
+  });
+
+  it("does not start a create on a read-only calendar (nothing writable to create into)", () => {
+    setCalendarReady(true);
+    setCalendars(
+      reconcile({
+        c1: {
+          ...writableCal(),
+          myRights: { ...writableCal().myRights, mayWriteAll: false, mayWriteOwn: false },
+        },
+      }),
+    );
+    setEventIds([]);
+    const { container } = render(() => <WeekGrid columns={7} />);
+    const canvas = container.querySelector(".week-cols") as HTMLElement;
+    fireEvent.pointerDown(canvas, { clientX: WED_X, clientY: 540, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(canvas, { clientX: WED_X, clientY: 660, pointerId: 1 });
+    fireEvent.pointerUp(canvas, { clientX: WED_X, clientY: 660, pointerId: 1 });
+    expect(creatingEvent()).toBe(false);
+    expect(createSeed()).toBeNull();
+  });
+
+  it("Escape cancels an in-progress create sweep (no form opens)", () => {
+    seed({}, []);
+    const { container } = render(() => <WeekGrid columns={7} />);
+    const canvas = container.querySelector(".week-cols") as HTMLElement;
+    fireEvent.pointerDown(canvas, { clientX: WED_X, clientY: 540, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(canvas, { clientX: WED_X, clientY: 660, pointerId: 1 });
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.pointerUp(canvas, { clientX: WED_X, clientY: 660, pointerId: 1 });
+    expect(creatingEvent()).toBe(false);
+    expect(createSeed()).toBeNull();
   });
 });

@@ -66,7 +66,8 @@ function timeZoneOptions(current: string): string[] {
  * empty list leaves `calendarId()` null, which disables Create and is guarded again at submit. */
 export type EventEditFormProps = { onClose: () => void } & (
   | { mode: "edit"; event: CalendarEvent; occurrenceId: string; recurrenceId: string | null }
-  | { mode: "create"; calendars: Calendar[] }
+  // `seed` (drag-to-create) pre-fills the working copy with a swept time range; absent → the default slot.
+  | { mode: "create"; calendars: Calendar[]; seed?: EditableEvent | null }
 );
 
 // The apply-mode chooser uses the shared {@link RECURRENCE_SCOPE_MODES} (this/following/all). "this" is
@@ -107,16 +108,23 @@ export function EventEditForm(props: EventEditFormProps) {
   // still shows but disables "this"/"following" (see `modeDisabled`), so a real series never silently
   // saves whole-series without the user choosing.
   const wasRecurring = baseline?.recurrenceRule !== undefined;
-  // Edit seeds from the base event; create seeds a default slot in the VISIBLE window (createSeedDate
-  // reads the current mode + anchor) at the display zone's time-of-day, so a new event made while the
-  // calendar is navigated away from today (or viewed in another zone) lands on screen, not off-window
-  // on today. Keyed off `baseline` (null only in create mode) so there's no extra props read; a
-  // one-time capture at open (the form unmounts on a selection change).
+  // A drag-to-create swept range (create mode), captured once at open like the baseline. Cloned so the
+  // form's reactive store can't mutate the object still held in the `createSeed` signal as the user types
+  // (matching how the edit path clones its baseline).
+  // eslint-disable-next-line solid/reactivity
+  const seed = props.mode === "create" && props.seed ? structuredClone(props.seed) : null;
+  // Edit seeds from the base event; a drag-to-create seeds from the swept range; a plain create seeds a
+  // default slot in the VISIBLE window (createSeedDate reads the current mode + anchor) at the display
+  // zone's time-of-day, so a new event made while the calendar is navigated away from today (or viewed
+  // in another zone) lands on screen, not off-window on today. Keyed off `baseline` (null only in create
+  // mode) so there's no extra props read; a one-time capture at open (the form unmounts on a selection
+  // change).
   const initial = baseline
     ? eventToEditable(baseline)
-    : emptyEditableEvent(
+    : (seed ??
+      emptyEditableEvent(
         createSeedDate(calendarViewMode(), calendarAnchor(), new Date(), calendarDisplayZone()),
-      );
+      ));
   const [form, setForm] = createStore<EditableEvent>(initial);
   // Create mode: which writable calendar the new event lands in. Defaults to the server-default
   // writable calendar; a `<select>` lets the user pick only when there's more than one. (Static for
