@@ -4,6 +4,7 @@ import {
   archiveConversation,
   deleteConversationForever,
   deleteForever,
+  moveConversation,
   moveEmails,
   trash,
   trashConversation,
@@ -25,8 +26,9 @@ import { selectedMailboxId } from "@/stores/ui";
  * an `ids` accessor (read at click time, never captured stale) and calls the id-set actions. A row
  * acts on the whole CONVERSATION, so it takes the row's representative id (`repId`) and calls the
  * conversation actions, which expand it to the thread and scope the move/destroy to the open folder
- * (matching OWA/Gmail/Apple Mail — see emails.ts). The generic "Move to…" picker is reading-pane
- * only; a row reaches an arbitrary folder via drag-and-drop.
+ * (matching OWA/Gmail/Apple Mail — see emails.ts). The generic "Move to…" picker is offered in BOTH
+ * variants — a native `<select>` (keyboard-operable, AT-announced as a combobox) is the accessible
+ * route to an arbitrary folder, giving the row a true keyboard/AT twin of pointer-only drag-and-drop.
  *
  * Every affordance is myRights-gated (CLAUDE.md / D2): archive and trash need `mayRemoveItems` on
  * the open folder AND a role target that grants `mayAddItems` (resolved by `moveTargetByRole`);
@@ -41,6 +43,10 @@ type MailboxActionsProps =
 export function MailboxActions(props: MailboxActionsProps) {
   // Dispatch the per-message id-set action (reading pane) or its whole-conversation equivalent
   // (row), keyed off the discriminated variant. Conversation actions take the row's representative.
+  const onMoveTo = (to: string) =>
+    props.variant === "row"
+      ? void moveConversation(props.repId(), to)
+      : void moveEmails(props.ids(), to);
   const onArchive = () =>
     props.variant === "row" ? void archiveConversation(props.repId()) : void archive(props.ids());
   const onTrash = () =>
@@ -59,9 +65,9 @@ export function MailboxActions(props: MailboxActionsProps) {
   // itself. Offered only from within Trash (D2).
   const canDeleteForever = () => selectedMailboxRole() === "trash" && canRemove();
 
-  // Every other mailbox that accepts items, for the generic move picker (reading pane only) —
-  // minus the archive/trash roles that already have their own dedicated buttons beside it, so a
-  // destination is never offered twice.
+  // Every other mailbox that accepts items, for the generic move picker — minus the archive/trash
+  // roles that already have their own dedicated buttons beside it, so a destination is never offered
+  // twice. The open folder is the move source for both variants (the row sits in it too).
   const moveTargets = () => {
     const current = selectedMailboxId();
     if (!current) return [];
@@ -73,19 +79,24 @@ export function MailboxActions(props: MailboxActionsProps) {
 
   return (
     <>
-      <Show when={props.variant === "message" && canRemove() && moveTargets().length > 0}>
+      <Show when={canRemove() && moveTargets().length > 0}>
         <select
-          class="message-action message-move"
-          aria-label="Move to folder"
+          // The row variant renders a compact "Move" label to sit among the icon row actions; the
+          // reading pane shows "Move to…". Both are plain TEXT (no emoji) so a screen reader
+          // announces a real word as the closed value, and — like .message-move — the text carries
+          // the affordance (appearance:none, no caret). The accessible name rides on aria-label. A
+          // native <select> is keyboard-operable + AT-announced as a combobox, so this is the a11y
+          // path for the row, not just a pointer affordance.
+          class={props.variant === "row" ? "row-action row-move" : "message-action message-move"}
+          aria-label={props.variant === "row" ? "Move conversation to folder" : "Move to folder"}
           onChange={(event) => {
             const to = event.currentTarget.value;
             // Reset to the placeholder so the same destination can be chosen again later.
             event.currentTarget.selectedIndex = 0;
-            // The picker is message-variant only (guarded by the enclosing Show), so `ids` exists.
-            if (to && props.variant === "message") void moveEmails(props.ids(), to);
+            if (to) onMoveTo(to);
           }}
         >
-          <option value="">Move to…</option>
+          <option value="">{props.variant === "row" ? "Move" : "Move to…"}</option>
           <For each={moveTargets()}>{(m) => <option value={m.id}>{m.name}</option>}</For>
         </select>
       </Show>
