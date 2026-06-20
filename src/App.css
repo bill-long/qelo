@@ -2938,6 +2938,8 @@ textarea.event-edit-input {
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: pointer;
+  /* the week-scroll pans vertically; a pointer-drag-to-move on a bar must not also scroll */
+  touch-action: none;
 }
 
 .week-allday-bar.continues-before {
@@ -2963,6 +2965,21 @@ textarea.event-edit-input {
 .week-allday-bar:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+/* The dragged bar dims while the drop is previewed / the write is in flight (the ghost shows the target
+   span instead) — the all-day-lane analog of .week-event.is-dragging / .month-event.is-dragging. */
+.week-allday-bar.is-dragging {
+  opacity: 0.35;
+}
+
+/* The translucent preview bar in the all-day lane during a drag-to-move / while the write is pending —
+   dashed and non-interactive, the lane analog of .week-event-ghost. */
+.week-allday-bar-ghost {
+  pointer-events: none;
+  opacity: 0.85;
+  border: 1px dashed #fff;
+  background: color-mix(in srgb, var(--accent) 70%, var(--raised));
 }
 
 .week-canvas {

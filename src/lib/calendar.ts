@@ -1445,6 +1445,30 @@ export function monthCellKey(
 }
 
 /**
+ * The "YYYY-MM-DD" day-key of the all-day-lane column under a pointer, or null when `days` is empty OR
+ * the rect has a non-positive width. The week/day all-day lane (`.week-allday-lane`) is a single row of
+ * `days.length` equal-width columns (one per visible day, Sun-start), so the column is a pure horizontal
+ * division of the container `rect`: the index from the horizontal fraction, CLAMPED to [0, len-1] so a
+ * pointer dragged just past an edge maps to the nearest column (the drag never loses its target). The
+ * horizontal analog of {@link monthCellKey} for the all-day lane's drag-to-move. Fails closed (null) on
+ * an empty `days` or a zero-width rect — dividing by a zero width would yield Infinity/NaN and map to a
+ * spurious edge column a drag would then reschedule to. Pure (rect passed in, no DOM), unit-testable.
+ */
+export function allDayLaneKey(
+  clientX: number,
+  rect: { left: number; width: number },
+  days: string[],
+): string | null {
+  const cols = days.length;
+  if (cols === 0 || rect.width <= 0) return null;
+  const col = Math.max(
+    0,
+    Math.min(cols - 1, Math.floor(((clientX - rect.left) / rect.width) * cols)),
+  );
+  return days[col] ?? null;
+}
+
+/**
  * The signed whole-day difference `toKey − fromKey` for two "YYYY-MM-DD" day-keys (treated as
  * UTC-midnight scalars, like the rest of the month math), or null when either is malformed. The civil
  * day delta a month drag-to-move shifts an event by — positive when `toKey` is the later day. Pure.
