@@ -3,9 +3,11 @@ import { createClickSuppressor } from "@/components/calendar/clickSuppressor";
 import type { CalendarEvent } from "@/jmap/types";
 import {
   type AllDaySegment,
+  allDayLaneKey,
   type DateParts,
   type DayPlacement,
   dayKey,
+  dayKeyDelta,
   dragCreateSeed,
   dropToSourceStart,
   eventAccessibleName,
@@ -20,6 +22,7 @@ import {
   isRecurring,
   layoutAllDayLane,
   MINUTES_PER_DAY,
+  monthMoveStart,
   nowIndicatorOffset,
   type PackedPlacement,
   packDayColumns,
@@ -149,6 +152,50 @@ interface CreateDragState {
   moved: boolean;
 }
 
+// The in-progress drag of an ALL-DAY bar across the all-day lane — a THIRD engine, distinct from the
+// vertical time-grid move/resize (DragState) and the empty-canvas create sweep (CreateDragState): a
+// horizontal whole-day shift along the lane's day columns. The lane holds ONLY all-day events, so the
+// move is pure civil-day arithmetic (monthMoveStart shifts the SOURCE start date by the day delta) with
+// NO display→source instant inversion — the same math the month grid's drag uses. `grabKey` is the day
+// column the press landed in, `hoverKey` the column the pointer is over now; their whole-day delta is
+// the shift. `segStartCol`/`segEndCol`/`lane` are the bar's grab-time clipped placement, and
+// `ghostStartCol`/`ghostEndCol` the live preview span (that placement shifted by the delta, clamped to
+// the visible lane). `moved` flips once the press passes the threshold (a press that never moves stays
+// a click that selects the event).
+interface AllDayDragState {
+  occId: string;
+  event: CalendarEvent;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  grabKey: string;
+  hoverKey: string;
+  segStartCol: number;
+  segEndCol: number;
+  lane: number;
+  ghostStartCol: number;
+  ghostEndCol: number;
+  moved: boolean;
+}
+
+// A committed all-day move awaiting its write (and, for a recurring event, the scope choice). The source
+// bar stays dimmed and the ghost held at the dropped span while the reschedule round-trips / the user
+// picks a scope (the same hold-the-preview discipline as the time-grid + month engines).
+interface AllDayCommitting {
+  occId: string;
+  event: CalendarEvent;
+  // The new start in the event's SOURCE zone (a whole-day shift of the source date — monthMoveStart).
+  newStart: DateParts;
+  // The held ghost span (clamped to the visible lane) shown while the write is pending.
+  ghostStartCol: number;
+  ghostEndCol: number;
+  lane: number;
+  // The occurrence's recurrenceId (null for a non-recurring event, or a recurring occurrence without
+  // one). The scope chooser shows whenever the EVENT is recurring, so a recurring drag is never silently
+  // applied to the whole series.
+  recurrenceId: string | null;
+}
+
 /**
  * The week/day time-grid view: an hour axis with `columns` day columns (7 for week, 1 for day — Day is
  * just this component with a single column), an all-day lane of clipped bars across the top, timed
@@ -182,8 +229,14 @@ export function WeekGrid(props: { columns: number }) {
   // A drag-to-create sweep on the empty canvas (parallel to `drag` — a press is either on a block, which
   // moves/resizes, or on empty space, which creates; never both).
   const [createDrag, setCreateDrag] = createSignal<CreateDragState | null>(null);
+  // An all-day bar drag-to-move along the lane (parallel to `drag`/`createDrag` — one gesture at a time;
+  // a press is on a timed block, the empty canvas, or an all-day bar, never more than one).
+  const [allDayDrag, setAllDayDrag] = createSignal<AllDayDragState | null>(null);
+  const [allDayCommitting, setAllDayCommitting] = createSignal<AllDayCommitting | null>(null);
   const [dragError, setDragError] = createSignal<string | null>(null);
   let colsRef: HTMLDivElement | undefined;
+  // The all-day lane container — its bounding rect maps a pointer to a day column (allDayLaneKey).
+  let allDayLaneRef: HTMLDivElement | undefined;
   // Whether the account can create at all (≥1 writable calendar) — the same gate as the "+ New event"
   // affordance; without it a drag-to-create would pop a form that can't be saved.
   const canCreate = createMemo(() => writableCalendars(calendars).length > 0);
@@ -225,16 +278,55 @@ export function WeekGrid(props: { columns: number }) {
     }
     return null;
   });
-  // The occurrence id currently being dragged/committed — its real block dims so the ghost reads as the
-  // live preview. (A create sweep has no source block, so nothing dims.)
-  const draggingId = createMemo(() => drag()?.occId ?? committing()?.occId ?? null);
+  // The all-day ghost (a translucent preview bar in the lane) follows the pointer across columns during a
+  // drag and holds at the dropped span while the write is in flight. One source for both phases so the
+  // rendering can't diverge (the time-grid `ghost` memo's all-day twin).
+  const allDayGhost = createMemo(() => {
+    const d = allDayDrag();
+    if (d?.moved) {
+      return {
+        title: eventDisplayTitle(d.event),
+        startCol: d.ghostStartCol,
+        endCol: d.ghostEndCol,
+        lane: d.lane,
+      };
+    }
+    const c = allDayCommitting();
+    if (c) {
+      return {
+        title: eventDisplayTitle(c.event),
+        startCol: c.ghostStartCol,
+        endCol: c.ghostEndCol,
+        lane: c.lane,
+      };
+    }
+    return null;
+  });
+  // The occurrence id currently being dragged/committed — its real block/bar dims so the ghost reads as
+  // the live preview. (A create sweep has no source block, so nothing dims.) Event ids are unique across
+  // the timed grid and the all-day lane, so one memo covers both engines' sources.
+  const draggingId = createMemo(
+    () =>
+      drag()?.occId ??
+      committing()?.occId ??
+      allDayDrag()?.occId ??
+      allDayCommitting()?.occId ??
+      null,
+  );
   // Stable booleans so the window-listener effects below re-run ONLY on an inactive↔active transition,
-  // not on every pointermove (each move replaces the `drag`/`createDrag` object; a createMemo only
-  // notifies when its boolean VALUE changes, so the effects don't thrash add/removeEventListener during a
-  // gesture). A move/resize OR a create sweep counts as dragging.
-  const isDragging = createMemo(() => drag() !== null || createDrag() !== null);
+  // not on every pointermove (each move replaces the `drag`/`createDrag`/`allDayDrag` object; a createMemo
+  // only notifies when its boolean VALUE changes, so the effects don't thrash add/removeEventListener
+  // during a gesture). A move/resize OR a create sweep OR an all-day move counts as dragging.
+  const isDragging = createMemo(
+    () => drag() !== null || createDrag() !== null || allDayDrag() !== null,
+  );
   const gestureActive = createMemo(
-    () => drag() !== null || committing() !== null || createDrag() !== null,
+    () =>
+      drag() !== null ||
+      committing() !== null ||
+      createDrag() !== null ||
+      allDayDrag() !== null ||
+      allDayCommitting() !== null,
   );
 
   function startDrag(
@@ -258,6 +350,8 @@ export function WeekGrid(props: { columns: number }) {
       !colsRef ||
       committing() ||
       createDrag() ||
+      allDayDrag() ||
+      allDayCommitting() ||
       !eventMayWrite(event, calendars)
     )
       return;
@@ -404,7 +498,16 @@ export function WeekGrid(props: { columns: number }) {
   function startCreate(e: PointerEvent): void {
     // Primary button only, no other gesture in flight, and only when something can actually be created
     // into (≥1 writable calendar — else the form would open unsavable). Everything else is ignored.
-    if (e.button !== 0 || !colsRef || drag() || createDrag() || committing() || !canCreate())
+    if (
+      e.button !== 0 ||
+      !colsRef ||
+      drag() ||
+      createDrag() ||
+      committing() ||
+      allDayDrag() ||
+      allDayCommitting() ||
+      !canCreate()
+    )
       return;
     const rect = colsRef.getBoundingClientRect();
     const { colIndex, minutes } = pointerToGrid(e.clientX, e.clientY, rect, props.columns);
@@ -466,27 +569,131 @@ export function WeekGrid(props: { columns: number }) {
     setCreateDrag(null);
   }
 
-  // Guards a single commit from a double-fire: the recurring scope dialog stays open while the async
-  // rescheduleEvent is in flight, so a double-click on a scope button would otherwise launch a second
-  // concurrent reschedule for the same occurrence. Only the first runs until it resolves.
+  // --- Drag-to-move an ALL-DAY bar (horizontal lane engine) ----------------
+  // A press on an all-day bar starts a horizontal whole-day shift across the lane's day columns. Unlike
+  // the time-grid move there's NO display→source instant inversion (the lane holds only all-day events,
+  // which are face-value) — the day delta shifts the SOURCE start date directly (monthMoveStart), the
+  // same civil-day arithmetic the month grid's drag uses.
+  function startAllDayDrag(event: CalendarEvent, seg: AllDaySegment, e: PointerEvent): void {
+    // Reset click-suppression at the START of every pointerdown — BEFORE any early return — so a prior
+    // drag that ended without a trailing click can't leave it set and swallow the next click.
+    clickSuppressor.reset();
+    // Primary-button press on a writable event only; refuse while any other gesture is live (a committing
+    // drop is holding its ghost; a multitouch second press must not run two engines at once).
+    if (
+      e.button !== 0 ||
+      !allDayLaneRef ||
+      committing() ||
+      allDayCommitting() ||
+      drag() ||
+      createDrag() ||
+      !eventMayWrite(event, calendars)
+    )
+      return;
+    const grabKey = allDayLaneKey(e.clientX, allDayLaneRef.getBoundingClientRect(), days());
+    if (!grabKey) return;
+    setAllDayDrag({
+      occId: event.id,
+      event,
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      grabKey,
+      hoverKey: grabKey,
+      segStartCol: seg.startCol,
+      segEndCol: seg.endCol,
+      lane: seg.lane,
+      ghostStartCol: seg.startCol,
+      ghostEndCol: seg.endCol,
+      moved: false,
+    });
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }
+
+  function moveAllDayDrag(e: PointerEvent): void {
+    const d = allDayDrag();
+    if (!d || e.pointerId !== d.pointerId || !allDayLaneRef) return;
+    if (!d.moved && Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < DRAG_THRESHOLD_PX)
+      return;
+    const hoverKey =
+      allDayLaneKey(e.clientX, allDayLaneRef.getBoundingClientRect(), days()) ?? d.hoverKey;
+    // The day delta from the grabbed column (so a multi-day bar grabbed mid-span still shifts whole).
+    // Within the visible lane the column delta equals the day delta — shift the bar's span by it and
+    // clamp to the lane so the ghost stays visible even when dragged past an edge.
+    const delta = dayKeyDelta(d.grabKey, hoverKey) ?? 0;
+    const maxCol = days().length - 1;
+    const ghostStartCol = Math.max(0, Math.min(maxCol, d.segStartCol + delta));
+    const ghostEndCol = Math.max(0, Math.min(maxCol, d.segEndCol + delta));
+    setAllDayDrag({ ...d, moved: true, hoverKey, ghostStartCol, ghostEndCol });
+  }
+
+  function endAllDayDrag(e: PointerEvent): void {
+    const d = allDayDrag();
+    if (!d || e.pointerId !== d.pointerId) return;
+    setAllDayDrag(null);
+    if (!d.moved) return; // a press that never moved → let the click select the event
+
+    // The whole-day delta between the grabbed and dropped columns. A malformed key (null) or a drop back
+    // on the SAME column (0) is a no-op — no write, and the trailing click selects.
+    const delta = dayKeyDelta(d.grabKey, d.hoverKey);
+    if (delta === null || delta === 0) return;
+    // monthMoveStart shifts the event's SOURCE start date by the delta (an all-day event keeps its
+    // T00:00:00); null only when the start is unparseable.
+    const newStart = monthMoveStart(d.event, delta);
+    if (!newStart) return;
+    clickSuppressor.arm();
+    const c: AllDayCommitting = {
+      occId: d.occId,
+      event: d.event,
+      newStart,
+      ghostStartCol: d.ghostStartCol,
+      ghostEndCol: d.ghostEndCol,
+      lane: d.lane,
+      recurrenceId: d.event.recurrenceId ?? null,
+    };
+    setAllDayCommitting(c);
+    // A RECURRING event always asks the scope (this/following/all); a non-recurring event reschedules
+    // straight through ("all" = the single event).
+    if (!isRecurring(d.event)) void dispatchAllDay(c, "all");
+  }
+
+  function cancelAllDayDrag(e?: PointerEvent): void {
+    const d = allDayDrag();
+    if (e && d && e.pointerId !== d.pointerId) return;
+    setAllDayDrag(null);
+  }
+
+  // The shared reschedule dispatcher for every drag gesture in this view (timed move/resize AND all-day
+  // move). It guards against a double-fire (the scope dialog stays open while the async rescheduleEvent
+  // is in flight, so a double-click on a scope button would otherwise launch a second concurrent
+  // reschedule for the same occurrence — only the first runs until it resolves), enforces the
+  // per-occurrence-mode-needs-recurrenceId boundary, runs the write, and maps the failure. `clearCommit`
+  // drops the caller's own held ghost/state regardless of outcome — on success the reconcile re-rendered
+  // the event at its new slot; on failure the store reverted to server truth, so dropping the ghost shows
+  // it unchanged.
   let rescheduling = false;
-  async function dispatch(c: Committing, mode: RecurrenceEditMode): Promise<void> {
+  async function applyReschedule(
+    occId: string,
+    newStart: DateParts,
+    newDurationMs: number | null,
+    recurrenceId: string | null,
+    mode: RecurrenceEditMode,
+    clearCommit: () => void,
+  ): Promise<void> {
     if (rescheduling) return;
     setDragError(null);
     // Boundary guard mirroring the dialog's disabled state: a per-occurrence mode needs a recurrenceId,
     // else saveEvent would degrade it to a whole-series "all" — so refuse rather than silently move the
     // whole series. (The dialog already aria-disables these, so this is defense-in-depth.)
-    if (mode !== "all" && c.recurrenceId === null) {
-      setCommitting(null);
+    if (mode !== "all" && recurrenceId === null) {
+      clearCommit();
       setDragError("Couldn't identify this occurrence. Try reopening the calendar.");
       return;
     }
     rescheduling = true;
     try {
-      const res = await rescheduleEvent(c.occId, c.newStart, c.newDurationMs, mode, c.recurrenceId);
-      // Clear the held ghost regardless — on success the reconcile re-rendered the block at its new slot;
-      // on failure the store reverted to server truth, so dropping the ghost shows the unchanged block.
-      setCommitting(null);
+      const res = await rescheduleEvent(occId, newStart, newDurationMs, mode, recurrenceId);
+      clearCommit();
       if (!res.ok && res.reason !== "auth") {
         // Distinguish an un-resolvable base (the occurrence's series couldn't be identified) from a
         // generic failure, mirroring the edit/delete flows' specificity.
@@ -500,6 +707,16 @@ export function WeekGrid(props: { columns: number }) {
       rescheduling = false;
     }
   }
+  // Thin per-engine wrappers: a timed commit keeps its computed duration (move passes null, resize a
+  // value); an all-day move always keeps the series length (null).
+  const dispatch = (c: Committing, mode: RecurrenceEditMode): Promise<void> =>
+    applyReschedule(c.occId, c.newStart, c.newDurationMs, c.recurrenceId, mode, () =>
+      setCommitting(null),
+    );
+  const dispatchAllDay = (c: AllDayCommitting, mode: RecurrenceEditMode): Promise<void> =>
+    applyReschedule(c.occId, c.newStart, null, c.recurrenceId, mode, () =>
+      setAllDayCommitting(null),
+    );
 
   // The pointer move/up/cancel handlers live on WINDOW (bound only while a drag is live), not on the
   // dragged block: the block can unmount mid-drag (a coalesced sync prunes its row), which would strand
@@ -508,19 +725,23 @@ export function WeekGrid(props: { columns: number }) {
   // (an OS/gesture interruption) is handled alongside up so the drag can't stick open.
   createEffect(() => {
     if (!isDragging()) return;
-    // One gesture is active at a time (block move/resize OR an empty-canvas create sweep); each handler
-    // no-ops when its own signal is null, so dispatching to both is safe and keeps one set of listeners.
+    // One gesture is active at a time (block move/resize, an empty-canvas create sweep, OR an all-day
+    // lane move); each handler no-ops when its own signal is null, so dispatching to all is safe and
+    // keeps one set of listeners.
     const move = (e: PointerEvent) => {
       moveDrag(e);
       moveCreate(e);
+      moveAllDayDrag(e);
     };
     const up = (e: PointerEvent) => {
       endDrag(e);
       endCreate(e);
+      endAllDayDrag(e);
     };
     const cancel = (e: PointerEvent) => {
       cancelDrag(e);
       cancelCreate(e);
+      cancelAllDayDrag(e);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -540,7 +761,9 @@ export function WeekGrid(props: { columns: number }) {
       if (e.key !== "Escape") return;
       cancelDrag();
       cancelCreate();
+      cancelAllDayDrag();
       setCommitting(null);
+      setAllDayCommitting(null);
     };
     window.addEventListener("keydown", onKey);
     onCleanup(() => window.removeEventListener("keydown", onKey));
@@ -601,8 +824,35 @@ export function WeekGrid(props: { columns: number }) {
               <div class="week-allday-label" aria-hidden="true">
                 All-day
               </div>
-              <div class="week-allday-lane" style={{ "grid-template-columns": cols() }}>
-                <For each={allDaySegments()}>{(seg) => <AllDayBar seg={seg} />}</For>
+              <div
+                class="week-allday-lane"
+                ref={allDayLaneRef}
+                style={{ "grid-template-columns": cols() }}
+              >
+                <For each={allDaySegments()}>
+                  {(seg) => (
+                    <AllDayBar
+                      seg={seg}
+                      dimmed={draggingId() === seg.event.id}
+                      onPointerDown={startAllDayDrag}
+                      shouldSuppressClick={clickSuppressor.consume}
+                    />
+                  )}
+                </For>
+                <Show when={allDayGhost()}>
+                  {(g) => (
+                    <div
+                      class="week-allday-bar week-allday-bar-ghost"
+                      aria-hidden="true"
+                      style={{
+                        "grid-column": `${g().startCol + 1} / ${g().endCol + 2}`,
+                        "grid-row": `${g().lane + 1}`,
+                      }}
+                    >
+                      {g().title}
+                    </div>
+                  )}
+                </Show>
               </div>
             </div>
           </div>
@@ -653,6 +903,24 @@ export function WeekGrid(props: { columns: number }) {
               recurrenceId={c().recurrenceId}
               onPick={(mode) => void dispatch(c(), mode)}
               onCancel={() => setCommitting(null)}
+            />
+          )}
+        </Show>
+        {/* The all-day lane move's own scope chooser (a recurring all-day bar dragged across days); a
+            non-recurring move was dispatched directly in endAllDayDrag. Always "Move". */}
+        <Show
+          when={(() => {
+            const c = allDayCommitting();
+            return c && isRecurring(c.event) ? c : null;
+          })()}
+        >
+          {(c) => (
+            <RescheduleScopeDialog
+              title={eventDisplayTitle(c().event)}
+              action="move"
+              recurrenceId={c().recurrenceId}
+              onPick={(mode) => void dispatchAllDay(c(), mode)}
+              onCancel={() => setAllDayCommitting(null)}
             />
           )}
         </Show>
@@ -725,7 +993,12 @@ export function RescheduleScopeDialog(props: {
   );
 }
 
-function AllDayBar(props: { seg: AllDaySegment }) {
+function AllDayBar(props: {
+  seg: AllDaySegment;
+  dimmed: boolean;
+  onPointerDown: (event: CalendarEvent, seg: AllDaySegment, e: PointerEvent) => void;
+  shouldSuppressClick: () => boolean;
+}) {
   const event = () => props.seg.event;
   const isSelected = () => selectedEventId() === event().id;
   // A bar can span several columns; name it by its start day (formatTimeRange carries the full span).
@@ -738,6 +1011,7 @@ function AllDayBar(props: { seg: AllDaySegment }) {
       class="week-allday-bar"
       classList={{
         "is-selected": isSelected(),
+        "is-dragging": props.dimmed,
         "continues-before": props.seg.continuesBefore,
         "continues-after": props.seg.continuesAfter,
       }}
@@ -748,7 +1022,13 @@ function AllDayBar(props: { seg: AllDaySegment }) {
       aria-current={isSelected() ? "true" : undefined}
       aria-label={name()}
       title={name()}
-      onClick={() => setSelectedEventId(event().id)}
+      onPointerDown={(e) => props.onPointerDown(event(), props.seg, e)}
+      onClick={() => {
+        // Swallow the click that trails a committed drag (a move must not also select); a plain click
+        // (no drag) selects as before.
+        if (props.shouldSuppressClick()) return;
+        setSelectedEventId(event().id);
+      }}
     >
       {eventDisplayTitle(event())}
     </button>

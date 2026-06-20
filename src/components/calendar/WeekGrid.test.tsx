@@ -678,4 +678,136 @@ describe("WeekGrid", () => {
     expect(creatingEvent()).toBe(false);
     expect(createSeed()).toBeNull();
   });
+
+  // --- Drag-to-move an all-day bar across the lane (the third engine) ---------
+  // The visible week is Sun Jun 14 … Sat Jun 20, 7 columns × 100px: col 2 = Jun 16 (x 200–299),
+  // col 4 = Jun 18 (x 400–499). An all-day bar is moved by dragging horizontally across columns.
+  function allDayEvent(partial: Partial<CalendarEvent> = {}): CalendarEvent {
+    return ev({
+      id: "h",
+      title: "Holiday",
+      start: "2026-06-16T00:00:00",
+      duration: "P1D",
+      showWithoutTime: true,
+      ...partial,
+    });
+  }
+
+  it("drags an all-day bar to another day and reschedules it (non-recurring → 'all')", () => {
+    seed({ h: allDayEvent() }, ["h"]);
+    render(() => <WeekGrid columns={7} />);
+    const bar = screen.getByRole("button", { name: /Holiday/ });
+    fireEvent.pointerDown(bar, { clientX: 250, clientY: 10, pointerId: 1, button: 0 }); // col 2 (Jun 16)
+    fireEvent.pointerMove(bar, { clientX: 450, clientY: 10, pointerId: 1 }); // col 4 (Jun 18) → +2 days
+    fireEvent.pointerUp(bar, { clientX: 450, clientY: 10, pointerId: 1 });
+
+    expect(rescheduleMock).toHaveBeenCalledTimes(1);
+    const [occId, newStart, durMs, mode, recurrenceId] = rescheduleMock.mock.calls[0] ?? [];
+    expect(occId).toBe("h");
+    // Pure civil-day shift of the SOURCE date (+2), keeping T00:00:00 — no zone inversion.
+    expect(newStart).toMatchObject({ year: 2026, month: 6, day: 18, hour: 0, minute: 0 });
+    expect(durMs).toBeNull(); // a move keeps the span length
+    expect(mode).toBe("all");
+    expect(recurrenceId).toBeNull();
+    // A committed drag must NOT also select the event (the trailing click is swallowed).
+    expect(selectedEventId()).toBeNull();
+  });
+
+  it("treats a drop back on the same column as a no-op (selects, no reschedule)", () => {
+    seed({ h: allDayEvent() }, ["h"]);
+    render(() => <WeekGrid columns={7} />);
+    const bar = screen.getByRole("button", { name: /Holiday/ });
+    fireEvent.pointerDown(bar, { clientX: 220, clientY: 10, pointerId: 1, button: 0 }); // col 2
+    fireEvent.pointerMove(bar, { clientX: 290, clientY: 10, pointerId: 1 }); // still col 2 (Δ0 days)
+    fireEvent.pointerUp(bar, { clientX: 290, clientY: 10, pointerId: 1 });
+    expect(rescheduleMock).not.toHaveBeenCalled();
+    // No drag committed → the trailing click selects as normal.
+    fireEvent.click(bar);
+    expect(selectedEventId()).toBe("h");
+  });
+
+  it("treats a press that doesn't pass the threshold as a click (selects, no reschedule)", () => {
+    seed({ h: allDayEvent() }, ["h"]);
+    render(() => <WeekGrid columns={7} />);
+    const bar = screen.getByRole("button", { name: /Holiday/ });
+    fireEvent.pointerDown(bar, { clientX: 250, clientY: 10, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(bar, { clientX: 252, clientY: 11, pointerId: 1 }); // < 4px threshold
+    fireEvent.pointerUp(bar, { clientX: 252, clientY: 11, pointerId: 1 });
+    fireEvent.click(bar);
+    expect(rescheduleMock).not.toHaveBeenCalled();
+    expect(selectedEventId()).toBe("h");
+  });
+
+  it("does not start a drag on a read-only calendar's all-day event", () => {
+    setCalendarReady(true);
+    setCalendars(
+      reconcile({
+        c1: {
+          ...writableCal(),
+          myRights: { ...writableCal().myRights, mayWriteAll: false, mayWriteOwn: false },
+        },
+      }),
+    );
+    setCalendarEvents(reconcile({ h: allDayEvent() }));
+    setEventIds(["h"]);
+    render(() => <WeekGrid columns={7} />);
+    const bar = screen.getByRole("button", { name: /Holiday/ });
+    fireEvent.pointerDown(bar, { clientX: 250, clientY: 10, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(bar, { clientX: 450, clientY: 10, pointerId: 1 });
+    fireEvent.pointerUp(bar, { clientX: 450, clientY: 10, pointerId: 1 });
+    expect(rescheduleMock).not.toHaveBeenCalled();
+  });
+
+  it("prompts for scope on a recurring all-day drag and reschedules with the chosen mode", () => {
+    seed(
+      {
+        h: allDayEvent({
+          title: "Sprint week",
+          recurrenceId: "2026-06-16T00:00:00",
+          recurrenceRule: { "@type": "RecurrenceRule", frequency: "weekly" },
+        }),
+      },
+      ["h"],
+    );
+    render(() => <WeekGrid columns={7} />);
+    const bar = screen.getByRole("button", { name: /Sprint week/ });
+    fireEvent.pointerDown(bar, { clientX: 250, clientY: 10, pointerId: 1, button: 0 }); // col 2
+    fireEvent.pointerMove(bar, { clientX: 450, clientY: 10, pointerId: 1 }); // col 4 → +2 days
+    fireEvent.pointerUp(bar, { clientX: 450, clientY: 10, pointerId: 1 });
+
+    // The write waits for the scope choice.
+    expect(rescheduleMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "This and following events" }));
+
+    expect(rescheduleMock).toHaveBeenCalledTimes(1);
+    const [occId, newStart, durMs, mode, recurrenceId] = rescheduleMock.mock.calls[0] ?? [];
+    expect(occId).toBe("h");
+    expect(newStart).toMatchObject({ month: 6, day: 18, hour: 0 });
+    expect(durMs).toBeNull();
+    expect(mode).toBe("following");
+    expect(recurrenceId).toBe("2026-06-16T00:00:00");
+  });
+
+  it("shows a held ghost bar at the dropped span while a recurring move awaits its scope choice", () => {
+    seed(
+      {
+        h: allDayEvent({
+          title: "Sprint week",
+          recurrenceId: "2026-06-16T00:00:00",
+          recurrenceRule: { "@type": "RecurrenceRule", frequency: "weekly" },
+        }),
+      },
+      ["h"],
+    );
+    const { container } = render(() => <WeekGrid columns={7} />);
+    const bar = screen.getByRole("button", { name: /Sprint week/ });
+    fireEvent.pointerDown(bar, { clientX: 250, clientY: 10, pointerId: 1, button: 0 });
+    fireEvent.pointerMove(bar, { clientX: 450, clientY: 10, pointerId: 1 }); // +2 days → col 4
+    fireEvent.pointerUp(bar, { clientX: 450, clientY: 10, pointerId: 1 });
+    // The dialog is open (recurring) and the ghost is held at the target column (col 4 → grid-column 5).
+    const ghost = container.querySelector(".week-allday-bar-ghost") as HTMLElement;
+    expect(ghost).toBeTruthy();
+    expect(ghost.style.gridColumn).toBe("5 / 6");
+  });
 });

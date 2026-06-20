@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Calendar, CalendarEvent } from "@/jmap/types";
 import {
+  allDayLaneKey,
   compareCalendars,
   compareEvents,
   createdEventFor,
@@ -1694,6 +1695,44 @@ describe("monthCellKey (month-grid pointer → cell day-key)", () => {
     // A zero width/height would divide to Infinity/NaN and map to a wrong edge cell — fail closed instead.
     expect(monthCellKey(50, 50, { left: 0, top: 0, width: 0, height: 500 }, weeks)).toBeNull();
     expect(monthCellKey(50, 50, { left: 0, top: 0, width: 700, height: 0 }, weeks)).toBeNull();
+  });
+});
+
+describe("allDayLaneKey (all-day-lane pointer → column day-key)", () => {
+  // 7 columns, 100px each, over the visible week Sun Jun 14 … Sat Jun 20 2026.
+  const days = [
+    "2026-06-14",
+    "2026-06-15",
+    "2026-06-16",
+    "2026-06-17",
+    "2026-06-18",
+    "2026-06-19",
+    "2026-06-20",
+  ];
+  const rect = { left: 0, width: 700 };
+
+  it("maps a pointer's x to the day column under it", () => {
+    expect(allDayLaneKey(50, rect, days)).toBe("2026-06-14"); // col 0
+    expect(allDayLaneKey(250, rect, days)).toBe("2026-06-16"); // col 2
+    expect(allDayLaneKey(650, rect, days)).toBe("2026-06-20"); // col 6
+  });
+
+  it("clamps a pointer past an edge to the nearest column (never loses the target)", () => {
+    expect(allDayLaneKey(9999, rect, days)).toBe("2026-06-20"); // past the right edge → last col
+    expect(allDayLaneKey(-50, rect, days)).toBe("2026-06-14"); // left of the lane → first col
+  });
+
+  it("handles a single-day lane (Day view)", () => {
+    expect(allDayLaneKey(40, { left: 0, width: 80 }, ["2026-06-17"])).toBe("2026-06-17");
+  });
+
+  it("returns null for an empty day list", () => {
+    expect(allDayLaneKey(50, rect, [])).toBeNull();
+  });
+
+  it("fails closed (null) on a degenerate zero-width rect (no spurious edge column)", () => {
+    // A zero width would divide to Infinity/NaN and map to a wrong edge column — fail closed instead.
+    expect(allDayLaneKey(50, { left: 0, width: 0 }, days)).toBeNull();
   });
 });
 
