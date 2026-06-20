@@ -726,10 +726,11 @@ export function createSeedDate(
   zone: string = LOCAL_ZONE,
 ): Date {
   const { after, before } = visibleRange(mode, anchor, zone);
-  // The seed is consumed by emptyEditableEvent via browser-local getters to build a floating
-  // datetime-local default, so carry the DISPLAY-ZONE wall-clock of `now` as a browser-local carrier —
-  // then the default slot reads in the zone the user is viewing. With the local zone these parts equal
-  // now's own components (Branch-1 behavior).
+  // The seed is consumed by emptyEditableEvent via browser-local getters to build the datetime-local
+  // default, so carry the DISPLAY-ZONE wall-clock of `now` as a browser-local carrier — then the default
+  // slot reads in the zone the user is viewing. (This returns a zone-agnostic CARRIER only; the create
+  // form's `defaultCreateSeed` then stamps the display zone onto the resulting event so it isn't left
+  // floating.) With the local zone these parts equal now's own components (Branch-1 behavior).
   const p = partsInZone(now.getTime(), zone);
   const nowMs = now.getTime();
   // `now` falls in the (full-day, zone-midnight-bounded) window iff today's display-zone civil day is
@@ -739,6 +740,30 @@ export function createSeedDate(
     return new Date(p.year, p.month - 1, p.day, p.hour, p.minute);
   }
   return new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate(), p.hour, p.minute);
+}
+
+/**
+ * The create form's working copy ({@link EditableEvent}) for a plain "+ New event" (no swept range):
+ * a default slot ({@link emptyEditableEvent}) at the {@link createSeedDate} time-of-day — i.e. the next
+ * top of the hour, one hour long, in the VISIBLE window — but ANCHORED to `zone` (the display zone),
+ * NOT left floating. The anchoring is the whole point and the same fix (and reason) as the drag-create
+ * seed ({@link dragCreateSeed}): a floating create is stamped `Etc/UTC` by Stalwart's `expandRecurrences`
+ * query (which the agenda + week/day grid use), with `utcStart` computed from the wall-clock-as-UTC, so it
+ * would then {@link convertsToViewerZone} and SHIFT the seeded time in any non-UTC display zone — the new
+ * event would render at the wrong time. Stamping the display zone makes the event self-consistent so it
+ * round-trips to the SAME on-screen time. The user can still pick "Floating" in the form's zone picker
+ * (the wall-clock stays). `zone` is a real IANA zone here (the display-zone signal defaults to
+ * {@link LOCAL_ZONE} and is otherwise set from the curated picker), so it's safe to stamp without the
+ * fail-closed validation the inverse {@link dropToSourceStart} needs. `now`/`zone` parameterized for
+ * tests. Pure.
+ */
+export function defaultCreateSeed(
+  mode: CalendarViewMode,
+  anchor: Date,
+  now: Date = new Date(),
+  zone: string = LOCAL_ZONE,
+): EditableEvent {
+  return { ...emptyEditableEvent(createSeedDate(mode, anchor, now, zone)), timeZone: zone };
 }
 
 // ---------------------------------------------------------------------------

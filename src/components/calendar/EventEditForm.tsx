@@ -2,12 +2,11 @@ import { createMemo, createSignal, For, type JSX, onMount, Show } from "solid-js
 import { createStore, produce, unwrap } from "solid-js/store";
 import type { Calendar, CalendarEvent } from "@/jmap/types";
 import {
-  createSeedDate,
+  defaultCreateSeed,
   defaultWritableCalendarId,
   type EditableEvent,
   type EditableRecurrence,
   editableHasContent,
-  emptyEditableEvent,
   eventToEditable,
   FREQ_UNIT,
   parseDateParts,
@@ -77,7 +76,8 @@ export type EventEditFormProps = { onClose: () => void } & (
 /**
  * Edit an existing event, or create a new one, in place (column 3, replacing the read-only
  * EventDetail). A working copy — seeded from the resolved BASE event (`eventToEditable`) when editing,
- * a default one-hour slot (`emptyEditableEvent`) when creating — is edited locally; Save dispatches
+ * a display-zone-anchored default one-hour slot (`defaultCreateSeed`) or a drag-swept range when
+ * creating — is edited locally; Save dispatches
  * `saveEvent` (a minimal patch against the open-time baseline) or `createEvent` (a new event in the
  * chosen calendar), which own the JMAP round trip + the agenda reconcile. Covers title, when
  * (start/end/all-day/timeZone), location, description, the status/free-busy/privacy enums, AND the
@@ -114,17 +114,16 @@ export function EventEditForm(props: EventEditFormProps) {
   // eslint-disable-next-line solid/reactivity
   const seed = props.mode === "create" && props.seed ? structuredClone(props.seed) : null;
   // Edit seeds from the base event; a drag-to-create seeds from the swept range; a plain create seeds a
-  // default slot in the VISIBLE window (createSeedDate reads the current mode + anchor) at the display
-  // zone's time-of-day, so a new event made while the calendar is navigated away from today (or viewed
-  // in another zone) lands on screen, not off-window on today. Keyed off `baseline` (null only in create
-  // mode) so there's no extra props read; a one-time capture at open (the form unmounts on a selection
-  // change).
+  // default slot in the VISIBLE window (defaultCreateSeed reads the current mode + anchor) at the display
+  // zone's time-of-day AND anchored to the display zone, so a new event made while the calendar is
+  // navigated away from today (or viewed in another zone) lands on screen, not off-window on today, and
+  // doesn't get shifted by Stalwart's floating→Etc/UTC expansion (the same anchoring as a drag-create
+  // seed — see defaultCreateSeed). Keyed off `baseline` (null only in create mode) so there's no extra
+  // props read; a one-time capture at open (the form unmounts on a selection change).
   const initial = baseline
     ? eventToEditable(baseline)
     : (seed ??
-      emptyEditableEvent(
-        createSeedDate(calendarViewMode(), calendarAnchor(), new Date(), calendarDisplayZone()),
-      ));
+      defaultCreateSeed(calendarViewMode(), calendarAnchor(), new Date(), calendarDisplayZone()));
   const [form, setForm] = createStore<EditableEvent>(initial);
   // Create mode: which writable calendar the new event lands in. Defaults to the server-default
   // writable calendar; a `<select>` lets the user pick only when there's more than one. (Static for

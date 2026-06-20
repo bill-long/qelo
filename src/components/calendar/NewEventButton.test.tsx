@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventView } from "@/components/calendar/EventView";
 import { NewEventButton } from "@/components/calendar/NewEventButton";
 import type { Calendar, CalendarEvent } from "@/jmap/types";
-import { dragCreateSeed } from "@/lib/calendar";
+import { dragCreateSeed, LOCAL_ZONE } from "@/lib/calendar";
 import { resetCalendar, setCalendarEvents, setCalendars } from "@/stores/calendar";
 import {
   createSeed,
@@ -132,9 +132,9 @@ describe("NewEventButton", () => {
 
     expect(creatingEvent()).toBe(true);
     expect(createSeed()).toBeNull();
-    // The form shows the default slot, NOT the stale swept range: the default is floating (timeZone ""),
-    // whereas the cleared seed was zoned (America/New_York) and started at 09:00.
-    expect((screen.getByLabelText("Time zone") as HTMLSelectElement).value).toBe("");
+    // The form shows the default slot, NOT the stale swept range: the default is anchored to the display
+    // zone (LOCAL_ZONE) at the next-hour slot, whereas the cleared seed was zoned America/New_York at 09:00.
+    expect((screen.getByLabelText("Time zone") as HTMLSelectElement).value).toBe(LOCAL_ZONE);
     expect((screen.getByLabelText("Start") as HTMLInputElement).value).not.toBe("2026-09-07T09:00");
   });
 
