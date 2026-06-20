@@ -91,11 +91,10 @@ function ThreadRow(props: { id: string }) {
     <Show when={email()}>
       {(mail) => (
         // Drag-to-move is a deliberately pointer-only convenience (HTML5 DnD has no keyboard/AT
-        // equivalent). It adds NO capability — the accessible route to the same outcome is
-        // unchanged: archive/trash on the row, and for an arbitrary folder the reading-pane
-        // "Move to…" picker (open the conversation — keyboard-reachable — then MailboxActions'
-        // message variant). dragend is bound on the .thread-list container, not here.
-        // biome-ignore lint/a11y/noStaticElementInteractions: pointer-only DnD; the reading-pane "Move to…" picker is the a11y path
+        // equivalent). It adds NO capability — the row carries its own keyboard/AT-accessible twin:
+        // archive/trash buttons plus the row-variant "Move to…" <select> (MailboxActions) for an
+        // arbitrary folder. dragend is bound on the .thread-list container, not here.
+        // biome-ignore lint/a11y/noStaticElementInteractions: pointer-only DnD; the row's "Move to…" <select> is the a11y twin
         <div
           class="thread-row"
           classList={{

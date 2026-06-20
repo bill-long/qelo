@@ -324,6 +324,19 @@ body,
   color: var(--accent);
 }
 
+/* "Move to…" picker on a row — a native <select> styled like .message-move to sit among the icon
+   actions: a plain "Move" text placeholder carries the affordance (appearance:none, no caret), the
+   accessible name rides on aria-label. width:auto so the label isn't clipped (the base .row-action
+   fixes a square width for the icon buttons). */
+.row-move {
+  width: auto;
+  min-width: 1.85rem;
+  padding: 0 0.4rem;
+  appearance: none;
+  font: inherit;
+  font-size: 0.9rem;
+}
+
 .row-action.is-danger:hover {
   color: var(--danger);
 }
