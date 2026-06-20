@@ -1636,7 +1636,8 @@ describe("resizeGeometry (drag-edge resize geometry)", () => {
 });
 
 describe("monthCellKey (month-grid pointer → cell day-key)", () => {
-  // A 700×600 grid: 7 columns (100px each), N rows (200px each for 3 weeks). Sun-start weeks.
+  // 7 columns (100px each) × `weeks.length` rows (200px each); June 2026 is 5 Sun-start weeks → 1000px
+  // tall. So col = floor(x/100), row = floor(y/200).
   const weeks = monthGridWeeks(new Date(2026, 5, 1), new Date(2026, 5, 1), "UTC"); // June 2026
   const rect = { left: 0, top: 0, width: 700, height: weeks.length * 200 };
 

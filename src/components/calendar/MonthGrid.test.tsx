@@ -74,6 +74,12 @@ function seed(events: Record<string, CalendarEvent>, ids: string[]) {
 //  Row 0 May31–Jun6 · Row 1 Jun7–13 · Row 2 Jun14–20 · Row 3 Jun21–27 · Row 4 Jun28–Jul4.
 //  Wed Jun 17 = row 2, col 3 → (x 350, y 250). Sat Jun 20 = row 2, col 6 → (x 650, y 250).
 let rectSpy: ReturnType<typeof vi.spyOn> | undefined;
+// jsdom implements neither setPointerCapture nor releasePointerCapture; stub them ONLY when absent so a
+// future jsdom that adds a real implementation isn't clobbered, and in afterEach delete only what we
+// actually added (so we never remove a member we didn't create). The stubbed-members list is captured
+// per run.
+const POINTER_CAPTURE_METHODS = ["setPointerCapture", "releasePointerCapture"] as const;
+let stubbedPointerCapture: (typeof POINTER_CAPTURE_METHODS)[number][] = [];
 beforeEach(() => {
   rescheduleMock.mockClear();
   rectSpy = vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
@@ -87,8 +93,10 @@ beforeEach(() => {
     y: 0,
     toJSON: () => ({}),
   } as DOMRect);
-  HTMLElement.prototype.setPointerCapture = () => {};
-  HTMLElement.prototype.releasePointerCapture = () => {};
+  stubbedPointerCapture = POINTER_CAPTURE_METHODS.filter((m) => !(m in HTMLElement.prototype));
+  for (const m of stubbedPointerCapture) {
+    HTMLElement.prototype[m] = () => {};
+  }
   resetCalendar();
   setSelectedCalendarId(null);
   setSelectedEventId(null);
@@ -99,8 +107,10 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   rectSpy?.mockRestore();
-  delete (HTMLElement.prototype as Partial<HTMLElement>).setPointerCapture;
-  delete (HTMLElement.prototype as Partial<HTMLElement>).releasePointerCapture;
+  for (const m of stubbedPointerCapture) {
+    delete (HTMLElement.prototype as Partial<HTMLElement>)[m];
+  }
+  stubbedPointerCapture = [];
   resetCalendar();
   setSelectedCalendarId(null);
   setSelectedEventId(null);
