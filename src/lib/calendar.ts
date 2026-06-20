@@ -1338,7 +1338,7 @@ export function pointerToGrid(
  * week/day grid (drag-to-create). `startMin`/`endMin` are minutes-from-midnight on the display-zone civil
  * day `dayKey` (the swept column) — already snapped to the grid by the caller; this orders them, clamps to
  * the day, and on a zero-length sweep / tap (the two edges collapse to one grid minute) seeds a
- * `defaultMin` slot at that point instead (kept wholly within the day).
+ * `defaultMin` slot at that point instead (clamped to [1, a full day] and kept wholly within the day).
  *
  * The new event is ANCHORED TO `displayZone` (the zone it was swept in): `start`/`end` are the swept
  * DISPLAY-zone wall-clock and `timeZone` is `displayZone`, so the two are self-consistent and the event
@@ -1362,9 +1362,12 @@ export function dragCreateSeed(
   let hi = Math.max(0, Math.min(MINUTES_PER_DAY, Math.max(startMin, endMin)));
   if (hi - lo < 1) {
     // A tap (or a sweep that snapped back to a single grid line): default to a sensible-length slot at
-    // the tapped point, shifted up if needed so the whole slot stays inside the day.
-    lo = Math.max(0, Math.min(lo, MINUTES_PER_DAY - defaultMin));
-    hi = lo + defaultMin;
+    // the tapped point, shifted up if needed so the whole slot stays inside the day. Clamp `defaultMin`
+    // to [1, a full day] first so a degenerate caller value (≤0 / >1440) can't produce a zero/negative
+    // or multi-day slot.
+    const slot = Math.max(1, Math.min(MINUTES_PER_DAY, defaultMin));
+    lo = Math.max(0, Math.min(lo, MINUTES_PER_DAY - slot));
+    hi = lo + slot;
   }
   const s = gridParts(dayKey, lo);
   const e = gridParts(dayKey, hi);

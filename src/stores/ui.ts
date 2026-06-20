@@ -52,7 +52,8 @@ export const [creatingContact, setCreatingContact] = createSignal(false);
 export const [creatingEvent, setCreatingEvent] = createSignal(false);
 
 // A working-copy seed for the create form, set by drag-to-create on the week/day time grid (WeekGrid):
-// the swept time range as a floating EditableEvent (lib `dragCreateSeed`). When present, the freshly
+// the swept time range as an EditableEvent anchored to the display zone it was swept in (lib
+// `dragCreateSeed`). When present, the freshly
 // mounted create form uses it instead of the default next-hour slot; null = the "+ New event" default.
 // Read once when the create form mounts (it remounts on each open), so it must be SET before
 // `creatingEvent` flips true and CLEARED alongside it (NewEventButton clears it for a plain create;

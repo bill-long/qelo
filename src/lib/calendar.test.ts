@@ -1504,6 +1504,17 @@ describe("dragCreateSeed (drag-to-create on the empty grid → create-form seed)
     expect(dragCreateSeed("2026-07-01", 540, 600)?.timeZone).toBe(LOCAL_ZONE);
   });
 
+  it("clamps a degenerate defaultMin so a tap can't produce a zero/negative or multi-day slot", () => {
+    // defaultMin <= 0 → a minimum 1-minute slot, not a zero/negative-length one.
+    const tiny = dragCreateSeed("2026-07-01", 540, 540, NY, 0);
+    expect(tiny?.start).toBe("2026-07-01T09:00");
+    expect(tiny?.end).toBe("2026-07-01T09:01");
+    // defaultMin > a full day → at most a full day (00:00 → next-day 00:00), never multi-day.
+    const huge = dragCreateSeed("2026-07-01", 540, 540, NY, 5000);
+    expect(huge?.start).toBe("2026-07-01T00:00");
+    expect(huge?.end).toBe("2026-07-02T00:00");
+  });
+
   it("returns null for a malformed day key", () => {
     expect(dragCreateSeed("not-a-day", 540, 600, NY)).toBeNull();
   });
