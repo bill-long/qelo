@@ -486,17 +486,31 @@ function applyPresence(email: Email, p: PresencePatch): void {
  *     elsewhere). Their `mailboxIds` was rolled back to the pre-optimistic snapshot only so the
  *     destroy push can prune them, so a caller MUST NOT treat that snapshot as "still here" and
  *     restore a row for them — that would be a ghost row until the next sync.
+ *
+ * `knownPrior` lets a caller that already optimistically applied a patch to an id (e.g. a
+ * pre-patch for instant feedback, before this call) supply that id's TRUE pre-optimistic presence,
+ * so the rollback snapshot isn't polluted by reading back the caller's own optimistic write. Only
+ * the prior CAPTURE consults it; the optimistic write is still (idempotently) applied to every held
+ * id — see mutateConversationKeyword.
  */
 async function optimisticEmailUpdate(
   ids: string[],
   patches: PresencePatch[],
+  knownPrior?: Map<string, boolean[]>,
 ): Promise<{ reverted: string[]; gone: string[] }> {
   if (ids.length === 0) return { reverted: [], gone: [] };
   const held = ids.filter((id) => emails[id]);
 
   // Capture pre-optimistic presence of each patched field, per held row, for a precise revert.
+  // A supplied `knownPrior` wins: its id was already optimistically patched by the caller, so the
+  // current store value is that optimistic write, not the true prior we must revert to.
   const prior = new Map<string, boolean[]>();
   for (const id of held) {
+    const supplied = knownPrior?.get(id);
+    if (supplied) {
+      prior.set(id, supplied);
+      continue;
+    }
     const email = emails[id];
     if (email)
       prior.set(
@@ -816,7 +830,7 @@ async function conversationEmailIds(repId: string): Promise<string[]> {
   if (!threadId) return [repId];
   // The open conversation is already fully loaded (Thread/get + detail Email/get in loadThread).
   // Copy it: thread.emailIds is the reactive store array — never hand a caller a live reference.
-  if (thread.threadId === threadId && thread.emailIds.length > 0) return [...thread.emailIds];
+  if (conversationOpenInPane(threadId)) return [...thread.emailIds];
   try {
     const client = jmap();
     const responses = await client.request([
@@ -855,14 +869,62 @@ async function conversationIdsInOpenFolder(repId: string, fromId: string): Promi
   return ids.filter((id) => emails[id]?.mailboxIds[fromId] === true);
 }
 
+/**
+ * True when the representative's conversation is the one currently open in the reading pane, fully
+ * loaded — so conversationEmailIds returns its ids WITHOUT a round trip. Shared with the keyword
+ * pre-patch gate (mutateConversationKeyword) so the two can't drift on "does this need a fetch".
+ */
+function conversationOpenInPane(threadId: string): boolean {
+  return thread.threadId === threadId && thread.emailIds.length > 0;
+}
+
+/**
+ * Apply one keyword presence patch to the whole conversation, flipping the visible representative
+ * row's indicator IMMEDIATELY when expanding the thread needs a round trip — so a read/flag toggle
+ * on a collapsed, not-yet-open multi-message conversation doesn't lag the Thread/get on a slow link
+ * (#14, deferred from PR #21).
+ *
+ * The whole conversation is still mutated by a SINGLE optimisticEmailUpdate (one /set) once the
+ * thread is expanded — two /sets on the same representative (a pre-patch /set + the full pass)
+ * couldn't coordinate their rollbacks: a transport failure of one while the other persisted would
+ * revert the row despite the server accepting the change. Instead, for instant feedback we apply a
+ * request-LESS optimistic store write to the representative alone before the expand (the row reads
+ * emails[rep], so its indicator flips synchronously). The expand then refetches server truth over
+ * the rep (clobbering that pre-patch); the single full pass re-applies the patch to the whole
+ * conversation — the clobber and the re-apply land in adjacent microtasks with no paint between, so
+ * the row never flickers. Because the pre-patch left our optimistic value in the store (and on an
+ * expand FAILURE there's no clobber to reset it), we hand the full pass the rep's TRUE prior via
+ * `knownPrior` so a rollback reverts to the pre-optimistic value, not back to our own pre-patch.
+ *
+ * When the conversation resolves locally (open in the pane, or no threadId) there's no fetch to
+ * lag, so we skip the pre-patch and mutate the whole set in a single /set with no `knownPrior`.
+ */
+async function mutateConversationKeyword(repId: string, patch: PresencePatch): Promise<void> {
+  const rep = emails[repId];
+  const threadId = rep?.threadId;
+  const needsFetch = threadId !== undefined && !conversationOpenInPane(threadId);
+  let knownPrior: Map<string, boolean[]> | undefined;
+  if (needsFetch && rep) {
+    // The rep's pre-optimistic value, captured BEFORE the request-less pre-patch flips it.
+    knownPrior = new Map([[repId, [isPresent(rep, patch.map, patch.key)]]]);
+    setEmails(
+      produce((store) => {
+        const email = store[repId];
+        if (email) applyPresence(email, patch);
+      }),
+    );
+  }
+  await optimisticEmailUpdate(await conversationEmailIds(repId), [patch], knownPrior);
+}
+
 /** Mark every message in the representative's conversation read/unread ($seen). Optimistic. */
 export async function markConversationSeen(repId: string, seen: boolean): Promise<void> {
-  await markSeen(await conversationEmailIds(repId), seen);
+  await mutateConversationKeyword(repId, { map: "keywords", key: "$seen", present: seen });
 }
 
 /** Flag/unflag every message in the representative's conversation ($flagged). Optimistic. */
 export async function setConversationFlagged(repId: string, flagged: boolean): Promise<void> {
-  await setFlagged(await conversationEmailIds(repId), flagged);
+  await mutateConversationKeyword(repId, { map: "keywords", key: "$flagged", present: flagged });
 }
 
 /**
