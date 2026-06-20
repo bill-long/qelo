@@ -914,7 +914,16 @@ async function mutateConversationKeyword(repId: string, patch: PresencePatch): P
       }),
     );
   }
-  await optimisticEmailUpdate(await conversationEmailIds(repId), [patch], knownPrior);
+  const ids = await conversationEmailIds(repId);
+  if (ids.length === 0) {
+    // conversationEmailIds returns [] ONLY on an auth failure (the re-auth gate is already raised),
+    // so the full pass below would no-op and never issue a /set. Roll the request-less pre-patch
+    // back (guarded, via the rep's captured prior) instead of stranding an optimistic flip on a row
+    // whose change was never sent.
+    if (knownPrior) rollbackPresence([repId], [patch], knownPrior);
+    return;
+  }
+  await optimisticEmailUpdate(ids, [patch], knownPrior);
 }
 
 /** Mark every message in the representative's conversation read/unread ($seen). Optimistic. */
