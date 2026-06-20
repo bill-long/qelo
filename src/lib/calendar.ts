@@ -1381,6 +1381,72 @@ export function dragCreateSeed(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Month drag-to-move (drag milestone, Branch 4). A move on the MONTH grid is pure civil-day arithmetic
+// — no instant math, no zone projection (unlike the time-grid drop, {@link dropToSourceStart}): the
+// gesture yields a whole-day delta between two display-zone cells, and the write shifts the event's
+// SOURCE start date by that many days (keeping the time-of-day). Probed live: shifting the source date
+// by N whole days moves the server `utcStart` by exactly N days, so the event lands on the target
+// DISPLAY day too (the source↔display day offset is constant except across a DST transition near
+// midnight — the documented edge). The geometry (cell hit-test, day delta) lives here, tested, not in
+// the component.
+// ---------------------------------------------------------------------------
+
+/**
+ * The "YYYY-MM-DD" day-key of the month-grid cell under a pointer, or null when `weeks` is empty. The
+ * month grid (`.month-weeks`) is a uniform rows×7 cell grid (equal-height rows via
+ * `grid-auto-rows: 1fr`), so the cell is a pure division of the container `rect`: the row from the
+ * vertical fraction, the column (0–6, Sun-start) from the horizontal fraction, indexed into `weeks`.
+ * Both are CLAMPED to the grid so a pointer dragged just past an edge maps to the nearest cell (the
+ * drag never loses its target). Returns null (FAILS CLOSED — no cell) when `weeks` is empty OR the rect
+ * has a non-positive dimension: dividing by a zero width/height (a layout glitch / an unmounted grid)
+ * would yield Infinity/NaN and map to a spurious edge cell, which a drag would then reschedule to.
+ * Pure (rect passed in, no DOM), unit-testable like {@link pointerToGrid}.
+ */
+export function monthCellKey(
+  clientX: number,
+  clientY: number,
+  rect: { left: number; top: number; width: number; height: number },
+  weeks: DayCell[][],
+): string | null {
+  const rows = weeks.length;
+  if (rows === 0 || rect.width <= 0 || rect.height <= 0) return null;
+  const row = Math.max(
+    0,
+    Math.min(rows - 1, Math.floor(((clientY - rect.top) / rect.height) * rows)),
+  );
+  const col = Math.max(0, Math.min(6, Math.floor(((clientX - rect.left) / rect.width) * 7)));
+  return weeks[row]?.[col]?.key ?? null;
+}
+
+/**
+ * The signed whole-day difference `toKey − fromKey` for two "YYYY-MM-DD" day-keys (treated as
+ * UTC-midnight scalars, like the rest of the month math), or null when either is malformed. The civil
+ * day delta a month drag-to-move shifts an event by — positive when `toKey` is the later day. Pure.
+ */
+export function dayKeyDelta(fromKey: string, toKey: string): number | null {
+  const a = keyToUtcMs(fromKey);
+  const b = keyToUtcMs(toKey);
+  if (Number.isNaN(a) || Number.isNaN(b)) return null;
+  return Math.round((b - a) / DAY_MS);
+}
+
+/**
+ * The SOURCE-zone wall-clock start for a month drag-to-move: the event's literal source start
+ * ({@link eventStartParts}) shifted by `dayDelta` whole days, keeping its time-of-day (an all-day event
+ * keeps its `T00:00:00`). Null ONLY when the event has no parseable start — the caller is responsible
+ * for treating a zero/invalid day-delta as a no-op BEFORE calling this (so `null` means "couldn't
+ * compute", not "nothing to do"). Unlike the time-grid drop there's NO display→source instant inversion:
+ * a whole-day source shift lands the event on the target display day too (see the section note). The
+ * duration rides along unchanged — `rescheduleEvent` keeps it (a move passes `newDurationMs` null). UTC
+ * arithmetic ({@link partsAddMs}) so it never drifts at a DST boundary. Pure.
+ */
+export function monthMoveStart(event: CalendarEvent, dayDelta: number): DateParts | null {
+  const start = eventStartParts(event);
+  if (!start) return null;
+  return partsAddMs(start, dayDelta * DAY_MS);
+}
+
 const FREQ_LABEL: Record<string, string> = {
   daily: "Daily",
   weekly: "Weekly",

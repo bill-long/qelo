@@ -16,6 +16,7 @@ import {
   emptyRecurrence,
   eventEndParts,
   eventToEditable,
+  monthMoveStart,
   parseDateParts,
   partsUtcMs,
 } from "@/lib/calendar";
@@ -798,6 +799,11 @@ describe("calendar (live Stalwart)", () => {
     return p?.hour;
   }
 
+  /** The raw `start` string of the (only) loaded event titled `title`. */
+  function startByTitle(title: string): string | undefined {
+    return Object.values(calendarEvents).find((ev) => ev?.title === title)?.start;
+  }
+
   /** The duration in minutes of the (only) loaded event titled `title` (start → end). */
   function durationMinByTitle(title: string): number | undefined {
     const e = Object.values(calendarEvents).find((ev) => ev?.title === title);
@@ -825,6 +831,33 @@ describe("calendar (live Stalwart)", () => {
     await loadUntil(() => startHourByTitle(title) === 11);
     expect(startHourByTitle(title)).toBe(11);
     expect(countByTitle(title)).toBe(1); // still a single event, just moved
+  });
+
+  it("moves a non-recurring event across DAYS via rescheduleEvent (a month-grid whole-day drag)", async () => {
+    const calId = await defaultCalendarId();
+    const tag = Math.random().toString(36).slice(2, 8);
+    const title = `DayMove ${tag}`;
+    await seedEvents(calId, [{ title, start: localDateTime(5, 9) }]); // 09:00 NY, 5 days out
+    await loadUntil(() => countByTitle(title) >= 1);
+    const occId = occurrenceIdFor(title);
+    const before = Object.values(calendarEvents).find((e) => e?.title === title);
+    if (!before) throw new Error("unreachable");
+
+    // The month grid's whole-day move: monthMoveStart shifts the SOURCE start date by the cell delta
+    // (here +3 days), keeping the time-of-day, and the store writes it (newDurationMs null = keep length).
+    // Comparing against the computed newStart (not startDay+3) stays correct across a month boundary.
+    const newStart = monthMoveStart(before, 3);
+    if (!newStart) throw new Error("unreachable");
+    const result = await rescheduleEvent(occId, newStart, null, "all", null);
+    expect(result.ok).toBe(true);
+
+    // It lands on the +3 day, same 09:00 time-of-day, still a single event (a move, not a split).
+    await loadUntil(() => parseDateParts(startByTitle(title))?.day === newStart.day);
+    const after = parseDateParts(startByTitle(title));
+    expect(after?.day).toBe(newStart.day);
+    expect(after?.month).toBe(newStart.month);
+    expect(after?.hour).toBe(9);
+    expect(countByTitle(title)).toBe(1);
   });
 
   it("reschedules a recurring series with 'all' (the whole series shifts by the drag delta)", async () => {

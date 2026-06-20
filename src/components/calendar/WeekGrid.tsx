@@ -1,4 +1,5 @@
 import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
+import { createClickSuppressor } from "@/components/calendar/clickSuppressor";
 import type { CalendarEvent } from "@/jmap/types";
 import {
   type AllDaySegment,
@@ -186,23 +187,10 @@ export function WeekGrid(props: { columns: number }) {
   // Whether the account can create at all (≥1 writable calendar) — the same gate as the "+ New event"
   // affordance; without it a drag-to-create would pop a form that can't be saved.
   const canCreate = createMemo(() => writableCalendars(calendars).length > 0);
-  // Set true the instant a gesture commits, so the trailing native `click` on the block is swallowed (a
-  // move/resize/create must not also select). Read+reset by the block's onClick.
-  let suppressClick = false;
-  let suppressClickTimer = 0;
-  onCleanup(() => clearTimeout(suppressClickTimer));
-  // Arm the click-suppression for the trailing click of a committed gesture, AND auto-clear it on the
-  // next macrotask: the synchronous trailing `click` (right after pointerup) still sees it set and is
-  // swallowed, but if NO trailing click fires (the pointer released off any block), the flag can't linger
-  // and swallow a later KEYBOARD activation (Enter/Space → click, which never runs through pointerdown to
-  // reset it). One place owns this subtle lifecycle so every commit path (move/resize/create) shares it.
-  function suppressNextClick(): void {
-    suppressClick = true;
-    clearTimeout(suppressClickTimer);
-    suppressClickTimer = window.setTimeout(() => {
-      suppressClick = false;
-    }, 0);
-  }
+  // Click-suppression for the trailing native `click` of a committed gesture (a move/resize/create must
+  // not also select). One shared primitive owns the subtle macrotask lifecycle (see createClickSuppressor)
+  // so every commit path here AND the month grid behave identically.
+  const clickSuppressor = createClickSuppressor();
 
   // The ghost (a translucent preview block) follows the pointer during a drag and stays pinned at the
   // drop while the write is in flight. One source for both phases so the rendering can't diverge.
@@ -260,7 +248,7 @@ export function WeekGrid(props: { columns: number }) {
     // Reset the click-suppression flag at the START of every pointerdown — BEFORE any early return — so a
     // prior drag that ended without a trailing click (released off any block) can't leave it set and
     // swallow the next click. (pointerdown always precedes the click, so clearing here is safe.)
-    suppressClick = false;
+    clickSuppressor.reset();
     // Only a primary-button press on a writable event starts a gesture; everything else stays a click.
     // Also refuse while a previous drop is still committing — its ghost is pinned at the dropped slot
     // (and a recurring scope chooser may be open); a new gesture would yank that ghost away mid-write — or
@@ -386,7 +374,7 @@ export function WeekGrid(props: { columns: number }) {
     const startUnchanged = sameWhen(newStart, currentStart);
     const endUnchanged = newEnd === null || sameWhen(newEnd, currentEnd);
     if (startUnchanged && endUnchanged) return;
-    suppressNextClick();
+    clickSuppressor.arm();
     const c: Committing = {
       occId: d.occId,
       event: d.event,
@@ -467,7 +455,7 @@ export function WeekGrid(props: { columns: number }) {
     if (!seed) return;
     // Swallow the trailing click the same way a move/resize commit does: if the sweep happened to end over
     // an existing block, its click must NOT also select that block (the create form is opening).
-    suppressNextClick();
+    clickSuppressor.arm();
     setCreateSeed(seed);
     setCreatingEvent(true);
   }
@@ -478,7 +466,12 @@ export function WeekGrid(props: { columns: number }) {
     setCreateDrag(null);
   }
 
+  // Guards a single commit from a double-fire: the recurring scope dialog stays open while the async
+  // rescheduleEvent is in flight, so a double-click on a scope button would otherwise launch a second
+  // concurrent reschedule for the same occurrence. Only the first runs until it resolves.
+  let rescheduling = false;
   async function dispatch(c: Committing, mode: RecurrenceEditMode): Promise<void> {
+    if (rescheduling) return;
     setDragError(null);
     // Boundary guard mirroring the dialog's disabled state: a per-occurrence mode needs a recurrenceId,
     // else saveEvent would degrade it to a whole-series "all" — so refuse rather than silently move the
@@ -488,18 +481,23 @@ export function WeekGrid(props: { columns: number }) {
       setDragError("Couldn't identify this occurrence. Try reopening the calendar.");
       return;
     }
-    const res = await rescheduleEvent(c.occId, c.newStart, c.newDurationMs, mode, c.recurrenceId);
-    // Clear the held ghost regardless — on success the reconcile re-rendered the block at its new slot;
-    // on failure the store reverted to server truth, so dropping the ghost shows the unchanged block.
-    setCommitting(null);
-    if (!res.ok && res.reason !== "auth") {
-      // Distinguish an un-resolvable base (the occurrence's series couldn't be identified) from a
-      // generic failure, mirroring the edit/delete flows' specificity.
-      setDragError(
-        res.reason === "unresolved"
-          ? "Couldn't identify this event's series. Try reopening the calendar."
-          : "Couldn't reschedule the event. Please try again.",
-      );
+    rescheduling = true;
+    try {
+      const res = await rescheduleEvent(c.occId, c.newStart, c.newDurationMs, mode, c.recurrenceId);
+      // Clear the held ghost regardless — on success the reconcile re-rendered the block at its new slot;
+      // on failure the store reverted to server truth, so dropping the ghost shows the unchanged block.
+      setCommitting(null);
+      if (!res.ok && res.reason !== "auth") {
+        // Distinguish an un-resolvable base (the occurrence's series couldn't be identified) from a
+        // generic failure, mirroring the edit/delete flows' specificity.
+        setDragError(
+          res.reason === "unresolved"
+            ? "Couldn't identify this event's series. Try reopening the calendar."
+            : "Couldn't reschedule the event. Please try again.",
+        );
+      }
+    } finally {
+      rescheduling = false;
     }
   }
 
@@ -569,11 +567,11 @@ export function WeekGrid(props: { columns: number }) {
     <div class="week-grid">
       <Show when={calendarReady()} fallback={<p class="agenda-note">Loading…</p>}>
         <Show when={dragError()}>
-          <div class="week-drag-error" role="alert">
+          <div class="calendar-drag-error" role="alert">
             {dragError()}
             <button
               type="button"
-              class="week-drag-error-dismiss"
+              class="calendar-drag-error-dismiss"
               onClick={() => setDragError(null)}
             >
               Dismiss
@@ -633,11 +631,7 @@ export function WeekGrid(props: { columns: number }) {
                     draggingId={draggingId}
                     ghost={ghost}
                     onBlockPointerDown={startDrag}
-                    shouldSuppressClick={() => {
-                      const s = suppressClick;
-                      suppressClick = false;
-                      return s;
-                    }}
+                    shouldSuppressClick={clickSuppressor.consume}
                   />
                 )}
               </For>
@@ -669,8 +663,9 @@ export function WeekGrid(props: { columns: number }) {
 
 // A native modal dialog asking how widely a recurring drag applies (this / following / all) — the same
 // scope set as the edit + delete flows. Native <dialog> + showModal gives the focus-trap, inert
-// background, and Escape→cancel for free (the established Qelo modal pattern).
-function RescheduleScopeDialog(props: {
+// background, and Escape→cancel for free (the established Qelo modal pattern). Exported so the month
+// grid's drag-to-move (Branch 4) reuses the exact same chooser rather than duplicating it.
+export function RescheduleScopeDialog(props: {
   title: string;
   action: "move" | "resize";
   recurrenceId: string | null;
