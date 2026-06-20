@@ -1,7 +1,7 @@
 import { createMemo, Show } from "solid-js";
 import { writableCalendars } from "@/lib/calendar";
 import { calendars } from "@/stores/calendar";
-import { setCreatingEvent } from "@/stores/ui";
+import { setCreateSeed, setCreatingEvent } from "@/stores/ui";
 
 /**
  * The "+ New event" affordance in the calendar-view sidebar (mirrors mail's Compose / contacts'
@@ -11,7 +11,8 @@ import { setCreatingEvent } from "@/stores/ui";
  * create the server would refuse. Hidden until the calendars load (they arrive with the first
  * Calendar-view open), which is fine — there's nothing to create into before then.
  *
- * Only toggles `creatingEvent` — it does NOT touch the selection. The create form overlays the detail
+ * Opens a DEFAULT create (clears any drag-to-create swept seed first, then sets `creatingEvent`) — it
+ * does NOT touch the selection. The create form overlays the detail
  * pane via `Show` regardless of what's selected, so clearing the selection would be cosmetic; worse,
  * it would re-trigger EventView's `on(selectedEventId)` effect (which runs AFTER this batched handler)
  * and reset `creatingEvent` straight back to false — the contacts batched-handler trap. Leaving the
@@ -21,7 +22,16 @@ export function NewEventButton() {
   const canCreate = createMemo(() => writableCalendars(calendars).length > 0);
   return (
     <Show when={canCreate()}>
-      <button type="button" class="compose-button" onClick={() => setCreatingEvent(true)}>
+      <button
+        type="button"
+        class="compose-button"
+        onClick={() => {
+          // Clear any swept-range seed left by a prior drag-to-create so a plain "+ New event" opens
+          // the default next-hour slot, not a stale swept range.
+          setCreateSeed(null);
+          setCreatingEvent(true);
+        }}
+      >
         <span aria-hidden="true">＋</span> New event
       </button>
     </Show>

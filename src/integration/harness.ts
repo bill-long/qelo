@@ -28,6 +28,7 @@ import {
   setCalendarAnchor,
   setCalendarDisplayZone,
   setCalendarViewMode,
+  setCreateSeed,
   setCreatingContact,
   setCreatingEvent,
   setSelectedAddressBookId,
@@ -148,6 +149,7 @@ export function resetStores(): void {
   // edit mode), so a half-open create form would otherwise leak across cases in the shared worker.
   setCreatingContact(false);
   setCreatingEvent(false);
+  setCreateSeed(null);
   setPageSize(50);
   // Recipient autocomplete keeps a module-level load-once guard + index that otherwise leak across
   // tests in the shared worker (openWith fires loadRecipientSuggestions), so reset it here too.

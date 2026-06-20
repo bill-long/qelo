@@ -3,9 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventView } from "@/components/calendar/EventView";
 import { NewEventButton } from "@/components/calendar/NewEventButton";
 import type { Calendar, CalendarEvent } from "@/jmap/types";
+import { dragCreateSeed } from "@/lib/calendar";
 import { resetCalendar, setCalendarEvents, setCalendars } from "@/stores/calendar";
 import {
+  createSeed,
   creatingEvent,
+  setCreateSeed,
   setCreatingEvent,
   setSelectedCalendarId,
   setSelectedEventId,
@@ -55,6 +58,7 @@ function reset() {
   setSelectedEventId(null);
   setSelectedCalendarId(null);
   setCreatingEvent(false);
+  setCreateSeed(null);
 }
 
 // emptyEditableEvent reads the clock; pin it so the seeded create form is deterministic.
@@ -108,6 +112,30 @@ describe("NewEventButton", () => {
 
     expect(creatingEvent()).toBe(true);
     expect(screen.getByRole("heading", { name: "New event" })).toBeTruthy();
+  });
+
+  it("clears a stale drag-to-create seed so a plain New event opens the default slot", () => {
+    // A prior drag-to-create left a swept range in createSeed. Clicking "+ New event" must clear it so the
+    // create form opens its default next-hour slot, not the stale swept range (the ui.ts seed-leak guard).
+    reset();
+    setCalendars({ b: calendar({}) });
+    setCreateSeed(dragCreateSeed("2026-09-07", 9 * 60, 11 * 60, "America/New_York"));
+    expect(createSeed()).not.toBeNull();
+
+    render(() => (
+      <>
+        <NewEventButton />
+        <EventView />
+      </>
+    ));
+    fireEvent.click(screen.getByRole("button", { name: /new event/i }));
+
+    expect(creatingEvent()).toBe(true);
+    expect(createSeed()).toBeNull();
+    // The form shows the default slot, NOT the stale swept range: the default is floating (timeZone ""),
+    // whereas the cleared seed was zoned (America/New_York) and started at 09:00.
+    expect((screen.getByLabelText("Time zone") as HTMLSelectElement).value).toBe("");
+    expect((screen.getByLabelText("Start") as HTMLInputElement).value).not.toBe("2026-09-07T09:00");
   });
 
   it("clears the create form when the Calendar view unmounts (leaving the surface)", () => {
