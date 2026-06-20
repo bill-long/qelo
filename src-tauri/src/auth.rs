@@ -755,10 +755,17 @@ fn parse_sse_block(block: &str) -> Option<SseFrame> {
 /// An async HTTP client for the push stream, trusting the dev server's self-signed cert for
 /// loopback URLs only (mirrors `http_client`). No request timeout — the stream is long-lived
 /// — but a connect timeout so opening can't hang forever.
+///
+/// Redirects are DISABLED (mirrors `download::download_client`): `ensure_provider_origin` only
+/// validates the initial URL, so following a redirect (including an open redirect on an allowed
+/// host) could carry the bearer token off the pinned origin. A JMAP `eventSourceUrl` is a direct
+/// stream endpoint with no legitimate redirect, so a 3xx is treated as a failure (see `open_sse`)
+/// rather than followed.
 fn async_http_client(url: &str) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .danger_accept_invalid_certs(is_loopback_url(url))
         .connect_timeout(HTTP_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| e.to_string())
 }
@@ -792,8 +799,18 @@ async fn open_sse(
         .send()
         .await
         .map_err(|e| OpenError::Other(e.to_string()))?;
-    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
         return Err(OpenError::Unauthorized);
+    }
+    // Redirects are disabled (see `async_http_client`), so a 3xx isn't followed — refuse it rather
+    // than treat the redirect response as the stream. The `Location` may point off the pinned origin
+    // (incl. an open redirect on an allowed host), which would carry the bearer token away, and
+    // `error_for_status` does NOT catch a 3xx, so reject every redirect categorically.
+    if status.is_redirection() {
+        return Err(OpenError::Other(format!(
+            "push stream redirected ({status}); refusing to follow (redirects are disabled to keep the bearer token on the pinned origin)"
+        )));
     }
     resp.error_for_status()
         .map_err(|e| OpenError::Other(e.to_string()))
