@@ -1398,7 +1398,10 @@ export function dragCreateSeed(
  * `grid-auto-rows: 1fr`), so the cell is a pure division of the container `rect`: the row from the
  * vertical fraction, the column (0–6, Sun-start) from the horizontal fraction, indexed into `weeks`.
  * Both are CLAMPED to the grid so a pointer dragged just past an edge maps to the nearest cell (the
- * drag never loses its target). Pure (rect passed in, no DOM), unit-testable like {@link pointerToGrid}.
+ * drag never loses its target). Returns null (FAILS CLOSED — no cell) when `weeks` is empty OR the rect
+ * has a non-positive dimension: dividing by a zero width/height (a layout glitch / an unmounted grid)
+ * would yield Infinity/NaN and map to a spurious edge cell, which a drag would then reschedule to.
+ * Pure (rect passed in, no DOM), unit-testable like {@link pointerToGrid}.
  */
 export function monthCellKey(
   clientX: number,
@@ -1407,7 +1410,7 @@ export function monthCellKey(
   weeks: DayCell[][],
 ): string | null {
   const rows = weeks.length;
-  if (rows === 0) return null;
+  if (rows === 0 || rect.width <= 0 || rect.height <= 0) return null;
   const row = Math.max(
     0,
     Math.min(rows - 1, Math.floor(((clientY - rect.top) / rect.height) * rows)),

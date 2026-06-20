@@ -1659,6 +1659,12 @@ describe("monthCellKey (month-grid pointer → cell day-key)", () => {
   it("returns null for an empty grid", () => {
     expect(monthCellKey(50, 50, rect, [])).toBeNull();
   });
+
+  it("fails closed (null) on a degenerate zero-sized rect (no spurious edge cell)", () => {
+    // A zero width/height would divide to Infinity/NaN and map to a wrong edge cell — fail closed instead.
+    expect(monthCellKey(50, 50, { left: 0, top: 0, width: 0, height: 500 }, weeks)).toBeNull();
+    expect(monthCellKey(50, 50, { left: 0, top: 0, width: 700, height: 0 }, weeks)).toBeNull();
+  });
 });
 
 describe("dayKeyDelta (whole-day difference between two day-keys)", () => {
