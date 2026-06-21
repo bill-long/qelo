@@ -327,10 +327,18 @@ body,
 /* "Move to…" picker on a row — a native <select> styled like .message-move to sit among the icon
    actions: a plain "Move" text placeholder carries the affordance (appearance:none, no caret), the
    accessible name rides on aria-label. width:auto so the label isn't clipped (the base .row-action
-   fixes a square width for the icon buttons). */
+   fixes a square width for the icon buttons); max-inline-size caps it (matching .calendar-nav-zone)
+   so a long folder name can't blow the select out. A native <select width:auto> sizes to its WIDEST
+   <option> (folder names), not to its
+   displayed value — and the displayed value is always the short "Move" placeholder (onChange resets
+   selectedIndex to 0). Without the cap, one long folder name grows .thread-row-actions until it
+   crushes the conversation's sender/subject/date column (.thread-row-main, flex:1) to zero width —
+   invisible and unclickable. The cap fits "Move" with room to spare; the open dropdown still shows
+   full folder names (the native popup isn't bounded by the box). */
 .row-move {
   width: auto;
   min-width: 1.85rem;
+  max-inline-size: 5rem;
   padding: 0 0.4rem;
   appearance: none;
   font: inherit;
@@ -520,9 +528,14 @@ body,
   border-color: var(--accent);
 }
 
-/* "Move to…" picker — styled to sit in the action row like the buttons beside it. */
+/* "Move to…" picker — styled to sit in the action row like the buttons beside it. max-inline-size
+   caps it for the same reason as .row-move: width:auto sizes a native <select> to its widest <option>, so a
+   long folder name would otherwise stretch the select (and the flex action bar) far past its short
+   "Move to…" placeholder. Less catastrophic here than on a row (the bar has its own line), but the
+   same latent overflow — bounded so the picker stays a compact, predictable control. */
 .message-move {
   appearance: none;
+  max-inline-size: 9rem;
   padding-right: 0.6rem;
 }
 
