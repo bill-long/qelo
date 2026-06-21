@@ -244,10 +244,15 @@ body,
 }
 
 .thread-row {
+  position: relative; /* anchor for the absolutely-positioned actions tray (revealed on hover/focus) */
   display: flex;
   align-items: stretch;
   width: 100%;
   border-bottom: 1px solid var(--line);
+  /* The row's current surface colour, fed to the actions tray + its fade so the revealed tray blends
+     over whatever state the row is in. Updated per-state below; the tray is hidden at rest so the
+     default is only a fallback. */
+  --row-bg: var(--raised);
 }
 
 .thread-row-main {
@@ -267,8 +272,17 @@ body,
   cursor: pointer;
 }
 
-.thread-row:hover {
+/* Hover OR keyboard focus (any descendant — the open button or an action) highlights the row and
+   reveals its actions tray. focus-within is what keeps the reveal keyboard/AT-accessible: tabbing in
+   reveals the actions (PR #52's keyboard "Move to folder" twin still reachable). The REVEAL toggles
+   opacity, never display:none — a display:none control isn't in the tab order, so focus-within could
+   never fire to reveal it. (The one display:none is the separate `:not(:has(*))` rule below, which
+   removes the tray only when a read-only folder gates out EVERY action — there's nothing to tab to
+   then, so dropping it from the tab order is correct.) */
+.thread-row:hover,
+.thread-row:focus-within {
   background: var(--hover);
+  --row-bg: var(--hover);
 }
 
 .thread-row-main:focus-visible {
@@ -278,21 +292,71 @@ body,
 
 .thread-row.is-selected {
   background: var(--selection);
+  --row-bg: var(--selection);
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
 /* The source row while it's being dragged to a folder — faded so the drag image (the row's
-   default snapshot, taken before this class applies) reads as the thing in motion. */
+   default snapshot, taken before this class applies) reads as the thing in motion. The snapshot is
+   taken while the row is hovered (a drag starts pointer-down on the row), so the revealed actions
+   tray is baked into the drag ghost — accepted: the ghost is faded and the tray is a minor strip on
+   the right edge; a clean image would need JS setDragImage with a clone, not worth it here. */
 .thread-row.is-dragging {
   opacity: 0.45;
 }
 
-/* Per-row keyword actions (flag / read-toggle), gated on myRights in the markup. */
+/* Per-row actions (flag / read-toggle / move / archive / trash), gated on myRights in the markup.
+   Absolutely positioned over the row's right edge so they reserve NO width at rest — the conversation
+   text (.thread-row-main) gets the full column. Hidden until the row is hovered or focus enters it,
+   then they fade in over the right side (opaque --row-bg tray + a left gradient fade so the text
+   underneath doesn't hard-cut). pointer-events:none while hidden so an invisible control can't be
+   clicked; focusability (for keyboard reveal via :focus-within) is unaffected by pointer-events. */
 .thread-row-actions {
+  position: absolute;
+  inset: 0 0 0 auto; /* top/right/bottom pinned, left auto → tray is content-width at the right edge */
   display: flex;
   align-items: center;
   gap: 0.1rem;
   padding: 0 0.4rem;
+  background: var(--row-bg);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Soft left edge so the revealed tray melts over the text rather than cutting it with a hard box. */
+.thread-row-actions::before {
+  content: "";
+  position: absolute;
+  right: 100%;
+  top: 0;
+  bottom: 0;
+  width: 1.75rem;
+  background: linear-gradient(to right, transparent, var(--row-bg));
+  pointer-events: none;
+}
+
+.thread-row:hover .thread-row-actions,
+.thread-row:focus-within .thread-row-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Fade the reveal for users who allow motion; reduced-motion users get an instant show/hide. */
+@media (prefers-reduced-motion: no-preference) {
+  .thread-row-actions {
+    transition: opacity 0.12s ease;
+  }
+}
+
+/* Touch / coarse-pointer devices have no hover, and :focus-within only fires on keyboard tabbing —
+   so reveal-on-hover would leave a touch user with NO way to flag/move/trash from the list. Keep the
+   tray always visible there (it stays the capped overlay, so it doesn't crush the text column the way
+   the old in-flow actions did). The reading pane is the other touch path. */
+@media (hover: none) {
+  .thread-row-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .row-action {
