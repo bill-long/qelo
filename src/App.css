@@ -274,8 +274,11 @@ body,
 
 /* Hover OR keyboard focus (any descendant — the open button or an action) highlights the row and
    reveals its actions tray. focus-within is what keeps the reveal keyboard/AT-accessible: tabbing in
-   reveals the actions (PR #52's keyboard "Move to folder" twin still reachable), so the tray hides
-   via opacity — never display:none, which would drop it from the tab order. */
+   reveals the actions (PR #52's keyboard "Move to folder" twin still reachable). The REVEAL toggles
+   opacity, never display:none — a display:none control isn't in the tab order, so focus-within could
+   never fire to reveal it. (The one display:none is the separate `:not(:has(*))` rule below, which
+   removes the tray only when a read-only folder gates out EVERY action — there's nothing to tab to
+   then, so dropping it from the tab order is correct.) */
 .thread-row:hover,
 .thread-row:focus-within {
   background: var(--hover);
