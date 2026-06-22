@@ -68,6 +68,21 @@ describe("whole-conversation mutations", () => {
     return (list[0]?.[property] as Record<string, true>) ?? {};
   }
 
+  /** mailboxIds for several emails in ONE Email/get — keeps a poll loop to one request per
+   *  iteration instead of one per id (which can storm Stalwart into a 429). */
+  async function serverMailboxIds(ids: Id[]): Promise<Map<Id, Record<string, true>>> {
+    const client = testClient();
+    const responses = await client.request(
+      [emailGet(client.accountId, "g", { ids, properties: ["id", "mailboxIds"] })],
+      [CAP_CORE, CAP_MAIL],
+    );
+    const list = (methodResult(responses, "g").list ?? []) as Array<{
+      id: Id;
+      mailboxIds: Record<string, true>;
+    }>;
+    return new Map(list.map((e) => [e.id, e.mailboxIds ?? {}]));
+  }
+
   /** True once the server no longer holds the email at all (a hard destroy landed). */
   async function serverHasEmail(id: Id): Promise<boolean> {
     const client = testClient();
@@ -257,11 +272,8 @@ describe("whole-conversation mutations", () => {
       // Invoking Undo (fire-and-forget, as ToastHost does) reverses the whole conversation back to src.
       void toast?.action?.run();
       await pollUntil(async () => {
-        for (const id of ids) {
-          const server = await serverEmail(id, "mailboxIds");
-          if (server[src] !== true || server[dst] !== undefined) return false;
-        }
-        return true;
+        const byId = await serverMailboxIds(ids); // one Email/get per poll, not one per id
+        return ids.every((id) => byId.get(id)?.[src] === true && byId.get(id)?.[dst] === undefined);
       }, "undo restores every message to the source folder");
     });
 
