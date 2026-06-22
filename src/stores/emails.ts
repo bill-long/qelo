@@ -736,11 +736,9 @@ async function moveWithUndo(ids: string[], fromId: string, toId: string): Promis
   if (ids.length === 0 || fromId === toId) return;
   const { reverted, rows } = await optimisticMove(ids, fromId, toId);
   const refused = new Set(reverted);
-  // Moved = not refused AND still held: optimisticEmailUpdate only ever sends ids it holds in the
-  // cache, so an uncached id was never part of the /set — it isn't in `reverted` on a transport
-  // failure either, so without the `emails[id]` guard it would look "moved" and raise a toast (whose
-  // Undo asserts a state that never existed). A `gone`/destroyed id is uncached too, so it's excluded.
-  const moved = ids.filter((id) => !refused.has(id) && emails[id]);
+  // The server moved everything it didn't refuse/fail (`reverted`, which already subsumes `gone`);
+  // the Undo offers exactly those. Move paths only ever pass cached ids, so reverted tracks them all.
+  const moved = ids.filter((id) => !refused.has(id));
   if (moved.length === 0) return;
   const name = mailboxes[toId]?.name ?? "folder";
   notify(`Moved to ${name}`, {
