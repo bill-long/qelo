@@ -254,7 +254,7 @@ describe("whole-conversation mutations", () => {
       expect(toast?.action?.label).toBe("Undo");
 
       // Invoking Undo (fire-and-forget, as ToastHost does) reverses the whole conversation back to src.
-      toast?.action?.run();
+      void toast?.action?.run();
       await pollUntil(async () => {
         for (const id of ids) {
           const server = await serverEmail(id, "mailboxIds");

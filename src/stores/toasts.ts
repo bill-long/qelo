@@ -7,10 +7,12 @@ import { createSignal } from "solid-js";
 // monotonic integers (never an external/server string), so there's no map-keyed-by-untrusted-input
 // footgun here.
 
-/** An optional action a toast can offer (e.g. "Undo"). Running it dismisses the toast (ToastHost). */
+/** An optional action a toast can offer (e.g. "Undo"). Running it dismisses the toast (ToastHost).
+ * `run` may be async (the Undo action reverses a move via a store action) — ToastHost fires it
+ * forget-style, so it must not depend on being awaited. */
 export interface ToastAction {
   label: string;
-  run: () => void;
+  run: () => void | Promise<void>;
 }
 
 export interface Toast {

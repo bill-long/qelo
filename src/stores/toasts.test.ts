@@ -36,7 +36,7 @@ describe("toasts", () => {
     const toast = toasts().find((t) => t.id === id);
     expect(toast?.action?.label).toBe("Undo");
     // The store only holds the callback; ToastHost invokes it. Confirm it's the one we passed.
-    toast?.action?.run();
+    void toast?.action?.run();
     expect(run).toHaveBeenCalledOnce();
   });
 

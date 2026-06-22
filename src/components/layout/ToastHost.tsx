@@ -54,8 +54,9 @@ export function ToastHost() {
                   // region, which announces the message text but not reliably the button.
                   aria-label={`${action().label}: ${toast.message}`}
                   onClick={() => {
-                    // Run the action, then dismiss — clicking "Undo" shouldn't leave the toast up.
-                    action().run();
+                    // Run the action (may be async — fire-and-forget; the store action self-heals
+                    // and never rejects), then dismiss — clicking "Undo" shouldn't leave the toast up.
+                    void action().run();
                     dismissToast(toast.id);
                   }}
                 >
@@ -66,7 +67,9 @@ export function ToastHost() {
             <button
               type="button"
               class="toast-dismiss"
-              aria-label="Dismiss notification"
+              // Restate the toast so stacked toasts' dismiss buttons aren't all "Dismiss notification"
+              // (parity with the action button's contextual label).
+              aria-label={`Dismiss: ${toast.message}`}
               onClick={() => dismissToast(toast.id)}
             >
               <span aria-hidden="true">✕</span>
