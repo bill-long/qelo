@@ -65,7 +65,10 @@ export function notify(message: string, action?: ToastAction): number {
   nextId += 1;
   const id = nextId;
   setToasts((prev) => {
-    const next = [...prev, { id, message, action }];
+    // Omit `action` entirely when absent (rather than `action: undefined`), keeping a plain toast's
+    // shape exactly `{id, message}` — so strict shape checks / serialization aren't surprised.
+    const toast: Toast = action ? { id, message, action } : { id, message };
+    const next = [...prev, toast];
     // Enforce the cap, cancelling the timer for any toast we drop so it doesn't fire later.
     while (next.length > MAX_TOASTS) {
       const dropped = next.shift();
