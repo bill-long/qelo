@@ -18,6 +18,13 @@
   --hover: #efe7d9;
   --email-canvas: #ffffff; /* behind sanitized HTML bodies */
 
+  /* Make native/UA-rendered chrome — <select> dropdown popups, scrollbars, form controls — follow the
+     active OS scheme, so they match the app's own dark variant instead of defaulting to light. Without
+     this a native <select>'s open option list renders light over the dark app (the popup is drawn by
+     the UA, not our CSS). The app's palette is themed via the variables below + the dark @media block,
+     both keyed off prefers-color-scheme, so `light dark` (UA picks per OS) stays in lockstep with them. */
+  color-scheme: light dark;
+
   color: var(--ink);
   background-color: var(--paper);
   font-family: var(--font-sans);
