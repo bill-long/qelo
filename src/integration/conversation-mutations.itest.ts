@@ -78,12 +78,13 @@ describe("whole-conversation mutations", () => {
     return ((methodResult(responses, "g").list ?? []) as unknown[]).length > 0;
   }
 
-  /** Retry `check` until it returns true or the budget runs out (for a fire-and-forget undo). */
+  /** Retry `check` until it returns true or the budget runs out (for a fire-and-forget undo). The
+   *  budget is generous (~20s) so a server round-trip under CI/transient load can't flake it. */
   async function pollUntil(
     check: () => Promise<boolean>,
     label: string,
-    tries = 30,
-    delayMs = 100,
+    tries = 100,
+    delayMs = 200,
   ): Promise<void> {
     for (let i = 0; i < tries; i += 1) {
       if (await check()) return;

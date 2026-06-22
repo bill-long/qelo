@@ -54,9 +54,16 @@ export function ToastHost() {
                   // region, which announces the message text but not reliably the button.
                   aria-label={`${action().label}: ${toast.message}`}
                   onClick={() => {
-                    // Run the action (may be async — fire-and-forget; the store action self-heals
-                    // and never rejects), then dismiss — clicking "Undo" shouldn't leave the toast up.
-                    void action().run();
+                    // Fire-and-forget the action (sync or async), then dismiss — clicking "Undo"
+                    // shouldn't leave the toast up. Catch a sync throw AND an async rejection so a
+                    // misbehaving action can't become an unhandled rejection (the void-asyncCall
+                    // lesson); today's actions self-heal, but the ToastAction contract is generic.
+                    try {
+                      const ran = action().run();
+                      if (ran) ran.catch((err) => console.error("Toast action failed:", err));
+                    } catch (err) {
+                      console.error("Toast action failed:", err);
+                    }
                     dismissToast(toast.id);
                   }}
                 >
