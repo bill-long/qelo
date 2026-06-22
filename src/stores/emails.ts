@@ -728,6 +728,11 @@ async function optimisticMove(
  * undoMove (NOT moveWithUndo), so undoing doesn't itself spawn another Undo toast.
  */
 async function moveWithUndo(ids: string[], fromId: string, toId: string): Promise<void> {
+  // Match optimisticMove's own no-op guard: an empty set or a "move" to the folder it's already in
+  // moves nothing, so don't raise a spurious "Moved to X · Undo" toast (whose Undo would then prune
+  // live rows for a move that never happened). The picker excludes the current folder, but this is
+  // the store boundary — correct regardless of what the UI can reach.
+  if (ids.length === 0 || fromId === toId) return;
   const { reverted, rows } = await optimisticMove(ids, fromId, toId);
   const refused = new Set(reverted);
   const moved = ids.filter((id) => !refused.has(id));
