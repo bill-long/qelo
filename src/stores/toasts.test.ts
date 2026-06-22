@@ -30,6 +30,16 @@ describe("toasts", () => {
     ]);
   });
 
+  it("carries an optional action (e.g. Undo) on the toast", () => {
+    const run = vi.fn();
+    const id = notify("Moved to Archive", { label: "Undo", run });
+    const toast = toasts().find((t) => t.id === id);
+    expect(toast?.action?.label).toBe("Undo");
+    // The store only holds the callback; ToastHost invokes it. Confirm it's the one we passed.
+    void toast?.action?.run();
+    expect(run).toHaveBeenCalledOnce();
+  });
+
   it("auto-dismisses after the timeout", () => {
     notify("Message sent");
     expect(toasts()).toHaveLength(1);

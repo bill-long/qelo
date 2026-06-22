@@ -18,7 +18,8 @@ import {
 } from "@/jmap/methods";
 import type { Email } from "@/jmap/types";
 import { handleAuthFailure, jmap } from "./account";
-import { mailboxIdByRole, selectedMailboxRights } from "./mailboxes";
+import { mailboxes, mailboxIdByRole, selectedMailboxRights } from "./mailboxes";
+import { notify } from "./toasts";
 import { selectedThreadId, setSelectedEmailId, setSelectedThreadId } from "./ui";
 
 /** Cache of fetched Email objects, keyed by id. Shared by the list and (later) reading pane. */
@@ -684,8 +685,12 @@ export function spliceBack(current: string[], rows: PrunedRow[], allow: Set<stri
  * sync hasn't already re-added them — never a wholesale revert. We do NOT route through the push
  * coalesce() or advance any cursor; the push-driven sync owns those.
  */
-async function optimisticMove(ids: string[], fromId: string, toId: string): Promise<void> {
-  if (ids.length === 0 || fromId === toId) return;
+async function optimisticMove(
+  ids: string[],
+  fromId: string,
+  toId: string,
+): Promise<{ reverted: string[]; rows: PrunedRow[] }> {
+  if (ids.length === 0 || fromId === toId) return { reverted: [], rows: [] };
   const moving = new Set(ids);
 
   // Optimistically prune the moved representatives from the open list, remembering where they
@@ -710,13 +715,88 @@ async function optimisticMove(ids: string[], fromId: string, toId: string): Prom
     );
     if (restore.size > 0) setThreadList("ids", (cur) => spliceBack(cur, rows, restore));
   }
+  // `rows` lets a caller (moveWithUndo) restore the pruned rows at their original positions on undo.
+  // `gone` stays internal (the re-insert guard above) — callers only need reverted + rows.
+  return { reverted, rows };
+}
+
+/**
+ * Move out of the open folder AND offer an Undo toast naming the destination. A misclick in the
+ * "Move to…" picker (or archive/trash, which route through here) is one click to reverse. The toast's
+ * Undo reverses ONLY the ids the server actually moved — `reverted`/`gone` ids never left, so they're
+ * excluded — and feeds undoMove the pruned `rows` so the reversed rows snap back to their old spots.
+ * No toast if nothing moved (a no-op or fully-refused move). The undo runs the raw reverse via
+ * undoMove (NOT moveWithUndo), so undoing doesn't itself spawn another Undo toast.
+ */
+async function moveWithUndo(ids: string[], fromId: string, toId: string): Promise<void> {
+  // Match optimisticMove's own no-op guard: an empty set or a "move" to the folder it's already in
+  // moves nothing, so don't raise a spurious "Moved to X · Undo" toast (whose Undo would then prune
+  // live rows for a move that never happened). The picker excludes the current folder, but this is
+  // the store boundary — correct regardless of what the UI can reach.
+  if (ids.length === 0 || fromId === toId) return;
+  const { reverted, rows } = await optimisticMove(ids, fromId, toId);
+  const refused = new Set(reverted);
+  // The server moved everything it didn't refuse/fail (`reverted`, which already subsumes `gone`);
+  // the Undo offers exactly those. Move paths only ever pass cached ids, so reverted tracks them all.
+  const moved = ids.filter((id) => !refused.has(id));
+  if (moved.length === 0) return;
+  const name = mailboxes[toId]?.name ?? "folder";
+  notify(`Moved to ${name}`, {
+    label: "Undo",
+    run: () => undoMove(moved, fromId, toId, rows),
+  });
+}
+
+/**
+ * Reverse a move: take `ids` back out of `toId` and into `fromId` (their original folder). The
+ * inverse of optimisticMove — optimistically RE-INSERTS the pruned rows into the open folder (the
+ * undo target) before the round trip so the rows reappear instantly, then reverses the mailboxIds
+ * patch; an id whose reverse the server refuses is pruned back out. Stale-snapshot safe like the
+ * forward path: only touches the list while `fromId` is still the open folder, and spliceBack skips
+ * any id sync already re-added. Raw (no toast) so undo can't loop into another Undo toast.
+ *
+ * Only reverses ids STILL in `toId`: the toast lives up to 4s, in which the user may move the same
+ * conversation onward (B→C). Reversing a superseded move would add `fromId` back while the message
+ * sits in C — leaving it in two folders. Filtering to `mailboxIds[toId] === true` makes a stale undo
+ * a no-op (the later move wins), and naturally drops uncached/destroyed ids too.
+ */
+async function undoMove(
+  ids: string[],
+  fromId: string,
+  toId: string,
+  rows: PrunedRow[],
+): Promise<void> {
+  const live = ids.filter((id) => emails[id]?.mailboxIds[toId] === true);
+  if (live.length === 0) return;
+  const set = new Set(live);
+  // Optimistic list update for whichever folder is open: the reversed ids LEAVE toId and RETURN to
+  // fromId. Viewing the source → splice their rows back (no `emails[id]` guard: we're ABOUT to re-add
+  // fromId, so it isn't set yet — a refused reverse is cleaned up below; index is the move-time slot,
+  // clamped by spliceBack and re-sorted by the next sync). Viewing the destination → prune them, else
+  // a ghost row lingers in the destination list until the next sync (the ghost-row class).
+  if (threadList.mailboxId === fromId && rows.length > 0) {
+    setThreadList("ids", (cur) => spliceBack(cur, rows, set));
+  } else if (threadList.mailboxId === toId) {
+    setThreadList("ids", (cur) => cur.filter((id) => !set.has(id)));
+  }
+  const { reverted } = await optimisticEmailUpdate(live, [
+    { map: "mailboxIds", key: toId, present: false },
+    { map: "mailboxIds", key: fromId, present: true },
+  ]);
+  // A refused reverse means the id didn't move back — undo the optimistic source re-insert. (Viewing
+  // the destination, a refused id is still there but we pruned it; we don't hold its destination
+  // position to splice back, so the next sync re-adds it — an accepted lag on a rare undo refusal.)
+  if (reverted.length > 0 && threadList.mailboxId === fromId) {
+    const bounced = new Set(reverted);
+    setThreadList("ids", (cur) => cur.filter((id) => !bounced.has(id)));
+  }
 }
 
 /** Move emails from the open folder into `toMailboxId`. Optimistic; rolls back on refusal. */
 export async function moveEmails(ids: string[], toMailboxId: string): Promise<void> {
   const fromId = threadList.mailboxId;
   if (!fromId) return;
-  await optimisticMove(ids, fromId, toMailboxId);
+  await moveWithUndo(ids, fromId, toMailboxId);
 }
 
 /** Archive (D2): move the given emails from the open folder to the archive-role mailbox. */
@@ -945,7 +1025,7 @@ export async function setConversationFlagged(repId: string, flagged: boolean): P
 export async function moveConversation(repId: string, toMailboxId: string): Promise<void> {
   const fromId = threadList.mailboxId;
   if (!fromId) return;
-  await optimisticMove(await conversationIdsInOpenFolder(repId, fromId), fromId, toMailboxId);
+  await moveWithUndo(await conversationIdsInOpenFolder(repId, fromId), fromId, toMailboxId);
 }
 
 /** Archive the representative's conversation (open folder → archive-role mailbox). */

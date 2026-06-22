@@ -1366,6 +1366,29 @@ body,
   min-width: 0;
 }
 
+/* Optional action (e.g. "Undo") — an accent text button between the message and the dismiss ✕. */
+.toast-action {
+  flex: none;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.toast-action:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.toast-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .toast-dismiss {
   flex: none;
   display: flex;

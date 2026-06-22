@@ -14,6 +14,7 @@ import {
   trashConversation,
 } from "@/stores/emails";
 import { loadMailboxes, mailboxIdByRole } from "@/stores/mailboxes";
+import { toasts } from "@/stores/toasts";
 import { setSelectedMailboxId } from "@/stores/ui";
 import {
   connectTestClient,
@@ -67,6 +68,21 @@ describe("whole-conversation mutations", () => {
     return (list[0]?.[property] as Record<string, true>) ?? {};
   }
 
+  /** mailboxIds for several emails in ONE Email/get — keeps a poll loop to one request per
+   *  iteration instead of one per id (which can storm Stalwart into a 429). */
+  async function serverMailboxIds(ids: Id[]): Promise<Map<Id, Record<string, true>>> {
+    const client = testClient();
+    const responses = await client.request(
+      [emailGet(client.accountId, "g", { ids, properties: ["id", "mailboxIds"] })],
+      [CAP_CORE, CAP_MAIL],
+    );
+    const list = (methodResult(responses, "g").list ?? []) as Array<{
+      id: Id;
+      mailboxIds: Record<string, true>;
+    }>;
+    return new Map(list.map((e) => [e.id, e.mailboxIds ?? {}]));
+  }
+
   /** True once the server no longer holds the email at all (a hard destroy landed). */
   async function serverHasEmail(id: Id): Promise<boolean> {
     const client = testClient();
@@ -75,6 +91,21 @@ describe("whole-conversation mutations", () => {
       [CAP_CORE, CAP_MAIL],
     );
     return ((methodResult(responses, "g").list ?? []) as unknown[]).length > 0;
+  }
+
+  /** Retry `check` until it returns true or the budget runs out (for a fire-and-forget undo). The
+   *  budget is generous (~20s) so a server round-trip under CI/transient load can't flake it. */
+  async function pollUntil(
+    check: () => Promise<boolean>,
+    label: string,
+    tries = 100,
+    delayMs = 200,
+  ): Promise<void> {
+    for (let i = 0; i < tries; i += 1) {
+      if (await check()) return;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+    throw new Error(`pollUntil timed out: ${label}`);
   }
 
   /** Move an email between mailboxes server-side (to fan a thread across folders for a test). */
@@ -214,6 +245,36 @@ describe("whole-conversation mutations", () => {
       }
       // The collapsed row left the open list.
       expect(threadList.ids).not.toContain(repId);
+    });
+
+    it("raises an Undo toast whose action moves the whole conversation back to the source", async () => {
+      const src = await freshMailbox("undo-src");
+      const dst = await freshMailbox("undo-dst");
+      const msgs = await createThread(src, 3);
+      const ids = msgs.map((m) => m.id);
+      await loadMailboxes(); // so the toast can name the destination
+
+      const [repId] = await settleConversations(src, 1);
+      setSelectedMailboxId(src);
+      await openMailbox(src);
+
+      await moveConversation(repId as Id, dst);
+
+      // The move landed server-side…
+      for (const id of ids) {
+        expect((await serverEmail(id, "mailboxIds"))[dst], `moved ${id}`).toBe(true);
+      }
+      // …and an Undo toast is offered.
+      const toast = toasts().at(-1);
+      expect(toast?.message).toMatch(/^Moved to /);
+      expect(toast?.action?.label).toBe("Undo");
+
+      // Invoking Undo (fire-and-forget, as ToastHost does) reverses the whole conversation back to src.
+      void toast?.action?.run();
+      await pollUntil(async () => {
+        const byId = await serverMailboxIds(ids); // one Email/get per poll, not one per id
+        return ids.every((id) => byId.get(id)?.[src] === true && byId.get(id)?.[dst] === undefined);
+      }, "undo restores every message to the source folder");
     });
 
     it("moves only the open folder's messages, leaving the rest of the thread untouched", async () => {

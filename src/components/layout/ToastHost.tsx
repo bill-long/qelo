@@ -1,4 +1,4 @@
-import { For } from "solid-js";
+import { For, Show } from "solid-js";
 import { dismissToast, pauseAutoDismiss, resumeAutoDismiss, toasts } from "@/stores/toasts";
 
 /**
@@ -42,10 +42,41 @@ export function ToastHost() {
         {(toast) => (
           <div class="toast">
             <span class="toast-message">{toast.message}</span>
+            <Show when={toast.action}>
+              {(action) => (
+                <button
+                  type="button"
+                  class="toast-action"
+                  // Restate the toast's context in the accessible name: the visible text is just the
+                  // verb ("Undo"), but with up to 3 stacked toasts a screen-reader/keyboard user
+                  // tabbing the buttons needs to know WHICH move each reverses ("Undo: Moved to Spam"
+                  // vs "Undo: Moved to Archive"). Also surfaces the action behind the polite status
+                  // region, which announces the message text but not reliably the button.
+                  aria-label={`${action().label}: ${toast.message}`}
+                  onClick={() => {
+                    // Fire-and-forget the action (sync or async), then dismiss — clicking "Undo"
+                    // shouldn't leave the toast up. Catch a sync throw AND an async rejection so a
+                    // misbehaving action can't become an unhandled rejection (the void-asyncCall
+                    // lesson); today's actions self-heal, but the ToastAction contract is generic.
+                    try {
+                      const ran = action().run();
+                      if (ran) ran.catch((err) => console.error("Toast action failed:", err));
+                    } catch (err) {
+                      console.error("Toast action failed:", err);
+                    }
+                    dismissToast(toast.id);
+                  }}
+                >
+                  {action().label}
+                </button>
+              )}
+            </Show>
             <button
               type="button"
               class="toast-dismiss"
-              aria-label="Dismiss notification"
+              // Restate the toast so stacked toasts' dismiss buttons aren't all "Dismiss notification"
+              // (parity with the action button's contextual label).
+              aria-label={`Dismiss: ${toast.message}`}
               onClick={() => dismissToast(toast.id)}
             >
               <span aria-hidden="true">✕</span>

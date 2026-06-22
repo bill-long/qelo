@@ -23,6 +23,7 @@ import { resetContacts } from "@/stores/contacts";
 import { emails, setEmails, setPageSize, setThread, setThreadList } from "@/stores/emails";
 import { mailboxes, setMailboxes } from "@/stores/mailboxes";
 import { resetRecipients } from "@/stores/recipients";
+import { clearToasts } from "@/stores/toasts";
 import {
   setActiveView,
   setCalendarAnchor,
@@ -162,6 +163,9 @@ export function resetStores(): void {
   resetContacts();
   // Calendar likewise loads lazily with its own cursors/load-once guard — reset it too.
   resetCalendar();
+  // A move action now raises an Undo toast (with a live auto-dismiss timer); clear the queue + timers
+  // so one case's toast (and its pending setTimeout) can't leak into the next in the shared worker.
+  clearToasts();
 }
 
 // --- Server-side fixtures --------------------------------------------------
