@@ -7,9 +7,16 @@ import { createSignal } from "solid-js";
 // monotonic integers (never an external/server string), so there's no map-keyed-by-untrusted-input
 // footgun here.
 
+/** An optional action a toast can offer (e.g. "Undo"). Running it dismisses the toast (ToastHost). */
+export interface ToastAction {
+  label: string;
+  run: () => void;
+}
+
 export interface Toast {
   id: number;
   message: string;
+  action?: ToastAction;
 }
 
 /** How long a toast stays up before auto-dismissing. */
@@ -51,13 +58,14 @@ function clearTimer(id: number): void {
  * Show a transient confirmation toast and return its id. It auto-dismisses after {@link DISMISS_MS}
  * (unless paused via {@link pauseAutoDismiss}) and the stack is capped at {@link MAX_TOASTS}, with
  * the oldest dropped (and its timer cleared) on overflow. Use for success confirmations only —
- * errors belong inline at their source.
+ * errors belong inline at their source. An optional `action` renders a button (e.g. "Undo") that
+ * runs the callback and dismisses the toast.
  */
-export function notify(message: string): number {
+export function notify(message: string, action?: ToastAction): number {
   nextId += 1;
   const id = nextId;
   setToasts((prev) => {
-    const next = [...prev, { id, message }];
+    const next = [...prev, { id, message, action }];
     // Enforce the cap, cancelling the timer for any toast we drop so it doesn't fire later.
     while (next.length > MAX_TOASTS) {
       const dropped = next.shift();

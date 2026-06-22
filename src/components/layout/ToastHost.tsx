@@ -1,4 +1,4 @@
-import { For } from "solid-js";
+import { For, Show } from "solid-js";
 import { dismissToast, pauseAutoDismiss, resumeAutoDismiss, toasts } from "@/stores/toasts";
 
 /**
@@ -42,6 +42,27 @@ export function ToastHost() {
         {(toast) => (
           <div class="toast">
             <span class="toast-message">{toast.message}</span>
+            <Show when={toast.action}>
+              {(action) => (
+                <button
+                  type="button"
+                  class="toast-action"
+                  // Restate the toast's context in the accessible name: the visible text is just the
+                  // verb ("Undo"), but with up to 3 stacked toasts a screen-reader/keyboard user
+                  // tabbing the buttons needs to know WHICH move each reverses ("Undo: Moved to Spam"
+                  // vs "Undo: Moved to Archive"). Also surfaces the action behind the polite status
+                  // region, which announces the message text but not reliably the button.
+                  aria-label={`${action().label}: ${toast.message}`}
+                  onClick={() => {
+                    // Run the action, then dismiss — clicking "Undo" shouldn't leave the toast up.
+                    action().run();
+                    dismissToast(toast.id);
+                  }}
+                >
+                  {action().label}
+                </button>
+              )}
+            </Show>
             <button
               type="button"
               class="toast-dismiss"
